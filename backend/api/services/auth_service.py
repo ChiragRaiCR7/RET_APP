@@ -52,6 +52,15 @@ def issue_tokens(
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "is_active": user.is_active,
+            "is_locked": user.is_locked,
+            "created_at": user.created_at,
+        }
     }
 
 
@@ -70,7 +79,7 @@ def refresh_tokens(db: Session, refresh_token: str):
         expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
-    return {"access_token": access_token}
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 def request_password_reset(db: Session, username: str):
@@ -115,3 +124,5 @@ def confirm_password_reset(db: Session, token: str, new_password: str):
     user.password_hash = hash_password(new_password)
 
     reset.used = True
+    db.commit()
+    return {"success": True}
