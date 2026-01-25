@@ -31,7 +31,7 @@ def create_login_session(
     )
 
     db.add(session)
-    db.flush()
+    db.commit()
 
     return raw_token
 
@@ -50,9 +50,11 @@ def validate_refresh_token(db: Session, token: str) -> LoginSession | None:
 
     if session.expires_at < datetime.utcnow():
         db.delete(session)
+        db.commit()
         return None
 
     session.last_used_at = datetime.utcnow()
+    db.commit()
     return session
 
 
@@ -61,3 +63,5 @@ def revoke_refresh_token(db: Session, token: str) -> None:
     db.query(LoginSession).filter(
         LoginSession.refresh_token_hash == token_hash
     ).delete()
+    db.commit()
+

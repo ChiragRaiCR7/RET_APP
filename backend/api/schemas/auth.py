@@ -25,6 +25,11 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    user: "UserInfo"
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 class UserInfo(BaseModel):
     id: int
@@ -33,3 +38,6 @@ class UserInfo(BaseModel):
     is_active: bool
     is_locked: bool
     created_at: datetime
+
+    class Config:
+        from_attributes = True

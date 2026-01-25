@@ -4,7 +4,7 @@ import api from '@/utils/api'
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     user: null,
-    token: localStorage.getItem('retv4_token') || null,
+    token: null,
     isLoading: false
   }),
   getters: {
@@ -16,11 +16,11 @@ export const useAuthStore = defineStore('auth', {
       this.isLoading = true
       try {
         const resp = await api.post('/auth/login', { username, password })
-        // expected { token, user }
-        this.token = resp.data.token
+        // Response: { access_token, refresh_token, token_type, user }
+        this.token = resp.data.access_token
         this.user = resp.data.user
-        if (remember) localStorage.setItem('retv4_token', this.token)
-        else localStorage.removeItem('retv4_token')
+        // Store refresh token is handled by cookies (HttpOnly)
+        // Store token in memory (do not persist)
         return resp.data
       } finally {
         this.isLoading = false
@@ -32,13 +32,36 @@ export const useAuthStore = defineStore('auth', {
         const resp = await api.get('/auth/me')
         this.user = resp.data
       } catch (e) {
-        // swallow
+        console.error('Failed to fetch user:', e)
+        // If 401, token is invalid
+        if (e.response?.status === 401) {
+          this.logout()
+        }
       }
     },
-    logout() {
-      this.token = null
-      this.user = null
-      localStorage.removeItem('retv4_token')
+    async logout() {
+      try {
+        await api.post('/auth/logout')
+      } catch (e) {
+        // ignore errors
+      } finally {
+        this.token = null
+        this.user = null
+      }
+    },
+    // Called when 401 to refresh token
+    async refreshToken() {
+      try {
+        // Backend reads refresh_token from HttpOnly cookie
+        const resp = await api.post('/auth/refresh', {})
+        this.token = resp.data.access_token
+        return true
+      } catch (e) {
+        console.error('Refresh failed:', e)
+        this.logout()
+        return false
+      }
     }
   }
 })
+
