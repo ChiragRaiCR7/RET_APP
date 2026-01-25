@@ -61,6 +61,7 @@ dependencies = [
     { name = "bcrypt" },
     { name = "chromadb" },
     { name = "fastapi" },
+    { name = "gunicorn" },
     { name = "lxml" },
     { name = "lxml-stubs" },
     { name = "numpy" },
@@ -82,6 +83,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=5.0.0" },
     { name = "chromadb", specifier = ">=1.4.1" },
     { name = "fastapi", specifier = ">=0.128.0" },
+    { name = "gunicorn", specifier = ">=24.0.0" },
     { name = "lxml", specifier = ">=6.0.2" },
     { name = "lxml-stubs", specifier = ">=0.5.1" },
     { name = "numpy", specifier = ">=2.4.1" },
@@ -489,6 +491,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/45/122df922d05655f63930cf42c9e3f72ba20aadb26c100ee105cad4ce4257/grpcio-1.76.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:1c9b93f79f48b03ada57ea24725d83a30284a012ec27eab2cf7e50a550cbbbcc", size = 7592214, upload-time = "2025-10-21T16:22:33.831Z" },
     { url = "https://files.pythonhosted.org/packages/4a/6e/0b899b7f6b66e5af39e377055fb4a6675c9ee28431df5708139df2e93233/grpcio-1.76.0-cp314-cp314-win32.whl", hash = "sha256:747fa73efa9b8b1488a95d0ba1039c8e2dca0f741612d80415b1e1c560febf4e", size = 4062961, upload-time = "2025-10-21T16:22:36.468Z" },
     { url = "https://files.pythonhosted.org/packages/19/41/0b430b01a2eb38ee887f88c1f07644a1df8e289353b78e82b37ef988fb64/grpcio-1.76.0-cp314-cp314-win_amd64.whl", hash = "sha256:922fa70ba549fce362d2e2871ab542082d66e2aaf0c19480ea453905b01f384e", size = 4834462, upload-time = "2025-10-21T16:22:39.772Z" },
+]
+
+[[package]]
+name = "gunicorn"
+version = "24.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/10/c5/ceaef8b5f19629161a0aa4a4af9a185fcf80bf0faf9f015900c37cbb837c/gunicorn-24.0.0.tar.gz", hash = "sha256:7f6c916308740942586f49f14cf3743bdfc4130c29520c42706f42fa5a2dacdb", size = 277750, upload-time = "2026-01-23T00:37:11.856Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/52/b757a35f115b0273f62b8557435e7b867424d0d7e363808e3413d62da49a/gunicorn-24.0.0-py3-none-any.whl", hash = "sha256:30401647ed4f162a3f7e5b8b3ed77e6e88d9a4ea5599f1ff31f7f54a7610339c", size = 110616, upload-time = "2026-01-23T00:37:10.179Z" },
 ]
 
 [[package]]
