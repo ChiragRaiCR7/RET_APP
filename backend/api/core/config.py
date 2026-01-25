@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     CORS_ORIGINS: List[str] = ["*"]
+    AZURE_OPENAI_API_KEY: str
+    AZURE_OPENAI_ENDPOINT: str
+    AZURE_OPENAI_API_VERSION: str
+    AZURE_OPENAI_CHAT_MODEL: str
+    AZURE_OPENAI_EMBED_MODEL: str
+
 
     class Config:
         env_file = ".env"
