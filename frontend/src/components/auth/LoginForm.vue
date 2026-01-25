@@ -38,27 +38,21 @@ const auth = useAuthStore()
 const loading = ref(false)
 const error = ref(null)
 const form = reactive({ username: '', password: '', remember: true })
+const emit = defineEmits(['success', 'reset'])
 
 async function submit() {
   loading.value = true
   error.value = null
   try {
     await auth.login(form.username, form.password, form.remember)
-    // success event -> parent will navigate
-    // emit success
-    // dispatch event
-    // using custom event:
-    const ev = new CustomEvent('success')
-    window.dispatchEvent(ev)
-    // better: emit to parent via $emit
-    // but script-setup can't call $emit directly unless defined. Use this event approach.
+    // Emit success to parent
+    emit('success')
   } catch (e) {
     error.value = e.response?.data?.message || 'Login failed'
   } finally {
     loading.value = false
   }
 }
-
 function demoLogin() {
   form.username = 'demo'
   form.password = 'password'

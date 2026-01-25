@@ -1,11 +1,27 @@
 <template>
   <div>
-    <div class="file-upload-zone" @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="onDrop" :class="{ dragging }" @click="open">
+    <div 
+      class="file-upload-zone" 
+      @dragover.prevent="dragging = true" 
+      @dragleave.prevent="dragging = false" 
+      @drop.prevent="onDrop" 
+      :class="{ dragging }" 
+      @click="open"
+    >
       <div class="file-upload-icon" aria-hidden="true">📦</div>
       <div><strong>Drop ZIP files here, or click to upload</strong></div>
       <div class="form-hint">Supports bulk ZIP. Max 200MB. We'll scan and show a preview.</div>
     </div>
-    <input ref="input" type="file" multiple @change="onFiles" style="display:none" accept=".zip,application/zip" />
+    
+    <input 
+      ref="input" 
+      type="file" 
+      multiple 
+      @change="onFiles" 
+      style="display:none" 
+      accept=".zip,application/zip" 
+    />
+    
     <div v-if="files.length" style="margin-top: var(--space-md)">
       <div v-for="(f, i) in files" :key="i" class="info-item">
         <div style="display:flex; justify-content:space-between;">
@@ -14,8 +30,8 @@
             <div class="form-hint">{{ prettySize(f.size) }} • {{ f.type || 'zip' }}</div>
           </div>
           <div style="display:flex; gap:8px; align-items:center">
-            <button class="btn btn-sm btn-primary" @click="uploadFile(f)">Scan</button>
-            <button class="btn btn-sm" @click="remove(i)">Remove</button>
+            <button class="btn btn-sm btn-primary" @click.stop="uploadFile(f)">Scan</button>
+            <button class="btn btn-sm" @click.stop="remove(i)">Remove</button>
           </div>
         </div>
       </div>
@@ -30,6 +46,9 @@ import api from '@/utils/api'
 const input = ref(null)
 const files = ref([])
 const dragging = ref(false)
+
+// Define emits
+const emit = defineEmits(['uploaded'])
 
 function open() {
   input.value?.click()
@@ -58,15 +77,14 @@ function prettySize(n) {
 }
 
 async function uploadFile(file) {
-  // simple scan endpoint; change path to your backend
   const data = new FormData()
   data.append('file', file)
   try {
-    const resp = await api.post('/files/scan', data, { headers: { 'Content-Type': 'multipart/form-data' } })
-    // emit result (scan summary)
-    // bubble event
-    const event = new CustomEvent('uploaded', { detail: resp.data.files || [file] })
-    window.dispatchEvent(event)
+    const resp = await api.post('/files/scan', data, { 
+      headers: { 'Content-Type': 'multipart/form-data' } 
+    })
+    // Emit properly to parent component
+    emit('uploaded', resp.data.files || [file])
   } catch (e) {
     alert('Failed to upload: ' + (e.response?.data?.message || e.message))
   }

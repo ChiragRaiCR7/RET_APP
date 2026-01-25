@@ -24,6 +24,7 @@ const username = ref('')
 const loading = ref(false)
 const message = ref(null)
 const error = ref(null)
+const emit = defineEmits(['done'])
 
 async function requestReset() {
   loading.value = true
