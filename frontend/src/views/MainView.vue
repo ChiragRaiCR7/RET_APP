@@ -1,21 +1,5 @@
 <template>
   <div>
-    <!-- Quick Stats -->
-    <div class="metric-container" role="region" aria-label="Quick stats">
-      <div class="metric-card">
-        <p class="metric-value">{{ stats.totalUsers }}</p>
-        <p class="metric-label">Total Users</p>
-      </div>
-      <div class="metric-card">
-        <p class="metric-value">{{ stats.admins }}</p>
-        <p class="metric-label">Admins</p>
-      </div>
-      <div class="metric-card">
-        <p class="metric-value">{{ stats.regular }}</p>
-        <p class="metric-label">Regular Users</p>
-      </div>
-    </div>
-
     <!-- Tab Navigation -->
     <div class="tab-list" role="tablist">
       <button 
@@ -296,12 +280,6 @@ import api from '@/utils/api'
 const activeTab = ref(0)
 const tabs = ['Convert & Download', 'Compare', 'Ask RET AI']
 
-const stats = reactive({
-  totalUsers: 0,
-  admins: 0,
-  regular: 0
-})
-
 const workflow = reactive({
   outputFormat: 'csv',
   editMode: 'none',
@@ -325,15 +303,6 @@ const ai = reactive({
   selectedGroups: [],
   indexStatus: null
 })
-
-async function loadStats() {
-  try {
-    const res = await api.get('/stats/users')
-    Object.assign(stats, res.data)
-  } catch (e) {
-    console.error('Failed to load stats:', e)
-  }
-}
 
 function onUploaded(files) {
   workflow.uploadedFiles.push(...files)
@@ -442,6 +411,6 @@ async function clearMemory() {
 }
 
 onMounted(() => {
-  loadStats()
+  // Initialize on mount
 })
 </script>

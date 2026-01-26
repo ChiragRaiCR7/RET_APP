@@ -31,7 +31,7 @@ async function requestReset() {
   error.value = null
   message.value = null
   try {
-    await api.post('/auth/request-reset', { username: username.value })
+    await api.post('/auth/password-reset/request', { username: username.value })
     message.value = 'If that account exists we sent instructions (check audit logs if you are admin).'
   } catch (e) {
     error.value = e.response?.data?.message || 'Failed to request reset'

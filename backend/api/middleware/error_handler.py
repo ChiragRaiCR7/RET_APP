@@ -1,15 +1,27 @@
+import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from loguru import logger
+
+try:
+    from loguru import logger
+    HAS_LOGURU = True
+except ImportError:
+    HAS_LOGURU = False
+    logger = logging.getLogger(__name__)
 
 async def global_exception_handler(request: Request, exc: Exception):
     corr_id = getattr(request.state, "correlation_id", None)
 
-    logger.exception(
-        "Unhandled exception",
-        path=request.url.path,
-        corr_id=corr_id,
-    )
+    if HAS_LOGURU:
+        logger.exception(
+            "Unhandled exception",
+            path=request.url.path,
+            corr_id=corr_id,
+        )
+    else:
+        logger.exception(
+            f"Unhandled exception at {request.url.path} (correlation_id: {corr_id})"
+        )
 
     return JSONResponse(
         status_code=500,

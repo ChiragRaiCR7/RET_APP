@@ -21,16 +21,6 @@ class PasswordResetConfirm(BaseModel):
 
 # -------- Responses --------
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    user: "UserInfo"
-
-class RefreshTokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
 class UserInfo(BaseModel):
     id: int
     username: str
@@ -41,3 +31,13 @@ class UserInfo(BaseModel):
 
     class Config:
         from_attributes = True
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserInfo
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

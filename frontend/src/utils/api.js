@@ -8,7 +8,7 @@ const instance = axios.create({
   withCredentials: true, // Important: send cookies with requests
 })
 
-// inject access token from store
+// inject access token from store into Authorization header
 instance.interceptors.request.use((config) => {
   const auth = useAuthStore()
   if (auth.token) {
@@ -41,10 +41,16 @@ instance.interceptors.response.use(
       if (!isRefreshing) {
         isRefreshing = true
         try {
-          await auth.refreshToken()
-          processQueue(null, auth.token)
-          // Retry original request with new token
-          return instance(config)
+          // Call refresh endpoint - refresh token is in HttpOnly cookie, sent automatically
+          const result = await auth.refreshToken()
+          if (result) {
+            processQueue(null, auth.token)
+            // Retry original request with new token
+            return instance(config)
+          } else {
+            processQueue(new Error('Refresh failed'), null)
+            return Promise.reject(err)
+          }
         } catch (refreshErr) {
           processQueue(refreshErr, null)
           auth.logout()

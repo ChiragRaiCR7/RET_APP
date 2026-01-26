@@ -8,3 +8,20 @@ wheels/
 
 # Virtual environments
 .venv
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime and sessions
+runtime/
+.env.local
+.env.*.local

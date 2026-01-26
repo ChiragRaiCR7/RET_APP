@@ -3,27 +3,26 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, Request
 
 from api.models.models import User, PasswordResetToken
-from api.core.security import (
-    verify_password,
-    hash_password,
-    create_token,
-)
+from api.core.security import verify_password, hash_password, create_token
 from api.core.config import settings
 from api.services.session_service import (
     create_login_session,
     validate_refresh_token,
 )
+
 import secrets
 import hashlib
 
 
 def authenticate_user(db: Session, username: str, password: str) -> User:
-    user = db.query(User).filter(User.username == username).first()
+    # Normalize username to lowercase for case-insensitive matching
+    normalized_username = username.lower().strip()
+    user = db.query(User).filter(User.username == normalized_username).first()
 
-    if not user:
+    if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
 
-    if user.is_locked or not user.is_active:
+    if user.is_locked is True or user.is_active is False:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account locked")
 
     if not verify_password(password, user.password_hash):
@@ -60,18 +59,18 @@ def issue_tokens(
             "is_active": user.is_active,
             "is_locked": user.is_locked,
             "created_at": user.created_at,
-        }
+        },
     }
 
 
 def refresh_tokens(db: Session, refresh_token: str):
     session = validate_refresh_token(db, refresh_token)
 
-    if not session:
+    if session is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid refresh token")
 
-    user = db.query(User).get(session.user_id)
-    if not user or not user.is_active or user.is_locked:
+    user = db.get(User, session.user_id)
+    if user is None or user.is_active is False or user.is_locked is True:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
 
     access_token = create_token(
@@ -84,24 +83,21 @@ def refresh_tokens(db: Session, refresh_token: str):
 
 def request_password_reset(db: Session, username: str):
     user = db.query(User).filter(User.username == username).first()
-    if not user:
-        return  # silent (avoid user enumeration)
+    if user is None:
+        return
 
     raw_token = secrets.token_urlsafe(48)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
 
-    expires = datetime.utcnow() + timedelta(hours=2)
-
     reset = PasswordResetToken(
         user_id=user.id,
         token_hash=token_hash,
-        expires_at=expires,
+        expires_at=datetime.utcnow() + timedelta(hours=2),
     )
 
     db.add(reset)
-    db.flush()
+    db.commit()
 
-    # In real system: send email
     return raw_token
 
 
@@ -117,12 +113,15 @@ def confirm_password_reset(db: Session, token: str, new_password: str):
         .first()
     )
 
-    if not reset or reset.expires_at < datetime.utcnow():
+    if reset is None or reset.expires_at < datetime.utcnow():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid reset token")
 
-    user = db.query(User).get(reset.user_id)
-    user.password_hash = hash_password(new_password)
+    user = db.get(User, reset.user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid user")
 
+    user.password_hash = hash_password(new_password)
     reset.used = True
+
     db.commit()
     return {"success": True}
