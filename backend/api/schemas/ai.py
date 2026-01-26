@@ -3,12 +3,8 @@ from typing import List, Dict, Optional
 
 class IndexRequest(BaseModel):
     session_id: str
-    collection: str
-
-class IndexResponse(BaseModel):
-    collection: str
-    indexed_chunks: int
-
+    groups: List[str]  # List of group names to index
+    collection: Optional[str] = None
 class ChatRequest(BaseModel):
     collection: str
     question: str

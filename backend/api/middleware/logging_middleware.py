@@ -1,7 +1,15 @@
 import time
+import logging
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from loguru import logger
+
+# Try to import loguru, fall back to standard logging
+try:
+    from loguru import logger
+    HAS_LOGURU = True
+except ImportError:
+    HAS_LOGURU = False
+    logger = logging.getLogger(__name__)
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -9,13 +17,18 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         duration = round((time.time() - start) * 1000, 2)
 
-        logger.info(
-            "request",
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code,
-            duration_ms=duration,
-            corr_id=getattr(request.state, "correlation_id", None),
-        )
+        if HAS_LOGURU:
+            logger.info(
+                "request",
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration_ms=duration,
+                corr_id=getattr(request.state, "correlation_id", None),
+            )
+        else:
+            logger.info(
+                f"{request.method} {request.url.path} - {response.status_code} ({duration}ms)"
+            )
 
         return response

@@ -1,0 +1,12 @@
+2026-01-26 12:16:52.028 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+2026-01-26 12:16:52.032 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+INFO:     127.0.0.1:64380 - "POST /api/auth/login HTTP/1.1" 401 Unauthorized
+2026-01-26 12:17:01.093 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+2026-01-26 12:17:01.097 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+INFO:     127.0.0.1:64385 - "POST /api/auth/login HTTP/1.1" 401 Unauthorized
+2026-01-26 12:17:11.931 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+2026-01-26 12:17:11.934 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+INFO:     127.0.0.1:64390 - "GET /api/admin/users HTTP/1.1" 200 OK
+2026-01-26 12:18:04.467 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+2026-01-26 12:18:04.470 | INFO     | api.middleware.logging_middleware:dispatch:12 - request
+INFO:     127.0.0.1:64416 - "POST /api/auth/login HTTP/1.1" 200 OK

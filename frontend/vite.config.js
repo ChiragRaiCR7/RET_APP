@@ -10,13 +10,20 @@ export default defineConfig({
     }
   },
   server: {
-    port: 3000,
+    port: 5173,
+    host: 'localhost',
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        secure: false,
         rewrite: (path) => path
       }
     }
+  },
+  build: {
+    target: 'esnext',
+    minify: 'terser',
+    sourcemap: false,
   }
 })

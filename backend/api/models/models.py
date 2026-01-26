@@ -1,8 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column,
-    Integer,
     String,
+    Integer,
     Boolean,
     DateTime,
     Text,
@@ -10,7 +9,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from api.core.database import Base
 
@@ -21,18 +24,29 @@ from api.core.database import Base
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(120), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
-    role = Column(String(32), default="user", nullable=False)
-    is_active = Column(Boolean, default=True)
-    is_locked = Column(Boolean, default=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), default="user", nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    sessions = relationship("LoginSession", back_populates="user")
-    reset_tokens = relationship("PasswordResetToken", back_populates="user")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    sessions: Mapped[list["LoginSession"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 # =========================
@@ -41,18 +55,18 @@ class User(Base):
 class LoginSession(Base):
     __tablename__ = "login_sessions"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    refresh_token_hash = Column(String(255), nullable=False)
-    ip_address = Column(String(64))
-    user_agent = Column(Text)
+    refresh_token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(Text)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_used_at = Column(DateTime, default=datetime.utcnow)
-    expires_at = Column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
-    user = relationship("User", back_populates="sessions")
+    user: Mapped["User"] = relationship(back_populates="sessions")
 
     __table_args__ = (
         Index("ix_login_session_user", "user_id"),
@@ -65,16 +79,16 @@ class LoginSession(Base):
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    token_hash = Column(String(255), nullable=False)
-    expires_at = Column(DateTime, nullable=False)
-    used = Column(Boolean, default=False)
+    token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    user = relationship("User", back_populates="reset_tokens")
+    user: Mapped["User"] = relationship(back_populates="reset_tokens")
 
 
 # =========================
@@ -83,13 +97,13 @@ class PasswordResetToken(Base):
 class PasswordResetRequest(Base):
     __tablename__ = "password_reset_requests"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(120), nullable=False)
-    reason = Column(Text)
-    status = Column(String(32), default="pending")  # pending / approved / rejected
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(120), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    decided_at = Column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 # =========================
@@ -98,13 +112,13 @@ class PasswordResetRequest(Base):
 class UserLimit(Base):
     __tablename__ = "user_limits"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    max_sessions = Column(Integer, default=3)
-    max_upload_mb = Column(Integer, default=10000)
+    max_sessions: Mapped[int] = mapped_column(Integer, default=3)
+    max_upload_mb: Mapped[int] = mapped_column(Integer, default=10000)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 # =========================
@@ -113,14 +127,15 @@ class UserLimit(Base):
 class LimitIncreaseRequest(Base):
     __tablename__ = "limit_increase_requests"
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, nullable=False)
-    requested_max_upload_mb = Column(Integer)
-    reason = Column(Text)
-    status = Column(String(32), default="pending")
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    decided_at = Column(DateTime)
+    requested_max_upload_mb: Mapped[int | None] = mapped_column(Integer)
+    reason: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 # =========================
@@ -129,15 +144,15 @@ class LimitIncreaseRequest(Base):
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(120))
-    action = Column(String(255))
-    area = Column(String(64))
-    corr_id = Column(String(64))
-    message = Column(Text)
-    details = Column(JSON)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str | None] = mapped_column(String(120))
+    action: Mapped[str | None] = mapped_column(String(255))
+    area: Mapped[str | None] = mapped_column(String(64))
+    corr_id: Mapped[str | None] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict | None] = mapped_column(JSON)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         Index("ix_audit_username", "username"),
@@ -151,17 +166,17 @@ class AuditLog(Base):
 class OpsLog(Base):
     __tablename__ = "ops_logs"
 
-    id = Column(Integer, primary_key=True)
-    level = Column(String(16))
-    area = Column(String(64))
-    action = Column(String(255))
-    username = Column(String(120))
-    session_id = Column(String(128))
-    corr_id = Column(String(64))
-    message = Column(Text)
-    details = Column(JSON)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    level: Mapped[str | None] = mapped_column(String(16))
+    area: Mapped[str | None] = mapped_column(String(64))
+    action: Mapped[str | None] = mapped_column(String(255))
+    username: Mapped[str | None] = mapped_column(String(120))
+    session_id: Mapped[str | None] = mapped_column(String(128))
+    corr_id: Mapped[str | None] = mapped_column(String(64))
+    message: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict | None] = mapped_column(JSON)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 # =========================
@@ -170,13 +185,13 @@ class OpsLog(Base):
 class ErrorEvent(Base):
     __tablename__ = "error_events"
 
-    id = Column(Integer, primary_key=True)
-    username = Column(String(120))
-    session_id = Column(String(128))
-    phase = Column(String(64))
-    path = Column(Text)
-    error_type = Column(String(128))
-    message = Column(Text)
-    corr_id = Column(String(64))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str | None] = mapped_column(String(120))
+    session_id: Mapped[str | None] = mapped_column(String(128))
+    phase: Mapped[str | None] = mapped_column(String(64))
+    path: Mapped[str | None] = mapped_column(Text)
+    error_type: Mapped[str | None] = mapped_column(String(128))
+    message: Mapped[str | None] = mapped_column(Text)
+    corr_id: Mapped[str | None] = mapped_column(String(64))
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

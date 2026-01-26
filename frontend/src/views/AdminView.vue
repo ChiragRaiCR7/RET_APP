@@ -58,8 +58,87 @@
       <AIAgentChat />
     </div>
 
-    <!-- TAB 1: Add User -->
+    <!-- TAB 1: AI Indexing Config -->
     <div v-show="activeTab === 1" class="enterprise-card">
+      <div class="card-header">
+        <h3 class="card-title">🗂️ AI Indexing Configuration</h3>
+        <p class="card-description">Configure which groups are automatically indexed for AI</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Auto-Indexed Groups</label>
+        <p class="form-hint">These groups will be automatically indexed when detected during ZIP scanning</p>
+      </div>
+
+      <!-- Two-sided selector -->
+      <div style="display:grid; grid-template-columns:1fr 100px 1fr; gap:var(--space-lg); margin-top:var(--space-lg); align-items:start">
+        <!-- Available Groups (Left) -->
+        <div class="group-selector-box">
+          <h4 class="box-title">Available Groups</h4>
+          <div class="group-list">
+            <label v-for="group in availableGroupsList" :key="group" class="group-item">
+              <input 
+                type="checkbox" 
+                :value="group" 
+                v-model="selectedLeftGroups"
+              />
+              <span>{{ group }}</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Control Buttons (Center) -->
+        <div class="button-column">
+          <button 
+            class="btn btn-primary btn-sm" 
+            @click="moveToRight" 
+            :disabled="!selectedLeftGroups.length"
+            title="Add selected groups"
+          >
+            >>
+          </button>
+          <button 
+            class="btn btn-secondary btn-sm" 
+            @click="moveToLeft" 
+            :disabled="!selectedRightGroups.length"
+            title="Remove selected groups"
+          >
+            <<
+          </button>
+        </div>
+
+        <!-- Auto-Indexed Groups (Right) -->
+        <div class="group-selector-box">
+          <h4 class="box-title">Auto-Indexed</h4>
+          <div class="group-list">
+            <label v-for="group in autoIndexedGroups" :key="group" class="group-item">
+              <input 
+                type="checkbox" 
+                :value="group" 
+                v-model="selectedRightGroups"
+              />
+              <span>{{ group }}</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Save Button -->
+      <div style="margin-top:var(--space-lg); display:flex; gap:8px">
+        <button class="btn btn-primary" @click="saveIndexingConfig" :disabled="saving">
+          <span v-if="saving" class="spinner" style="margin-right:8px"></span>
+          {{ saving ? 'Saving...' : 'Save Configuration' }}
+        </button>
+      </div>
+
+      <!-- Status Messages -->
+      <div v-if="configStatus" class="alert" :class="configStatus.type === 'success' ? 'alert-success' : 'alert-error'" style="margin-top:var(--space-lg)">
+        <div class="alert-content">{{ configStatus.message }}</div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Add User -->
+    <div v-show="activeTab === 2" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">➕ Add User</h3>
         <p class="card-description">Create new user and generate auth token</p>
@@ -103,8 +182,8 @@
       </div>
     </div>
 
-    <!-- TAB 2: Manage User -->
-    <div v-show="activeTab === 2" class="enterprise-card">
+    <!-- TAB 3: Manage User -->
+    <div v-show="activeTab === 3" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">⚙️ Manage User</h3>
         <p class="card-description">Update roles, unlock accounts, generate reset tokens</p>
@@ -209,15 +288,15 @@
       </div>
     </div>
 
-    <!-- TAB 3: All Users -->
-    <div v-show="activeTab === 3" class="enterprise-card">
+    <!-- TAB 4: All Users -->
+    <div v-show="activeTab === 4" class="enterprise-card">
       <div class="card-header">
         <div style="display:flex; justify-content:space-between; align-items:center">
           <div>
             <h3 class="card-title">👥 All Users</h3>
             <p class="card-description">Complete user directory</p>
           </div>
-          <button class="btn btn-primary" @click="activeTab = 1">
+          <button class="btn btn-primary" @click="activeTab = 2">
             Add New User
           </button>
         </div>
@@ -260,8 +339,8 @@
       </div>
     </div>
 
-    <!-- TAB 4: Reset Requests -->
-    <div v-show="activeTab === 4" class="enterprise-card">
+    <!-- TAB 5: Reset Requests -->
+    <div v-show="activeTab === 5" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">🔑 Password Reset Requests</h3>
         <p class="card-description">Pending and completed reset token requests</p>
@@ -299,8 +378,8 @@
       </div>
     </div>
 
-    <!-- TAB 5: Audit Logs -->
-    <div v-show="activeTab === 5" class="enterprise-card">
+    <!-- TAB 6: Audit Logs -->
+    <div v-show="activeTab === 6" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">📋 Audit Logs</h3>
         <p class="card-description">Security and authentication events</p>
@@ -334,8 +413,8 @@
       </div>
     </div>
 
-    <!-- TAB 6: Ops Logs -->
-    <div v-show="activeTab === 6" class="enterprise-card">
+    <!-- TAB 7: Ops Logs -->
+    <div v-show="activeTab === 7" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">⚙️ Operations Logs</h3>
         <p class="card-description">System operations and conversions</p>
@@ -369,8 +448,8 @@
       </div>
     </div>
 
-    <!-- TAB 7: Sessions -->
-    <div v-show="activeTab === 7" class="enterprise-card">
+    <!-- TAB 8: Sessions -->
+    <div v-show="activeTab === 8" class="enterprise-card">
       <div class="card-header">
         <div style="display:flex; justify-content:space-between; align-items:center">
           <div>
@@ -423,6 +502,7 @@ const activeTab = ref(0)
 
 const tabs = [
   'AI Agent',
+  'AI Indexing Config',
   'Add User',
   'Manage User',
   'All Users',
@@ -450,6 +530,14 @@ const userInitials = computed(() => {
   if (!auth.user?.username) return 'A'
   return auth.user.username.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
 })
+
+// AI Indexing Configuration
+const availableGroupsList = ref([])
+const autoIndexedGroups = ref([])
+const selectedLeftGroups = ref([])
+const selectedRightGroups = ref([])
+const saving = ref(false)
+const configStatus = ref(null)
 
 function formatDate(d) {
   if (!d) return '—'
@@ -587,7 +675,120 @@ async function cleanupSessions() {
   }
 }
 
+// AI Indexing Configuration Functions
+function moveToRight() {
+  autoIndexedGroups.value.push(...selectedLeftGroups.value)
+  autoIndexedGroups.value = [...new Set(autoIndexedGroups.value)]
+  availableGroupsList.value = availableGroupsList.value.filter(g => !selectedLeftGroups.value.includes(g))
+  selectedLeftGroups.value = []
+}
+
+function moveToLeft() {
+  availableGroupsList.value.push(...selectedRightGroups.value)
+  availableGroupsList.value = [...new Set(availableGroupsList.value)]
+  autoIndexedGroups.value = autoIndexedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
+  selectedRightGroups.value = []
+}
+
+async function saveIndexingConfig() {
+  saving.value = true
+  configStatus.value = null
+  try {
+    await api.post('/admin/ai-indexing-config', {
+      auto_indexed_groups: autoIndexedGroups.value
+    })
+    configStatus.value = {
+      type: 'success',
+      message: '✅ Configuration saved successfully'
+    }
+    setTimeout(() => {
+      configStatus.value = null
+    }, 3000)
+  } catch (e) {
+    configStatus.value = {
+      type: 'error',
+      message: '❌ Failed to save configuration: ' + (e.response?.data?.detail || e.message)
+    }
+  } finally {
+    saving.value = false
+  }
+}
+
 onMounted(() => {
   refresh()
+  // Initialize with some default groups
+  availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT']
 })
 </script>
+
+<style scoped>
+.group-selector-box {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  background: var(--surface-alt);
+  min-height: 200px;
+}
+
+.box-title {
+  margin: 0 0 var(--space-md) 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.group-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.group-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.2s;
+  font-size: 0.9rem;
+}
+
+.group-item:hover {
+  background-color: var(--surface-base);
+}
+
+.group-item input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.button-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  justify-content: center;
+}
+
+.button-column .btn {
+  width: 100%;
+  padding: 8px;
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.alert-success {
+  background-color: #dcfce7;
+  border-left: 4px solid var(--success);
+  color: var(--success);
+}
+
+.alert-error {
+  background-color: #fee2e2;
+  border-left: 4px solid var(--error);
+  color: var(--error);
+}
+</style>

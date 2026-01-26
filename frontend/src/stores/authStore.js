@@ -19,9 +19,12 @@ export const useAuthStore = defineStore('auth', {
         // Response: { access_token, refresh_token, token_type, user }
         this.token = resp.data.access_token
         this.user = resp.data.user
-        // Store refresh token is handled by cookies (HttpOnly)
-        // Store token in memory (do not persist)
+        // Refresh token is stored in HttpOnly cookie (set by server)
         return resp.data
+      } catch (err) {
+        this.token = null
+        this.user = null
+        throw err
       } finally {
         this.isLoading = false
       }
@@ -41,9 +44,19 @@ export const useAuthStore = defineStore('auth', {
     },
     async logout() {
       try {
+        // Call clear memory endpoint first if session_id is available
+        if (this.user?.session_id) {
+          try {
+            await api.post(`/ai/clear-memory/${this.user.session_id}`)
+          } catch (e) {
+            console.error('Failed to clear AI memory:', e)
+          }
+        }
+        
         await api.post('/auth/logout')
       } catch (e) {
-        // ignore errors
+        // ignore errors during logout
+        console.error('Logout error:', e)
       } finally {
         this.token = null
         this.user = null
@@ -52,7 +65,8 @@ export const useAuthStore = defineStore('auth', {
     // Called when 401 to refresh token
     async refreshToken() {
       try {
-        // Backend reads refresh_token from HttpOnly cookie
+        // Backend reads refresh_token from HttpOnly cookie automatically
+        // withCredentials: true ensures cookies are sent
         const resp = await api.post('/auth/refresh', {})
         this.token = resp.data.access_token
         return true

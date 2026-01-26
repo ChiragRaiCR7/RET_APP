@@ -1,15 +1,23 @@
 from datetime import datetime, timedelta
 from jose import jwt
-from passlib.context import CryptContext
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHash
 from api.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Initialize Argon2 password hasher
+hasher = PasswordHasher()
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash a password using Argon2"""
+    return hasher.hash(password)
 
 def verify_password(password: str, hashed: str) -> bool:
-    return pwd_context.verify(password, hashed)
+    """Verify a password against its Argon2 hash"""
+    try:
+        hasher.verify(hashed, password)  # verify(hash, password) - order matters!
+        return True
+    except (VerifyMismatchError, InvalidHash, Exception):
+        return False
 
 def create_token(subject: str, expires_delta: timedelta) -> str:
     payload = {

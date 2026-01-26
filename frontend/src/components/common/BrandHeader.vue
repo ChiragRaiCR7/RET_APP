@@ -7,9 +7,9 @@
 
     <div style="display:flex; gap: 12px; align-items:center;">
       <button class="btn btn-secondary btn-sm" @click="$router.push({ name: 'main' })" aria-label="Go to Workspace">Workspace</button>
-      <button class="btn btn-secondary btn-sm" @click="$router.push({ name: 'admin' })" aria-label="Go to Admin">Admin</button>
+      <button v-if="auth.isAdmin" class="btn btn-secondary btn-sm" @click="$router.push({ name: 'admin' })" aria-label="Go to Admin">Admin</button>
       <button class="btn btn-sm btn-primary" @click="$emit('toggle-theme')" aria-label="Toggle theme">
-        Toggle Theme
+        🌓
       </button>
       <div v-if="auth.isAuthenticated" class="user-info" role="status" :title="auth.user?.username">
         <div class="user-avatar">{{ initials }}</div>

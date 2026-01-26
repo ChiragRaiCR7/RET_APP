@@ -2,12 +2,17 @@
   <form @submit.prevent="submit" class="animate-in" aria-labelledby="login-form">
     <div class="form-group">
       <label class="form-label" for="username">Username</label>
-      <input id="username" v-model="form.username" class="form-input" required aria-required="true" />
+      <input id="username" v-model="form.username" class="form-input" required aria-required="true" autocomplete="username" />
     </div>
 
     <div class="form-group">
       <label class="form-label" for="password">Password</label>
-      <input id="password" v-model="form.password" type="password" class="form-input" required aria-required="true" />
+      <div style="position: relative; display: flex; align-items: center;">
+        <input id="password" v-model="form.password" :type="showPassword ? 'text' : 'password'" class="form-input" required aria-required="true" autocomplete="current-password" style="flex: 1; padding-right: 40px;" />
+        <button type="button" @click.prevent="showPassword = !showPassword" class="pwd-toggle" :title="showPassword ? 'Hide password' : 'Show password'" style="position: absolute; right: 12px; background: none; border: none; cursor: pointer; font-size: 18px; color: var(--color-text-muted);">
+          {{ showPassword ? '👁️' : '👁️‍🗨️' }}
+        </button>
+      </div>
     </div>
 
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: var(--space-md)">
@@ -37,6 +42,7 @@ import { useAuthStore } from '@/stores/authStore'
 const auth = useAuthStore()
 const loading = ref(false)
 const error = ref(null)
+const showPassword = ref(false)
 const form = reactive({ username: '', password: '', remember: true })
 const emit = defineEmits(['success', 'reset'])
 
@@ -55,7 +61,7 @@ async function submit() {
 }
 function demoLogin() {
   form.username = 'demo'
-  form.password = 'password'
+  form.password = 'demo123'
   submit()
 }
 </script>
