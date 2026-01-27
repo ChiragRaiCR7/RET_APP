@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from pathlib import Path
 import zipfile
+import logging
 
 from api.schemas.conversion import (
     ZipScanResponse,
@@ -15,6 +16,8 @@ from api.workers.conversion_worker import conversion_task
 from api.core.database import get_db
 from api.core.dependencies import get_current_user
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/conversion", tags=["conversion"])
 
 
@@ -23,16 +26,24 @@ async def scan(
     file: UploadFile = File(...),
     current_user_id: str = Depends(get_current_user),
 ):
-    """Scan a ZIP file for XML content and detect groups"""
+    """Scan a ZIP or XML file for content and detect groups"""
     filename = file.filename
-    if not filename or not filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="ZIP file required")
+    if not filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    # Accept both ZIP and XML files
+    is_zip = filename.lower().endswith(".zip")
+    is_xml = filename.lower().endswith(".xml")
+    
+    if not is_zip and not is_xml:
+        raise HTTPException(status_code=400, detail="File must be ZIP or XML format")
 
     try:
         data = await file.read()
         result = scan_zip_with_groups(data, filename, current_user_id)
         return result
     except Exception as e:
+        logger.error(f"Scan failed: {e}")
         raise HTTPException(status_code=400, detail=f"Failed to scan: {str(e)}")
 
 

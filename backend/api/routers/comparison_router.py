@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 import logging
 
 from api.schemas.comparison import ComparisonRequest, ComparisonResponse
-from api.services.comparison_service import compare_sessions, compare_files
+from api.services.comparison_service import compare_files
 from api.services.job_service import create_job
 from api.workers.comparison_worker import comparison_task
 from api.core.database import get_db

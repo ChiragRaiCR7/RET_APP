@@ -281,6 +281,7 @@ const activeTab = ref(0)
 const tabs = ['Convert & Download', 'Compare', 'Ask RET AI']
 
 const workflow = reactive({
+  sessionId: null,
   outputFormat: 'csv',
   editMode: 'none',
   includePrefixes: true,
@@ -318,6 +319,7 @@ async function scanZip() {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     
+    workflow.sessionId = res.data.session_id
     workflow.scannedGroups = res.data.groups || []
     workflow.scanSummary = res.data.summary || { totalGroups: 0, totalFiles: 0, totalSize: '0 KB' }
     
@@ -332,6 +334,7 @@ async function scanZip() {
 }
 
 function clearWorkflow() {
+  workflow.sessionId = null
   workflow.uploadedFiles = []
   workflow.scannedGroups = []
   workflow.scanSummary = null
@@ -339,24 +342,29 @@ function clearWorkflow() {
 }
 
 async function convertGroup(group) {
+  if (!workflow.sessionId) {
+    alert('No session ID. Please scan ZIP file first.')
+    return
+  }
   try {
     const res = await api.post('/workflow/convert', {
-      groupName: group.name,
-      format: workflow.outputFormat,
-      editMode: workflow.editMode,
-      includePrefixes: workflow.includePrefixes
-    }, { responseType: 'blob' })
-    
-    // Download converted file
-    const blob = new Blob([res.data])
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${group.name}.${workflow.outputFormat}`
-    a.click()
-    URL.revokeObjectURL(url)
+      session_id: workflow.sessionId,
+      groups: [group.name]
+    })
+    if (res.data.job_id) {
+      alert('Conversion started. Please wait...')
+      setTimeout(() => {
+        downloadConverted()
+      }, 2000)
+    }
   } catch (e) {
-    alert('Conversion failed: ' + (e.response?.data?.message || e.message))
+    alert('Conversion failed: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+function downloadConverted() {
+  if (workflow.sessionId) {
+    window.location.href = `/api/workflow/download/${workflow.sessionId}`
   }
 }
 

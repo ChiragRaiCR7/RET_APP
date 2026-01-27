@@ -14,6 +14,7 @@ from api.routers import admin_router
 from api.routers import job_router
 from api.routers import workflow_router
 from api.routers import files_router
+from api.routers import advanced_router
 
 from api.middleware.correlation_id import CorrelationIdMiddleware
 from api.middleware.logging_middleware import LoggingMiddleware
@@ -88,3 +89,4 @@ app.include_router(admin_router.router)
 app.include_router(job_router.router)
 app.include_router(workflow_router.router)
 app.include_router(files_router.router)
+app.include_router(advanced_router.router)

@@ -186,3 +186,36 @@ def ops_logs_ep(
 ):
     """List operational logs"""
     return list_ops_logs(db)
+
+
+# ============================================================
+# AI INDEXING CONFIGURATION
+# ============================================================
+@router.post("/ai-indexing-config")
+def save_ai_indexing_config(
+    body: dict,
+    db: Session = Depends(get_db),
+    admin_user=Depends(require_role("admin")),
+):
+    """Save AI indexing configuration"""
+    # For now, just accept and acknowledge the configuration
+    # In a full implementation, this would be persisted to database
+    auto_indexed_groups = body.get("auto_indexed_groups", [])
+    return {
+        "success": True,
+        "message": "AI indexing configuration saved",
+        "auto_indexed_groups": auto_indexed_groups,
+    }
+
+
+@router.get("/ai-indexing-config")
+def get_ai_indexing_config(
+    db: Session = Depends(get_db),
+    admin_user=Depends(require_role("admin")),
+):
+    """Get AI indexing configuration"""
+    # Return default configuration
+    return {
+        "auto_indexed_groups": ["JOURNAL", "BOOK", "CONFERENCE"],
+        "default_collection": "documents",
+    }

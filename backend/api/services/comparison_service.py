@@ -1,22 +1,32 @@
 """
-Comparison Service
-Handles side-by-side comparison with delta detection
-Uses green dots for changes, red dots for no changes
+Comparison Service - Enhanced
+
+Compares two CSV files and generates detailed difference reports.
+Implements the comparison logic from main.py comparison tab.
+
+Features:
+- CSV-to-CSV comparison with similarity scoring
+- Group and filename based matching
+- Row-level and column-level diff tracking
+- Support for ignore case and whitespace trimming
+- Similarity pairing algorithm
+- Hybrid comparison modes
 """
 
-import difflib
-import logging
 import csv
+import hashlib
+import logging
 import json
 import io
 import zipfile
+import difflib
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
+from dataclasses import dataclass, asdict
 from enum import Enum
 
 from api.services.storage_service import get_session_dir
 from api.utils.vector_utils import hash_vector, cosine_similarity
-from api.utils.diff_utils import compute_row_diff
 
 logger = logging.getLogger(__name__)
 
@@ -26,19 +36,46 @@ class ChangeType(str, Enum):
     ADDED = "added"
     REMOVED = "removed"
     MODIFIED = "modified"
-    UNCHANGED = "unchanged"
+    SAME = "same"
+
+
+@dataclass
+class DiffResult:
+    """Represents a difference between two CSV rows."""
+    group: str
+    filename: str
+    status: str  # SAME, MODIFIED, ADDED, REMOVED
+    row_number_a: Optional[int] = None
+    row_number_b: Optional[int] = None
+    similarity_score: float = 1.0
+    added_columns: List[str] = None
+    removed_columns: List[str] = None
+    modified_columns: List[str] = None
+
+    def __post_init__(self):
+        if self.added_columns is None:
+            self.added_columns = []
+        if self.removed_columns is None:
+            self.removed_columns = []
+        if self.modified_columns is None:
+            self.modified_columns = []
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary"""
+        return asdict(self)
 
 
 class ComparisonResult:
     """Result of file comparison"""
     
-    def __init__(self, similarity_percent: float, changes: List[Dict]):
+    def __init__(self, similarity_percent: float, changes: List[Dict], diffs: Optional[List[DiffResult]] = None):
         self.similarity = similarity_percent
         self.changes = changes
-        self.added = sum(1 for c in changes if c.get("type") == ChangeType.ADDED)
-        self.removed = sum(1 for c in changes if c.get("type") == ChangeType.REMOVED)
-        self.modified = sum(1 for c in changes if c.get("type") == ChangeType.MODIFIED)
-        self.unchanged = sum(1 for c in changes if c.get("type") == ChangeType.UNCHANGED)
+        self.diffs = diffs or []
+        self.added = sum(1 for c in changes if c.get("type") in ["added", ChangeType.ADDED])
+        self.removed = sum(1 for c in changes if c.get("type") in ["removed", ChangeType.REMOVED])
+        self.modified = sum(1 for c in changes if c.get("type") in ["modified", ChangeType.MODIFIED])
+        self.same = sum(1 for c in changes if c.get("type") in ["same", ChangeType.SAME])
     
     def to_dict(self) -> Dict:
         """Convert to dict for JSON response"""
@@ -47,16 +84,76 @@ class ComparisonResult:
             "added": self.added,
             "removed": self.removed,
             "modified": self.modified,
-            "unchanged": self.unchanged,
+            "same": self.same,
             "total_changes": len(self.changes),
             "changes": self.changes,
+            "diffs": [d.to_dict() for d in self.diffs],
         }
 
 
-def read_csv(path: Path) -> list[dict]:
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        return list(reader)
+# ============================================================
+# Utility Functions
+# ============================================================
+
+def normalize_value(value: Any, ignore_case: bool = False, trim_ws: bool = True) -> str:
+    """Normalize a CSV cell value for comparison."""
+    if value is None:
+        return ""
+    s = str(value)
+    if trim_ws:
+        s = s.strip()
+    if ignore_case:
+        s = s.lower()
+    return s
+
+
+def row_similarity(
+    row_a: Dict[str, Any],
+    row_b: Dict[str, Any],
+    ignore_case: bool = False,
+    trim_ws: bool = True,
+) -> float:
+    """
+    Calculate similarity between two rows using SequenceMatcher.
+    Returns a float between 0.0 and 1.0.
+    """
+    # Normalize all values
+    vals_a = [normalize_value(v, ignore_case, trim_ws) for v in row_a.values()]
+    vals_b = [normalize_value(v, ignore_case, trim_ws) for v in row_b.values()]
+
+    text_a = " ".join(vals_a)
+    text_b = " ".join(vals_b)
+
+    if not text_a and not text_b:
+        return 1.0
+    if not text_a or not text_b:
+        return 0.0
+
+    matcher = difflib.SequenceMatcher(None, text_a, text_b)
+    return float(matcher.ratio())
+
+
+def compute_csv_hash(csv_path: str, ignore_case: bool = False, trim_ws: bool = True) -> str:
+    """Compute a hash of normalized CSV content."""
+    hasher = hashlib.sha256()
+
+    try:
+        with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames:
+                hasher.update(",".join(reader.fieldnames).encode())
+
+            for row in reader:
+                if row:
+                    normalized = tuple(
+                        normalize_value(v, ignore_case, trim_ws)
+                        for v in row.values()
+                    )
+                    hasher.update(str(normalized).encode())
+    except Exception as e:
+        logger.warning(f"Error computing hash for {csv_path}: {e}")
+
+    return hasher.hexdigest()
 
 
 def load_csv(file_bytes: bytes, filename: str) -> List[Dict]:
@@ -73,34 +170,30 @@ def load_csv(file_bytes: bytes, filename: str) -> List[Dict]:
     return rows
 
 
-def load_json(file_bytes: bytes, filename: str) -> List[Dict]:
-    """Load JSON from bytes"""
+def load_csv_from_path(csv_path: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Load CSV file and return (headers, rows_list)."""
+    headers: List[str] = []
+    rows: List[Dict[str, str]] = []
+
     try:
-        text = file_bytes.decode('utf-8')
-    except UnicodeDecodeError:
-        text = file_bytes.decode('latin-1')
-    
-    data = json.loads(text)
-    
-    # If it's a dict, convert to list
-    if isinstance(data, dict):
-        data = [data]
-    
-    if not isinstance(data, list):
-        data = [data]
-    
-    logger.info(f"Loaded {len(data)} items from {filename}")
-    return data
+        with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.DictReader(f)
+            headers = list(reader.fieldnames or [])
+
+            for row in reader:
+                if row:
+                    rows.append(row)
+    except Exception as e:
+        logger.error(f"Error loading CSV {csv_path}: {e}")
+        raise
+
+    return headers, rows
 
 
-def load_file(file_bytes: bytes, filename: str) -> List[Dict]:
-    """Load CSV or JSON file"""
-    if filename.endswith('.csv'):
-        return load_csv(file_bytes, filename)
-    elif filename.endswith('.json'):
-        return load_json(file_bytes, filename)
-    else:
-        raise ValueError(f"Unsupported file format: {filename}")
+def read_csv(path: Path) -> list[dict]:
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return list(reader)
 
 
 def compare_rows(row_a: Dict, row_b: Dict) -> Tuple[bool, List[Dict]]:
@@ -244,49 +337,66 @@ def compare_files(file_a_bytes: bytes, file_a_name: str,
     except Exception as e:
         logger.error(f"Comparison failed: {e}")
         raise
-    left_dir = get_session_dir(left_session_id) / "output"
-    right_dir = get_session_dir(right_session_id) / "output"
 
-    results = []
-    similarities = []
 
-    left_files = {f.name: f for f in left_dir.glob("*.csv")}
-    right_files = {f.name: f for f in right_dir.glob("*.csv")}
+def compare_sessions(left_session_id: str, right_session_id: str) -> Dict:
+    """
+    Compare output files from two sessions
+    Compares CSV files from each session's output directory
+    """
+    try:
+        left_dir = get_session_dir(left_session_id) / "output"
+        right_dir = get_session_dir(right_session_id) / "output"
 
-    for filename, left_file in left_files.items():
-        if filename not in right_files:
-            continue
+        results = []
+        similarities = []
 
-        right_file = right_files[filename]
+        left_files = {f.name: f for f in left_dir.glob("*.csv")}
+        right_files = {f.name: f for f in right_dir.glob("*.csv")}
 
-        left_rows = read_csv(left_file)
-        right_rows = read_csv(right_file)
+        for filename, left_file in left_files.items():
+            if filename not in right_files:
+                continue
 
-        left_text = str(left_rows)
-        right_text = str(right_rows)
+            right_file = right_files[filename]
 
-        sim = cosine_similarity(
-            hash_vector(left_text),
-            hash_vector(right_text),
+            left_rows = read_csv(left_file)
+            right_rows = read_csv(right_file)
+
+            left_text = str(left_rows)
+            right_text = str(right_rows)
+
+            sim = cosine_similarity(
+                hash_vector(left_text),
+                hash_vector(right_text),
+            )
+
+            deltas = compute_row_diff(left_rows, right_rows)
+
+            results.append({
+                "filename": filename,
+                "similarity": round(sim, 4),
+                "deltas": deltas,
+            })
+
+            similarities.append(sim)
+
+        summary = {
+            "total_files": len(left_files),
+            "matched_files": len(results),
+            "average_similarity": round(sum(similarities) / len(similarities), 4) if similarities else 0.0,
+        }
+
+        logger.info(
+            f"Compared sessions {left_session_id} vs {right_session_id}: "
+            f"{summary['average_similarity']:.1f}% average similarity"
         )
 
-        deltas = compute_row_diff(left_rows, right_rows)
-
-        results.append({
-            "filename": filename,
-            "similarity": round(sim, 4),
-            "deltas": deltas,
-        })
-
-        similarities.append(sim)
-
-    summary = {
-        "total_files": len(left_files),
-        "matched_files": len(results),
-        "average_similarity": round(sum(similarities) / len(similarities), 4) if similarities else 0.0,
-    }
-
-    return {
-        "summary": summary,
-        "results": results,
-    }
+        return {
+            "summary": summary,
+            "results": results,
+        }
+    
+    except Exception as e:
+        logger.error(f"Session comparison failed: {e}")
+        raise

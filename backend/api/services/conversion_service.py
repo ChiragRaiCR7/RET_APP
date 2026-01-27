@@ -1,8 +1,10 @@
 import zipfile
 import hashlib
+import csv
 from pathlib import Path
-from typing import List, Dict, Optional, Set
-from collections import Counter
+from typing import List, Dict, Optional, Set, Tuple
+from collections import Counter, defaultdict
+import logging
 
 from api.services.storage_service import (
     create_session_dir,
@@ -12,36 +14,17 @@ from api.services.storage_service import (
     save_session_metadata,
 )
 from api.utils.file_utils import safe_extract_zip
-from api.utils.xml_utils import flatten_xml
-from api.utils.csv_utils import write_csv
+from api.services.xml_processing_service import (
+    xml_to_rows,
+    scan_zip_for_xml,
+    infer_group,
+    extract_alpha_prefix,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def extract_alpha_prefix(token: str) -> str:
-    """Extract alphabetic prefix from a string"""
-    out = []
-    for ch in token:
-        if ch.isalpha():
-            out.append(ch)
-        else:
-            break
-    return "".join(out).upper()
 
-
-def infer_group(logical_path: str, filename: str) -> str:
-    """Infer group from file path and filename"""
-    # Try folder-based detection - use the first (root) folder
-    if "/" in logical_path:
-        # Get the root folder (first element)
-        root_folder = logical_path.split("/")[0]
-        alpha = extract_alpha_prefix(root_folder)
-        if alpha:
-            return alpha
-    
-    # Fall back to filename-based detection
-    base = Path(filename).stem
-    token = base.split("_", 1)[0] if "_" in base else base
-    alpha = extract_alpha_prefix(token)
-    return alpha if alpha else "OTHER"
 
 
 def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict:
@@ -51,43 +34,22 @@ def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict
 
     zip_path = save_upload(session_id, filename, file_bytes)
 
+    # Use xml_processing_service to scan ZIP
+    try:
+        xml_files, groups, total_size = scan_zip_for_xml(zip_path, sess_dir)
+    except Exception as e:
+        logger.error(f"Failed to scan ZIP: {e}")
+        raise
+    
+    # Create extracted directory reference
     extract_dir = sess_dir / "extracted"
-    extract_dir.mkdir(exist_ok=True)
-
-    safe_extract_zip(zip_path, extract_dir)
-
-    # Find all XML files and group them
-    xml_files: List[Dict[str, str]] = []
-    groups: Dict[str, List[Dict]] = {}
-    group_counter: Counter = Counter()
-
-    for p in extract_dir.rglob("*.xml"):
-        relative_path = str(p.relative_to(extract_dir))
-        group = infer_group(relative_path, p.name)
-        
-        file_info = {
-            "filename": p.name,
-            "path": relative_path,
-            "group": group,
-            "size": p.stat().st_size,
-        }
-        
-        xml_files.append(file_info)
-        
-        if group not in groups:
-            groups[group] = []
-        groups[group].append(file_info)
-        group_counter[group] += 1
-
-    # Calculate summary stats
-    total_size = sum(p.stat().st_size for p in extract_dir.rglob("*.xml"))
     
     # Save metadata
     metadata = {
         "user_id": user_id,
         "uploaded_file": filename,
         "xml_count": len(xml_files),
-        "groups": dict(group_counter),
+        "groups": {k: len(v) for k, v in groups.items()},
         "group_list": list(groups.keys()),
         "total_size": total_size,
     }
@@ -137,6 +99,7 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict
     success = 0
     failed = 0
     converted_files = []
+    errors = []
 
     for xml_file in extract_dir.rglob("*.xml"):
         relative_path = str(xml_file.relative_to(extract_dir))
@@ -147,20 +110,55 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict
             continue
         
         try:
-            records = flatten_xml(str(xml_file))
+            # Read XML and convert to rows
+            with open(xml_file, 'rb') as f:
+                xml_bytes = f.read()
+            
+            rows, headers, tag_used = xml_to_rows(
+                xml_bytes,
+                record_tag=None,
+                auto_detect=True,
+                path_sep=".",
+                include_root=False,
+            )
+            
+            if not rows:
+                logger.warning(f"No records found in {xml_file}")
+                errors.append({
+                    "file": xml_file.name,
+                    "error": "No records found"
+                })
+                failed += 1
+                continue
+            
+            # Write CSV
             csv_name = xml_file.stem + ".csv"
             csv_path = out_dir / csv_name
-            write_csv(records, csv_path)
+            
+            with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=headers)
+                writer.writeheader()
+                for row in rows:
+                    # Ensure all fields exist
+                    row_data = {h: row.get(h, '') for h in headers}
+                    writer.writerow(row_data)
             
             converted_files.append({
                 "filename": csv_name,
                 "group": group,
-                "rows": len(records),
+                "rows": len(rows),
+                "columns": len(headers),
             })
             success += 1
+            logger.info(f"Converted {xml_file.name} to {csv_name}: {len(rows)} rows")
         except Exception as e:
             failed += 1
-            # Log error but continue
+            error_msg = str(e)
+            logger.error(f"Failed to convert {xml_file.name}: {error_msg}")
+            errors.append({
+                "file": xml_file.name,
+                "error": error_msg
+            })
 
     return {
         "session_id": session_id,
@@ -170,5 +168,6 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict
             "failed": failed,
         },
         "converted_files": converted_files,
+        "errors": errors,
     }
 
