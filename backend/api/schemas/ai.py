@@ -1,19 +1,36 @@
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
+
 
 class IndexRequest(BaseModel):
+    """Request to index CSV files from a session"""
     session_id: str
-    groups: List[str]  # List of group names to index
-    collection: Optional[str] = None
-class ChatRequest(BaseModel):
-    collection: str
-    question: str
+    groups: Optional[List[str]] = None
 
-class RetrievalChunk(BaseModel):
-    content: str
-    metadata: Dict
-    score: float
+
+class IndexResponse(BaseModel):
+    """Response from indexing operation"""
+    status: str
+    message: str
+    stats: Dict[str, Any]
+
+
+class ChatRequest(BaseModel):
+    """Request for chat or query"""
+    session_id: str
+    question: Optional[str] = None
+    messages: Optional[List[Dict[str, str]]] = None  # For conversation
+
+
+class SourceDocument(BaseModel):
+    """Source document citation"""
+    file: str
+    group: Optional[str] = None
+    snippet: str
+
 
 class ChatResponse(BaseModel):
+    """Response from chat/query"""
     answer: str
-    citations: List[RetrievalChunk]
+    sources: List[SourceDocument] = []
+

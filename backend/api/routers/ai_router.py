@@ -9,9 +9,15 @@ from api.schemas.ai import (
     ChatRequest,
     ChatResponse,
 )
-from api.services.ai_service import index_session, chat_with_collection
-from api.services.ai_indexing_service import get_session_indexer
-from api.services.storage_service import get_session_dir, get_session_metadata, cleanup_session
+from api.services.lite_ai_service import (
+    get_ai_service,
+    clear_ai_service,
+)
+from api.services.storage_service import (
+    get_session_dir,
+    get_session_metadata,
+    cleanup_session,
+)
 from api.services.job_service import create_job
 from api.workers.indexing_worker import indexing_task
 from api.core.database import get_db
@@ -24,60 +30,54 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 
 @router.post("/index")
-def index_async(
+def index_groups(
     req: IndexRequest,
-    db: Session = Depends(get_db),
     current_user_id: str = Depends(get_current_user),
 ):
-    """Index selected groups for AI context"""
+    """Index selected groups from converted CSV files"""
     try:
-        # Get session information
+        # Verify user owns this session
         session_metadata = get_session_metadata(req.session_id)
         
         if session_metadata.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
-        # Get indexer for this session
-        runtime_root = Path(settings.RET_RUNTIME_ROOT)
-        indexer = get_session_indexer(req.session_id, runtime_root)
-        
-        # Build groups data from session
+        # Get session directory
         session_dir = get_session_dir(req.session_id)
-        extracted_dir = session_dir / "extracted"
+        output_dir = session_dir / "output"
         
-        # Get group files
-        groups_data = {}
-        for group_name in req.groups:
-            files = []
-            for xml_file in extracted_dir.rglob("*.xml"):
-                # Check if file belongs to this group
-                relative_path = str(xml_file.relative_to(extracted_dir))
-                if group_name.upper() in relative_path.upper() or relative_path.startswith(group_name):
-                    files.append({
-                        "filename": xml_file.name,
-                        "path": relative_path,
-                        "group": group_name,
-                        "size": xml_file.stat().st_size,
-                    })
-            if files:
-                groups_data[group_name] = files
+        if not output_dir.exists():
+            raise HTTPException(status_code=400, detail="No converted files in session")
         
-        if not groups_data:
-            raise HTTPException(status_code=400, detail="No files found for selected groups")
+        # Collect CSV files
+        csv_files = list(output_dir.glob("*.csv"))
         
-        # Index the groups
-        stats = indexer.index_groups(groups_data, extracted_dir)
+        if not csv_files:
+            raise HTTPException(status_code=400, detail="No CSV files to index")
+        
+        # Get AI service
+        ai_service = get_ai_service(req.session_id, str(session_dir / "ai_index"))
+        
+        # Index files
+        result = ai_service.index_csv_files(csv_files)
+        
+        if result["status"] != "success":
+            raise HTTPException(status_code=500, detail=result.get("message", "Indexing failed"))
         
         return {
             "status": "success",
-            "message": f"Indexed {stats.groups_indexed} groups with {stats.total_documents} documents",
-            "indexed_groups": indexer.get_indexed_groups(),
+            "message": result.get("message", "Indexing complete"),
+            "stats": {
+                "documents_indexed": result.get("documents_indexed", 0),
+                "chunks_created": result.get("chunks_created", 0),
+                "total_size_mb": result.get("total_size_mb", 0.0),
+            },
         }
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Indexing failed: {e}")
+        logger.error(f"Indexing failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Indexing failed: {str(e)}")
 
 
@@ -86,19 +86,20 @@ def get_indexed_groups(
     session_id: str,
     current_user_id: str = Depends(get_current_user),
 ):
-    """Get list of indexed groups for a session"""
+    """Get status of indexed groups for a session"""
     try:
         session_metadata = get_session_metadata(session_id)
         
         if session_metadata.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
-        runtime_root = Path(settings.RET_RUNTIME_ROOT)
-        indexer = get_session_indexer(session_id, runtime_root)
+        session_dir = get_session_dir(session_id)
+        ai_service = get_ai_service(session_id, str(session_dir / "ai_index"))
         
         return {
             "session_id": session_id,
-            "indexed_groups": indexer.get_indexed_groups(),
+            "is_indexed": ai_service.collection is not None,
+            "status": "indexed" if ai_service.collection else "not_indexed",
         }
     except HTTPException:
         raise
@@ -119,9 +120,7 @@ def clear_ai_memory(
         if session_metadata.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
-        runtime_root = Path(settings.RET_RUNTIME_ROOT)
-        indexer = get_session_indexer(session_id, runtime_root)
-        indexer.clear()
+        clear_ai_service(session_id)
         
         return {
             "status": "success",
@@ -134,21 +133,43 @@ def clear_ai_memory(
         raise HTTPException(status_code=500, detail="Failed to clear memory")
 
 
-@router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    return chat_with_collection(req.collection, req.question)
-
-
-@router.post("/index-async")
-def index_async_old(
-    req: IndexRequest,
-    db: Session = Depends(get_db),
+@router.post("/chat")
+def chat(
+    req: ChatRequest,
+    current_user_id: str = Depends(get_current_user),
 ):
-    """Legacy async indexing (deprecated - use /index instead)"""
-    job = create_job(db, "indexing")
-    indexing_task.delay(  # type: ignore[attr-defined]
-        req.session_id,
-        req.collection,
-        job.id,
-    )
-    return {"job_id": job.id}
+    """Chat with AI about indexed documents"""
+    try:
+        # Verify user owns this session
+        session_metadata = get_session_metadata(req.session_id)
+        
+        if session_metadata.get("user_id") != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        
+        # Get AI service
+        session_dir = get_session_dir(req.session_id)
+        ai_service = get_ai_service(req.session_id, str(session_dir / "ai_index"))
+        
+        # Query or chat
+        if req.question:
+            # RAG-based query
+            result = ai_service.query(req.question)
+            return ChatResponse(
+                answer=result["answer"],
+                sources=result.get("sources", []),
+            )
+        elif req.messages:
+            # Regular chat
+            response = ai_service.chat(req.messages)
+            return ChatResponse(
+                answer=response,
+                sources=[],
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Provide either question or messages")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")

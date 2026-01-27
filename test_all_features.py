@@ -21,7 +21,7 @@ TIMEOUT = 30
 
 # Test credentials (update if different)
 TEST_USERNAME = "admin"
-TEST_PASSWORD = ""  # Will be prompted or checked from demo users
+TEST_PASSWORD = "admin123"  # Will be prompted or checked from demo users
 
 # Example ZIP location (from Examples folder)
 EXAMPLE_ZIP_PATH = Path(r"d:\WORK\RET_App\Examples\BIg_test-examples")
