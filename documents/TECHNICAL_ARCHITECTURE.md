@@ -6,11 +6,11 @@ The RET (Regulatory Extract Tool) App v4 backend implements a complete XML-to-CS
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Frontend (Vue.js)                         │
+│                    Frontend (Vue.js)                        │
 └────────────────┬────────────────────────────────────────────┘
                  │ HTTP/JSON
 ┌────────────────▼────────────────────────────────────────────┐
-│                   FastAPI Backend                            │
+│                   FastAPI Backend                           │
 ├─────────────┬──────────────┬──────────────┬─────────────────┤
 │   Auth      │  Conversion  │     AI       │    Admin        │
 │   Router    │   Router     │    Router    │    Router       │
