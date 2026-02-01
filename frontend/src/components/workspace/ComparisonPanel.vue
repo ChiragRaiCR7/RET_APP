@@ -113,6 +113,9 @@
 import { reactive, ref } from 'vue'
 import FileUploader from './FileUploader.vue'
 import api from '@/utils/api'
+import { useToastStore } from '@/stores/toastStore'
+
+const toast = useToastStore()
 
 const comparison = reactive({
   sideA: null,
@@ -142,13 +145,14 @@ async function runComparison() {
     formData.append('sideA', comparison.sideA)
     formData.append('sideB', comparison.sideB)
     
-    const res = await api.post('/api/comparison/run', formData, {
+    const res = await api.post('/comparison/run', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     
     comparison.results = res.data
+    toast.success('Comparison complete!')
   } catch (e) {
-    alert('Comparison failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Comparison failed: ' + (e.response?.data?.detail || e.message))
   } finally {
     comparing.value = false
   }

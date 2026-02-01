@@ -3,9 +3,12 @@ from typing import Optional, List
 from datetime import datetime
 
 class UserCreateRequest(BaseModel):
+    """Request to create a new user via token-first onboarding"""
     username: str
-    password: str
+    password: Optional[str] = None  # Optional for token-first onboarding
     role: Optional[str] = "user"
+    tokenTTL: Optional[int] = 60  # Token validity in minutes
+    note: Optional[str] = None
 
 class UserUpdateRequest(BaseModel):
     role: Optional[str] = None
@@ -16,10 +19,11 @@ class UserInfo(BaseModel):
     id: int
     username: str
     role: str
-    is_active: bool
-    is_locked: bool
+    is_active: bool = True
+    is_locked: bool = False
     created_at: datetime
     updated_at: Optional[datetime] = None
+    token: Optional[str] = None  # Reset token for newly created users
 
     class Config:
         from_attributes = True
@@ -70,4 +74,13 @@ class AdminStats(BaseModel):
     admins: int
     regular: int
     activeSessions: int
+
+
+class AgentRequest(BaseModel):
+    command: str
+
+
+class AgentResponse(BaseModel):
+    result: str
+    details: Optional[dict] = None
 

@@ -35,7 +35,11 @@ instance.interceptors.response.use(
     const { config, response } = err
     const auth = useAuthStore()
 
-    if (response?.status === 401 && config && !config._retry) {
+    // Only attempt refresh for 401 on non-auth endpoints
+    // Don't retry auth endpoints themselves (login, refresh, logout)
+    const isAuthEndpoint = config?.url?.includes('/auth/')
+    
+    if (response?.status === 401 && config && !config._retry && !isAuthEndpoint) {
       config._retry = true
 
       if (!isRefreshing) {
@@ -49,11 +53,11 @@ instance.interceptors.response.use(
             return instance(config)
           } else {
             processQueue(new Error('Refresh failed'), null)
+            // Don't navigate here - let the router handle it
             return Promise.reject(err)
           }
         } catch (refreshErr) {
           processQueue(refreshErr, null)
-          auth.logout()
           return Promise.reject(refreshErr)
         } finally {
           isRefreshing = false

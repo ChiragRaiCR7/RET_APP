@@ -27,6 +27,7 @@ from enum import Enum
 
 from api.services.storage_service import get_session_dir
 from api.utils.vector_utils import hash_vector, cosine_similarity
+from api.utils.diff_utils import compute_row_diff
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +49,9 @@ class DiffResult:
     row_number_a: Optional[int] = None
     row_number_b: Optional[int] = None
     similarity_score: float = 1.0
-    added_columns: List[str] = None
-    removed_columns: List[str] = None
-    modified_columns: List[str] = None
+    added_columns: Optional[List[str]] = None
+    removed_columns: Optional[List[str]] = None
+    modified_columns: Optional[List[str]] = None
 
     def __post_init__(self):
         if self.added_columns is None:
@@ -62,6 +63,7 @@ class DiffResult:
 
     def to_dict(self) -> Dict:
         """Convert to dictionary"""
+        from dataclasses import asdict
         return asdict(self)
 
 
@@ -309,6 +311,24 @@ def compare_csvs(rows_a: List[Dict], rows_b: List[Dict]) -> ComparisonResult:
         similarity = (matched_rows / total_rows) * 100 if total_rows > 0 else 0
     
     return ComparisonResult(similarity, changes)
+
+
+def load_file(file_bytes: bytes, filename: str) -> List[Dict]:
+    """Load a CSV or JSON file from bytes"""
+    if filename.lower().endswith('.json'):
+        try:
+            text = file_bytes.decode('utf-8')
+            data = json.loads(text)
+            if isinstance(data, list):
+                return data
+            else:
+                return [data]
+        except Exception as e:
+            logger.error(f"Error loading JSON {filename}: {e}")
+            raise
+    else:
+        # Default to CSV
+        return load_csv(file_bytes, filename)
 
 
 def compare_files(file_a_bytes: bytes, file_a_name: str,

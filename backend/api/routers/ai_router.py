@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from pathlib import Path
 import logging
@@ -16,6 +16,7 @@ from api.services.lite_ai_service import (
 from api.services.storage_service import (
     get_session_dir,
     get_session_metadata,
+    save_session_metadata,
     cleanup_session,
 )
 from api.services.job_service import create_job
@@ -36,10 +37,12 @@ def index_groups(
 ):
     """Index selected groups from converted CSV files"""
     try:
-        # Verify user owns this session
+        # Verify user owns this session (or session has no owner set)
         session_metadata = get_session_metadata(req.session_id)
+        stored_user = session_metadata.get("user_id", "")
         
-        if session_metadata.get("user_id") != current_user_id:
+        if stored_user and stored_user != current_user_id:
+            logger.warning(f"Index auth mismatch: stored={stored_user}, current={current_user_id}")
             raise HTTPException(status_code=403, detail="Unauthorized")
         
         # Get session directory
@@ -64,9 +67,15 @@ def index_groups(
         if result["status"] != "success":
             raise HTTPException(status_code=500, detail=result.get("message", "Indexing failed"))
         
+        # Persist indexed group metadata
+        metadata = get_session_metadata(req.session_id)
+        metadata["indexed_groups"] = req.groups or metadata.get("indexed_groups", [])
+        save_session_metadata(req.session_id, metadata)
+
         return {
             "status": "success",
             "message": result.get("message", "Indexing complete"),
+            "indexed_groups": metadata.get("indexed_groups", []),
             "stats": {
                 "documents_indexed": result.get("documents_indexed", 0),
                 "chunks_created": result.get("chunks_created", 0),
@@ -89,8 +98,9 @@ def get_indexed_groups(
     """Get status of indexed groups for a session"""
     try:
         session_metadata = get_session_metadata(session_id)
+        stored_user = session_metadata.get("user_id", "")
         
-        if session_metadata.get("user_id") != current_user_id:
+        if stored_user and stored_user != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
         session_dir = get_session_dir(session_id)
@@ -100,6 +110,7 @@ def get_indexed_groups(
             "session_id": session_id,
             "is_indexed": ai_service.collection is not None,
             "status": "indexed" if ai_service.collection else "not_indexed",
+            "indexed_groups": session_metadata.get("indexed_groups", []),
         }
     except HTTPException:
         raise
@@ -116,11 +127,15 @@ def clear_ai_memory(
     """Clear all AI indexing memory for a session"""
     try:
         session_metadata = get_session_metadata(session_id)
+        stored_user = session_metadata.get("user_id", "")
         
-        if session_metadata.get("user_id") != current_user_id:
+        if stored_user and stored_user != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
         clear_ai_service(session_id)
+        metadata = get_session_metadata(session_id)
+        metadata["indexed_groups"] = []
+        save_session_metadata(session_id, metadata)
         
         return {
             "status": "success",
@@ -140,10 +155,11 @@ def chat(
 ):
     """Chat with AI about indexed documents"""
     try:
-        # Verify user owns this session
+        # Verify user owns this session (or session has no owner set)
         session_metadata = get_session_metadata(req.session_id)
+        stored_user = session_metadata.get("user_id", "")
         
-        if session_metadata.get("user_id") != current_user_id:
+        if stored_user and stored_user != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
         
         # Get AI service
@@ -173,3 +189,58 @@ def chat(
     except Exception as e:
         logger.error(f"Chat failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+@router.post("/chat/simple")
+def chat_simple(
+    prompt: str = Form(...),
+    session_id: str = Form(None),
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Simplified chat endpoint that accepts prompt via form data.
+    If session_id not provided, uses user's most recent session.
+    """
+    from api.services.storage_service import get_user_sessions
+    
+    try:
+        # If no session_id, get user's most recent session
+        if not session_id:
+            user_sessions = get_user_sessions(current_user_id)
+            if user_sessions:
+                session_id = user_sessions[0]["session_id"]
+            else:
+                return {"answer": "No session found. Please upload and scan files first.", "sources": [], "retrievals": []}
+        
+        # Verify user owns this session
+        session_metadata = get_session_metadata(session_id)
+        if session_metadata.get("user_id") != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        
+        # Get AI service
+        session_dir = get_session_dir(session_id)
+        ai_service = get_ai_service(session_id, str(session_dir / "ai_index"))
+        
+        # RAG query
+        result = ai_service.query(prompt)
+        
+        # Format retrievals for frontend
+        retrievals = []
+        for src in result.get("sources", []):
+            retrievals.append({
+                "doc": src.get("file", "unknown"),
+                "score": "—",
+                "snippet": src.get("snippet", "")[:100]
+            })
+        
+        return {
+            "answer": result["answer"],
+            "sources": result.get("sources", []),
+            "retrievals": retrievals,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Simple chat failed: {e}", exc_info=True)
+        return {"answer": f"Error: {str(e)}", "sources": [], "retrievals": []}

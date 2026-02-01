@@ -28,6 +28,7 @@ from api.services.advanced_ai_service import (
 from api.schemas.advanced import (
     XLSXConversionRequest,
     XLSXConversionResponse,
+    ComparisonChange,
     ComparisonRequest,
     ComparisonResponse,
     RAGIndexRequest,
@@ -165,6 +166,14 @@ async def compare_csv_files(
             file_b.filename or "file_b",
         )
 
+        # Convert result.changes to ComparisonChange objects if they're dicts
+        changes_list = []
+        for change in result.changes:
+            if isinstance(change, dict):
+                changes_list.append(ComparisonChange(**change))
+            else:
+                changes_list.append(change)
+
         return ComparisonResponse(
             status="success",
             message=f"Comparison complete: {result.similarity:.1f}% similarity",
@@ -174,7 +183,7 @@ async def compare_csv_files(
             modified=result.modified,
             same=result.same,
             total_changes=len(result.changes),
-            changes=result.changes,
+            changes=changes_list,
         )
 
     except Exception as e:

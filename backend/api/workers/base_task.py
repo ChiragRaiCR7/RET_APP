@@ -10,33 +10,42 @@ from api.core.database import SessionLocal
 from api.models.job import Job
 
 if CELERY_AVAILABLE:
-    class JobTask(Task):
+    class JobTaskBase(Task):
         abstract = True
 
         def before_start(self, task_id, args, kwargs):
             db: Session = SessionLocal()
-            job = db.query(Job).get(kwargs["job_id"])
-            job.status = "RUNNING"
-            db.commit()
-            db.close()
+            try:
+                job = db.query(Job).get(kwargs.get("job_id"))
+                if job:
+                    job.status = "RUNNING"
+                    db.commit()
+            finally:
+                db.close()
 
         def on_success(self, retval, task_id, args, kwargs):
             db = SessionLocal()
-            job = db.query(Job).get(kwargs["job_id"])
-            job.status = "SUCCESS"
-            job.progress = 100
-            job.result = retval
-            db.commit()
-            db.close()
+            try:
+                job = db.query(Job).get(kwargs.get("job_id"))
+                if job:
+                    job.status = "SUCCESS"
+                    job.progress = 100
+                    job.result = retval
+                    db.commit()
+            finally:
+                db.close()
 
         def on_failure(self, exc, task_id, args, kwargs, einfo):
             db = SessionLocal()
-            job = db.query(Job).get(kwargs["job_id"])
-            job.status = "FAILED"
-            job.error = str(exc)
-            db.commit()
-            db.close()
+            try:
+                job = db.query(Job).get(kwargs.get("job_id"))
+                if job:
+                    job.status = "FAILED"
+                    job.error = str(exc)
+                    db.commit()
+            finally:
+                db.close()
 else:
-    # Mock JobTask for development without Celery
-    class JobTask:
+    # Mock JobTaskBase for development without Celery
+    class JobTaskBase:
         abstract = True

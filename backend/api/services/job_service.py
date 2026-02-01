@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from typing import Optional
 from api.models.job import Job
 
 def create_job(db: Session, job_type: str) -> Job:
@@ -7,5 +8,5 @@ def create_job(db: Session, job_type: str) -> Job:
     db.flush()
     return job
 
-def get_job(db: Session, job_id: int) -> Job:
+def get_job(db: Session, job_id: int) -> Optional[Job]:
     return db.query(Job).get(job_id)

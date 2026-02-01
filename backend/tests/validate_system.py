@@ -32,7 +32,7 @@ def check_environment():
     required_vars = [
         "DATABASE_URL",
         "JWT_SECRET_KEY",
-        "REDIS_URL",
+        "RET_SESSION_DB",
     ]
     
     missing = []
@@ -60,19 +60,24 @@ def check_database():
         print(f"❌ Database error: {e}")
         return False
 
-def check_redis():
-    """Test Redis connection"""
+def check_session_cache():
+    """Test session cache initialization"""
     try:
-        import redis
-        from api.core.config import settings
+        from api.core.session_cache import get_session_cache
         
-        client = redis.Redis.from_url(settings.REDIS_URL)
-        client.ping()
-        print("✅ Redis connection successful")
-        return True
+        cache = get_session_cache()
+        # Test basic operations
+        cache.set("test_key", "test_value", ttl_seconds=60)
+        result = cache.get("test_key")
+        
+        if result == "test_value":
+            print("✅ Session cache initialized successfully")
+            return True
+        else:
+            print("❌ Session cache test failed")
+            return False
     except Exception as e:
-        print(f"⚠️  Redis error: {e}")
-        print("   (Redis is optional, but required for Celery tasks)")
+        print(f"❌ Session cache error: {e}")
         return False
 
 def check_models():
@@ -156,7 +161,7 @@ def main():
         ("Python Version", check_python_version),
         ("Environment", check_environment),
         ("Database", check_database),
-        ("Redis", check_redis),
+        ("Session Cache", check_session_cache),
         ("Models", check_models),
         ("Routers", check_routers),
         ("Services", check_services),

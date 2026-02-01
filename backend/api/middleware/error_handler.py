@@ -14,9 +14,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
     if HAS_LOGURU:
         logger.exception(
-            "Unhandled exception",
-            path=request.url.path,
-            corr_id=corr_id,
+            f"Unhandled exception at {request.url.path} (correlation_id: {corr_id})"
         )
     else:
         logger.exception(

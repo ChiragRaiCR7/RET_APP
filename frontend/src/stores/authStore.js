@@ -44,20 +44,24 @@ export const useAuthStore = defineStore('auth', {
     },
     async logout() {
       try {
-        // Call clear memory endpoint first if session_id is available
-        if (this.user?.session_id) {
-          try {
-            await api.post(`/ai/clear-memory/${this.user.session_id}`)
-          } catch (e) {
-            console.error('Failed to clear AI memory:', e)
+        // Only call backend logout if we have a token (session exists)
+        if (this.token) {
+          // Call clear memory endpoint first if session_id is available
+          if (this.user?.session_id) {
+            try {
+              await api.post(`/ai/clear-memory/${this.user.session_id}`)
+            } catch (e) {
+              console.error('Failed to clear AI memory:', e)
+            }
           }
+          
+          await api.post('/auth/logout')
         }
-        
-        await api.post('/auth/logout')
       } catch (e) {
-        // ignore errors during logout
-        console.error('Logout error:', e)
+        // Silent fail - logout should always succeed locally even if backend fails
+        console.error('Logout error (non-fatal):', e)
       } finally {
+        // Always clear local state
         this.token = null
         this.user = null
       }
@@ -71,8 +75,13 @@ export const useAuthStore = defineStore('auth', {
         this.token = resp.data.access_token
         return true
       } catch (e) {
-        console.error('Refresh failed:', e)
-        this.logout()
+        // Don't log errors for expected "no cookie" case (401 on fresh session)
+        if (e.response?.status !== 401) {
+          console.error('Refresh failed:', e)
+        }
+        // Don't call logout - just clear local state silently
+        this.token = null
+        this.user = null
         return false
       }
     }

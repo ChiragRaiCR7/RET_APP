@@ -9,8 +9,8 @@
       @click="open"
     >
       <div class="file-upload-icon" aria-hidden="true">📦</div>
-      <div><strong>Drop ZIP files here, or click to upload</strong></div>
-      <div class="form-hint">Supports bulk ZIP. Max 200MB. We'll scan and show a preview.</div>
+      <div><strong>Drop ZIP or XML files here, or click to upload</strong></div>
+      <div class="form-hint">Supports ZIP archives and individual XML files. Max 200MB. We'll scan and show a preview.</div>
     </div>
     
     <input 
@@ -19,7 +19,7 @@
       multiple 
       @change="onFiles" 
       style="display:none" 
-      accept=".zip,application/zip" 
+      accept=".zip,.xml,application/zip,text/xml,application/xml" 
     />
     
     <div v-if="files.length" style="margin-top: var(--space-md)">

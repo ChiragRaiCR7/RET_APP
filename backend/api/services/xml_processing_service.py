@@ -24,8 +24,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def strip_ns(tag: str) -> str:
-    """Remove namespace from XML tag"""
+def strip_ns(tag) -> str:
+    """Remove namespace from XML tag.
+    Handles Comments and ProcessingInstructions which have callable tags.
+    """
+    # Handle Comments and ProcessingInstructions (tag is a function)
+    if not isinstance(tag, str):
+        # For Comment/PI elements, return a special marker
+        if callable(tag):
+            return "__SKIP__"
+        return str(tag) if tag else "__SKIP__"
+    
     if '}' in tag:
         return tag.split('}', 1)[1]
     return tag
@@ -178,60 +187,90 @@ def flatten_element(
     include_root: bool = False,
     max_field_len: int = 300
 ):
-    """Flatten XML element into row dict"""
-    tag = strip_ns(elem.tag)
+    """Recursively flatten XML element into row dict - matching main.py logic"""
+    stack = [(elem, current_path)]
     
-    if not include_root and current_path == "":
-        current_path = tag
-    else:
-        current_path = f"{current_path}{path_sep}{tag}" if current_path else tag
-    
-    # Add text content
-    if elem.text and elem.text.strip():
-        text_val = elem.text.strip()[:max_field_len]
-        key = f"{current_path}_text"
-        if key not in row:
-            row[key] = text_val
-            if key not in header_seen:
-                header_order.append(key)
-                header_seen.add(key)
-    
-    # Add attributes
-    for attr, val in elem.attrib.items():
-        key = f"{current_path}@{attr}"
-        if key not in row:
-            row[key] = str(val)[:max_field_len]
-            if key not in header_seen:
-                header_order.append(key)
-                header_seen.add(key)
-    
-    # Recurse into children
-    for child in elem:
-        flatten_element(
-            child, current_path, row, header_order, header_seen,
-            path_sep, include_root, max_field_len
-        )
+    while stack:
+        node, base_path = stack.pop()
+        tag_name = strip_ns(node.tag if hasattr(node, 'tag') else str(node))
+        
+        if not base_path:
+            path_here = tag_name if include_root else ""
+        else:
+            path_here = base_path
+        
+        # Add attributes
+        attrib = getattr(node, 'attrib', {})
+        if attrib and path_here:
+            for attr_name, attr_val in attrib.items():
+                key = f"{path_here}@{attr_name}"
+                if key not in row:
+                    val = str(attr_val)[:max_field_len] if attr_val else ""
+                    row[key] = val
+                    if key not in header_seen:
+                        header_order.append(key)
+                        header_seen.add(key)
+        
+        # Check for child elements
+        children = list(node) if hasattr(node, '__iter__') else []
+        
+        if not children:
+            # Leaf node - add text content
+            text_val = (getattr(node, 'text', '') or '').strip()
+            if path_here:
+                if path_here not in row:
+                    row[path_here] = text_val[:max_field_len] if text_val else ""
+                    if path_here not in header_seen:
+                        header_order.append(path_here)
+                        header_seen.add(path_here)
+        else:
+            # Process children with index tracking for repeated tags
+            from collections import defaultdict
+            local_counts = defaultdict(int)
+            
+            for child in reversed(children):
+                child_tag = strip_ns(child.tag)
+                # Skip Comments and ProcessingInstructions
+                if child_tag == "__SKIP__":
+                    continue
+                key_base = f"{path_here}{path_sep}{child_tag}" if path_here else child_tag
+                local_counts[key_base] += 1
+                idx = local_counts[key_base]
+                child_path = key_base if idx == 1 else f"{key_base}[{idx}]"
+                stack.append((child, child_path))
 
 
 def find_record_elements(root, record_tag: Optional[str], auto_detect: bool) -> Tuple[str, List]:
-    """Find record elements in XML"""
+    """Find record elements in XML - matching main.py logic"""
+    # If explicit record tag provided, use it
     if record_tag:
+        # Try exact match with namespace stripping
+        matches = [el for el in root.iter() if strip_ns(el.tag) == record_tag]
+        if matches:
+            return record_tag, matches
+        # Fallback to findall
         elements = root.findall(f".//{record_tag}")
         if elements:
             return record_tag, elements
+        # If nothing found, fall back to root
+        return record_tag, [root]
     
     if auto_detect:
-        # Find most common child tag
-        child_tags = defaultdict(int)
-        for child in root:
-            tag = strip_ns(child.tag)
-            child_tags[tag] += 1
-        
-        if child_tags:
-            most_common = max(child_tags, key=child_tags.get)
-            return most_common, root.findall(f".//{most_common}")
+        # Find repeated child tag among root's immediate children
+        # Filter out Comments and ProcessingInstructions
+        children = [c for c in root if strip_ns(c.tag) != "__SKIP__"]
+        if children:
+            child_tags = [strip_ns(c.tag) for c in children]
+            counts = Counter(child_tags)
+            repeated = [t for t, c in counts.items() if c > 1]
+            if repeated:
+                chosen = repeated[0]
+                elems = [c for c in children if strip_ns(c.tag) == chosen]
+                return f"AUTO:{chosen}", elems
     
-    return "", []
+    # Fallback: treat each root child as a record (excluding Comments/PIs)
+    elems = [c for c in root if strip_ns(c.tag) != "__SKIP__"]
+    return "FALLBACK:root_children", elems if elems else [root]
 
 
 def xml_to_rows(

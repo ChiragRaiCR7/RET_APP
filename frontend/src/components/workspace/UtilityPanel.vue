@@ -119,6 +119,9 @@
 import { ref, reactive } from 'vue'
 import FileUploader from './FileUploader.vue'
 import api from '@/utils/api'
+import { useToastStore } from '@/stores/toastStore'
+
+const toast = useToastStore()
 
 const workflow = reactive({
   outputFormat: 'csv',
@@ -141,14 +144,22 @@ async function scanZip() {
   scanning.value = true
   try {
     const formData = new FormData()
-    workflow.uploadedFiles.forEach(f => formData.append('files', f))
+    if (!workflow.uploadedFiles.length) {
+      toast.warning('Please upload a ZIP or XML file first')
+      return
+    }
+    formData.append('file', workflow.uploadedFiles[0])
     
-    const res = await api.post('/api/workflow/scan', formData, {
+    const res = await api.post('/conversion/scan', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     
     workflow.sessionId = res.data.session_id
-    workflow.scannedGroups = res.data.groups || []
+    workflow.scannedGroups = (res.data.groups || []).map(g => ({
+      name: g.name,
+      fileCount: g.file_count || g.fileCount || 0,
+      size: g.size || '0 KB'
+    }))
     workflow.scanSummary = res.data.summary || { 
       totalGroups: 0, 
       totalFiles: 0, 
@@ -158,8 +169,9 @@ async function scanZip() {
     if (workflow.scannedGroups.length > 0) {
       selectedGroup.value = workflow.scannedGroups[0]
     }
+    toast.success(`Scan complete! Found ${workflow.scannedGroups.length} groups.`)
   } catch (e) {
-    alert('Scan failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Scan failed: ' + (e.response?.data?.detail || e.message))
   } finally {
     scanning.value = false
   }
@@ -175,23 +187,23 @@ function clearWorkflow() {
 
 async function convertGroup(group) {
   try {
-    const res = await api.post('/api/workflow/convert', {
-      groupName: group.name,
-      format: workflow.outputFormat,
-      editMode: workflow.editMode,
-      includePrefixes: workflow.includePrefixes
-    }, { responseType: 'blob' })
-    
-    // Download
-    const blob = new Blob([res.data])
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${group.name}.${workflow.outputFormat}`
-    a.click()
-    URL.revokeObjectURL(url)
+    if (!workflow.sessionId) {
+      toast.warning('Please scan a ZIP file first')
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('session_id', workflow.sessionId)
+    formData.append('groups', group.name)
+    formData.append('output_format', workflow.outputFormat)
+
+    await api.post('/conversion/convert', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+
+    await downloadGroup(group)
   } catch (e) {
-    alert('Conversion failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Conversion failed: ' + (e.response?.data?.detail || e.message))
   }
 }
 
@@ -201,8 +213,32 @@ async function bulkConvert() {
   }
 }
 
-function downloadGroup(group) {
-  window.open(`/api/workflow/download/${encodeURIComponent(group.name)}`, '_blank')
+async function downloadGroup(group) {
+  if (!workflow.sessionId) {
+    toast.warning('Please scan a ZIP file first')
+    return
+  }
+  const formData = new FormData()
+  formData.append('output_format', workflow.outputFormat)
+  formData.append('groups', group.name)
+  formData.append('preserve_structure', 'false')
+
+  try {
+    const res = await api.post(`/conversion/download-custom/${workflow.sessionId}`, formData, {
+      responseType: 'blob',
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    const blob = new Blob([res.data])
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${group.name}_${workflow.outputFormat}.zip`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success(`Downloaded ${group.name} (${workflow.outputFormat})`)
+  } catch (e) {
+    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+  }
 }
 </script>
 

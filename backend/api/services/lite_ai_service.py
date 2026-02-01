@@ -11,6 +11,11 @@ from pathlib import Path
 import csv
 from collections import defaultdict
 
+# Try to import chromadb
+chromadb = None
+Settings = None
+CHROMA_AVAILABLE = False
+
 try:
     import chromadb
     from chromadb.config import Settings
@@ -33,39 +38,90 @@ class LiteAIService:
         self.persist_dir = Path(persist_dir)
         self.persist_dir.mkdir(parents=True, exist_ok=True)
         
-        self.openai = AzureOpenAIClient()
+        # Try to initialize OpenAI client (graceful degradation)
+        self.openai = None
+        try:
+            self.openai = AzureOpenAIClient()
+            if not self.openai.is_available():
+                logger.warning("Azure OpenAI not available - AI features limited")
+                self.openai = None
+        except Exception as e:
+            logger.warning(f"Could not initialize OpenAI client: {e}")
+            self.openai = None
+        
         self.chroma = None
         self.collection = None
         
-        if CHROMA_AVAILABLE:
+        if CHROMA_AVAILABLE and chromadb:
             self._init_chroma()
     
     def _init_chroma(self):
         """Initialize Chroma vector store"""
+        if not chromadb:
+            logger.warning("chromadb not available")
+            return
+        
         try:
             chroma_path = str(self.persist_dir / "chroma_db")
             
-            settings_obj = Settings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory=chroma_path,
-                anonymized_telemetry=False,
-            )
+            # Use PersistentClient for modern chromadb (>= 0.4.0)
+            try:
+                self.chroma = chromadb.PersistentClient(
+                    path=chroma_path,
+                    settings=chromadb.Settings(
+                        anonymized_telemetry=False,
+                        allow_reset=True,
+                    ) if hasattr(chromadb, 'Settings') else None
+                )
+            except (TypeError, AttributeError):
+                # Fallback for older versions or different API
+                try:
+                    self.chroma = chromadb.Client(chromadb.Settings(
+                        chroma_db_impl="duckdb+parquet",
+                        persist_directory=chroma_path,
+                        anonymized_telemetry=False,
+                    ))
+                except:
+                    # Last resort - ephemeral client
+                    self.chroma = chromadb.Client()
             
-            self.chroma = chromadb.Client(settings_obj)
+            # Sanitize collection name (must be alphanumeric with underscores)
+            safe_name = f"session_{self.session_id}".replace("-", "_")[:63]
+            
             self.collection = self.chroma.get_or_create_collection(
-                name=f"session_{self.session_id}",
+                name=safe_name,
                 metadata={"session_id": self.session_id}
             )
             logger.info(f"Initialized Chroma for session {self.session_id}")
         except Exception as e:
             logger.error(f"Failed to initialize Chroma: {e}")
+            self.chroma = None
+            self.collection = None
     
     def index_csv_files(self, csv_files: List[Path]) -> Dict[str, Any]:
         """Index CSV files into vector store"""
         if not CHROMA_AVAILABLE:
             return {
                 "status": "error",
-                "message": "Chroma not available",
+                "message": "ChromaDB not available",
+                "documents_indexed": 0,
+            }
+        
+        # Re-initialize Chroma if collection is None
+        if self.collection is None:
+            self._init_chroma()
+        
+        if self.collection is None:
+            return {
+                "status": "error",
+                "message": "ChromaDB collection could not be initialized",
+                "documents_indexed": 0,
+            }
+        
+        if not self.openai:
+            return {
+                "status": "error",
+                "message": "Azure OpenAI not configured - cannot generate embeddings",
                 "documents_indexed": 0,
             }
         
@@ -118,14 +174,32 @@ class LiteAIService:
             logger.info(f"Getting embeddings for {len(documents)} chunks...")
             embeddings = self.openai.embed_texts(documents)
             
-            # Add to Chroma
+            # Add to Chroma with proper error handling
             logger.info(f"Adding to Chroma...")
-            self.collection.add(
-                documents=documents,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                ids=ids,
-            )
+            try:
+                self.collection.add(
+                    documents=documents,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
+                    ids=ids,
+                )
+            except (TypeError, ValueError):
+                try:
+                    # Try with numpy arrays
+                    import numpy as np
+                    self.collection.add(
+                        documents=documents,
+                        embeddings=np.array(embeddings, dtype=np.float32),
+                        metadatas=metadatas,
+                        ids=ids,
+                    )
+                except (TypeError, ImportError):
+                    # Fallback: let Chroma generate embeddings
+                    self.collection.add(
+                        documents=documents,
+                        metadatas=metadatas,
+                        ids=ids,
+                    )
             
             return {
                 "status": "success",
@@ -151,6 +225,12 @@ class LiteAIService:
                 "sources": [],
             }
         
+        if not self.openai:
+            return {
+                "answer": "Azure OpenAI is not configured. Please set up Azure OpenAI credentials.",
+                "sources": [],
+            }
+        
         try:
             # Get embedding for question
             q_embedding = self.openai.embed_texts([question])[0]
@@ -161,10 +241,14 @@ class LiteAIService:
                 n_results=top_k
             )
             
-            # Extract context
-            documents = results.get("documents", [[]])[0] or []
-            metadatas = results.get("metadatas", [[]])[0] or []
-            distances = results.get("distances", [[]])[0] or []
+            # Extract context with proper type checking
+            documents_list = results.get("documents", [])
+            metadatas_list = results.get("metadatas", [])
+            distances_list = results.get("distances", [])
+            
+            documents = documents_list[0] if documents_list and isinstance(documents_list[0], list) else []
+            metadatas = metadatas_list[0] if metadatas_list and isinstance(metadatas_list[0], list) else []
+            distances = distances_list[0] if distances_list and isinstance(distances_list[0], list) else []
             
             if not documents:
                 return {
@@ -232,13 +316,13 @@ class LiteAIService:
             
             # Get response
             response = self.openai.client.chat.completions.create(
-                model=settings.AZURE_OPENAI_CHAT_MODEL,
+                model=settings.AZURE_OPENAI_CHAT_DEPLOYMENT or "gpt-4",
                 messages=[{"role": "system", "content": system_msg}] + msg_list,
                 temperature=0.2,
                 max_tokens=2000,
             )
             
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
         
         except Exception as e:
             logger.error(f"Chat failed: {e}")

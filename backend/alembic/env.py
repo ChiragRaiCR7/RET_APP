@@ -20,7 +20,8 @@ if config.config_file_name:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+db_url = settings.DATABASE_URL or "sqlite:///./test.db"
+config.set_main_option("sqlalchemy.url", db_url)
 
 
 def run_migrations_offline():

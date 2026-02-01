@@ -20,7 +20,7 @@
       <div class="card-header">
         <div class="card-title-group">
           <h3 class="card-title">🔄 Utility Workflow</h3>
-          <p class="card-description">Upload ZIP → Scan → Convert to CSV/XLSX</p>
+          <p class="card-description">Upload ZIP/XML → Scan → Convert to CSV/XLSX → View & Download</p>
         </div>
       </div>
 
@@ -42,11 +42,13 @@
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">Include Prefixes</label>
-          <select v-model="workflow.includePrefixes" class="form-select">
-            <option :value="true">Yes</option>
-            <option :value="false">No</option>
-          </select>
+          <label class="form-label">Custom Group Prefixes</label>
+          <input 
+            v-model="workflow.customPrefixes" 
+            type="text" 
+            class="form-input"
+            placeholder="e.g., ABC,XYZ,PQR (comma-separated)"
+          />
         </div>
       </div>
 
@@ -56,14 +58,19 @@
           <FileUploader @uploaded="onUploaded" />
           
           <!-- Action Buttons -->
-          <div style="display:flex; gap:12px; margin-top:var(--space-lg)">
+          <div style="display:flex; gap:12px; margin-top:var(--space-lg); flex-wrap: wrap;">
             <button class="btn btn-primary" @click="scanZip" :disabled="!workflow.uploadedFiles.length || scanning">
               <span v-if="scanning" class="spinner" style="margin-right:8px"></span>
-              {{ scanning ? 'Scanning...' : 'Scan ZIP' }}
+              {{ scanning ? 'Scanning...' : '🔍 Scan ZIP' }}
             </button>
-            <button class="btn btn-secondary" @click="clearWorkflow">Clear</button>
-            <button class="btn btn-success" @click="bulkConvert" :disabled="!workflow.scannedGroups.length">
-              Bulk Convert All
+            <button class="btn btn-secondary" @click="clearWorkflow">🧹 Clear</button>
+            <button 
+              class="btn btn-success" 
+              @click="bulkConvert" 
+              :disabled="!workflow.scannedGroups.length || converting"
+            >
+              <span v-if="converting" class="spinner" style="margin-right:8px"></span>
+              {{ converting ? 'Converting...' : '⚡ Bulk Convert All' }}
             </button>
           </div>
 
@@ -85,7 +92,7 @@
 
           <!-- Groups Table -->
           <div v-if="workflow.scannedGroups.length" style="margin-top:var(--space-lg)">
-            <h4 class="card-title">Scanned Groups</h4>
+            <h4 class="card-title">📁 Scanned Groups</h4>
             <div class="data-table-wrapper" style="margin-top:var(--space-md)">
               <table class="data-table" role="table">
                 <thead>
@@ -97,16 +104,18 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(group, idx) in workflow.scannedGroups" :key="idx">
+                  <tr 
+                    v-for="(group, idx) in workflow.scannedGroups" 
+                    :key="idx"
+                    :class="{ selected: selectedGroup?.name === group.name }"
+                    @click="selectGroup(group)"
+                  >
                     <td><strong>{{ group.name }}</strong></td>
                     <td>{{ group.fileCount }} files</td>
-                    <td>{{ group.size }}</td>
+                    <td>{{ formatSize(group.size) }}</td>
                     <td>
-                      <button class="btn btn-sm btn-primary" @click="convertGroup(group)">
+                      <button class="btn btn-sm btn-primary" @click.stop="convertGroup(group)">
                         Convert
-                      </button>
-                      <button class="btn btn-sm btn-secondary" @click="downloadGroup(group)">
-                        Download
                       </button>
                     </td>
                   </tr>
@@ -119,8 +128,8 @@
         <!-- Right: Group Preview -->
         <div>
           <div class="enterprise-card">
-            <h4 class="card-title">Group Preview</h4>
-            <p class="card-description">Preview of extracted XML groups</p>
+            <h4 class="card-title">👁️ Group Preview</h4>
+            <p class="card-description">Select a group to preview files</p>
             
             <div v-if="selectedGroup" style="margin-top:var(--space-md)">
               <div class="info-item">
@@ -132,8 +141,8 @@
                 <div class="info-value">{{ selectedGroup.fileCount }}</div>
               </div>
               <div class="info-item">
-                <div class="info-label">Total Rows</div>
-                <div class="info-value">{{ selectedGroup.totalRows || '—' }}</div>
+                <div class="info-label">Size</div>
+                <div class="info-value">{{ formatSize(selectedGroup.size) }}</div>
               </div>
             </div>
             
@@ -142,14 +151,30 @@
             </div>
 
             <!-- Group File List -->
-            <div v-if="selectedGroup?.files" style="margin-top:var(--space-md); max-height:300px; overflow-y:auto">
-              <div v-for="(file, idx) in selectedGroup.files" :key="idx" class="info-item">
-                <div class="info-label">{{ file.name }}</div>
-                <div class="info-value">{{ file.size }}</div>
-              </div>
+            <div v-if="selectedGroup?.files?.length" style="margin-top:var(--space-md); max-height:300px; overflow-y:auto">
+              <strong>Files:</strong>
+              <ul class="file-list">
+                <li v-for="(file, idx) in selectedGroup.files.slice(0, 10)" :key="idx">
+                  {{ file.filename || file.name }} - {{ formatSize(file.size) }}
+                </li>
+                <li v-if="selectedGroup.files.length > 10" class="more-files">
+                  ... and {{ selectedGroup.files.length - 10 }} more files
+                </li>
+              </ul>
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Conversion Results Section -->
+      <div v-if="workflow.converted" style="margin-top:var(--space-xl)">
+        <div class="divider"></div>
+        <ConversionResults 
+          ref="conversionResultsRef"
+          :session-id="workflow.sessionId"
+          @error="handleError"
+          @download-complete="handleDownloadComplete"
+        />
       </div>
     </section>
 
@@ -265,32 +290,41 @@
       </details>
 
       <!-- AI Chat Interface -->
-      <AIChatInterface />
+      <AIChatInterface :session-id="workflow.sessionId" />
     </section>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
+import ConversionResults from '@/components/workspace/ConversionResults.vue'
 import AIChatInterface from '@/components/workspace/AIChatInterface.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import api from '@/utils/api'
+import { useToastStore } from '@/stores/toastStore'
 
+const toast = useToastStore()
 const activeTab = ref(0)
-const tabs = ['Convert & Download', 'Compare', 'Ask RET AI']
+const tabs = ['🔄 Convert & Download', '📊 Compare', '🤖 Ask RET AI']
+
+// Refs
+const conversionResultsRef = ref(null)
 
 const workflow = reactive({
   sessionId: null,
   outputFormat: 'csv',
   editMode: 'none',
   includePrefixes: true,
+  customPrefixes: '',
   uploadedFiles: [],
   scannedGroups: [],
-  scanSummary: null
+  scanSummary: null,
+  converted: false
 })
 
 const scanning = ref(false)
+const converting = ref(false)
 const selectedGroup = ref(null)
 
 const compare = reactive({
@@ -305,29 +339,102 @@ const ai = reactive({
   indexStatus: null
 })
 
-function onUploaded(files) {
-  workflow.uploadedFiles.push(...files)
+// Helper functions
+function formatSize(bytes) {
+  if (!bytes || bytes === '0 KB') return '0 B'
+  if (typeof bytes === 'string') return bytes
+  const units = ['B', 'KB', 'MB', 'GB']
+  let idx = 0
+  let size = bytes
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024
+    idx++
+  }
+  return `${size.toFixed(1)} ${units[idx]}`
+}
+
+function handleError(message) {
+  toast.error(message)
+}
+
+function handleDownloadComplete() {
+  toast.success('Download complete!')
+}
+
+function selectGroup(group) {
+  selectedGroup.value = group
+}
+
+function onUploaded(data) {
+  // Handle both file array and scan result object
+  if (Array.isArray(data)) {
+    // Raw files array
+    workflow.uploadedFiles.push(...data)
+  } else if (data && data.sessionId) {
+    // Scan result from FileUploader
+    workflow.sessionId = data.sessionId
+    
+    // Map groups to expected format
+    const groups = (data.groups || []).map(g => ({
+      name: g.name,
+      fileCount: g.file_count || g.fileCount || 0,
+      size: g.size || '0 KB',
+      files: g.files || []
+    }))
+    
+    workflow.scannedGroups = groups
+    workflow.scanSummary = {
+      totalGroups: groups.length,
+      totalFiles: data.xmlCount || 0,
+      totalSize: '—'
+    }
+    
+    if (groups.length > 0) {
+      selectedGroup.value = groups[0]
+    }
+  }
 }
 
 async function scanZip() {
   scanning.value = true
   try {
+    // Backend expects single 'file' not 'files'
     const formData = new FormData()
-    workflow.uploadedFiles.forEach(f => formData.append('files', f))
+    // Only scan the first file - backend handles one at a time
+    if (workflow.uploadedFiles.length > 0) {
+      formData.append('file', workflow.uploadedFiles[0])
+    } else {
+      toast.warning('No files to scan. Please upload a ZIP file first.')
+      scanning.value = false
+      return
+    }
     
-    const res = await api.post('/workflow/scan', formData, {
+    const res = await api.post('/conversion/scan', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     
     workflow.sessionId = res.data.session_id
-    workflow.scannedGroups = res.data.groups || []
-    workflow.scanSummary = res.data.summary || { totalGroups: 0, totalFiles: 0, totalSize: '0 KB' }
     
-    if (workflow.scannedGroups.length > 0) {
-      selectedGroup.value = workflow.scannedGroups[0]
+    // Map groups to expected format
+    const groups = (res.data.groups || []).map(g => ({
+      name: g.name,
+      fileCount: g.file_count || g.fileCount || 0,
+      size: g.size || '0 KB',
+      files: g.files || []
+    }))
+    
+    workflow.scannedGroups = groups
+    workflow.scanSummary = res.data.summary || { 
+      totalGroups: groups.length, 
+      totalFiles: res.data.xml_count || 0, 
+      totalSize: '—' 
+    }
+    
+    if (groups.length > 0) {
+      selectedGroup.value = groups[0]
     }
   } catch (e) {
-    alert('Scan failed: ' + (e.response?.data?.message || e.message))
+    toast.error('Scan failed: ' + (e.response?.data?.detail || e.response?.data?.message || e.message))
   } finally {
     scanning.value = false
   }
@@ -338,44 +445,99 @@ function clearWorkflow() {
   workflow.uploadedFiles = []
   workflow.scannedGroups = []
   workflow.scanSummary = null
+  workflow.converted = false
   selectedGroup.value = null
 }
 
 async function convertGroup(group) {
   if (!workflow.sessionId) {
-    alert('No session ID. Please scan ZIP file first.')
+    toast.warning('No session ID. Please scan ZIP file first.')
     return
   }
+  converting.value = true
   try {
-    const res = await api.post('/workflow/convert', {
-      session_id: workflow.sessionId,
-      groups: [group.name]
+    // Backend expects form data
+    const formData = new FormData()
+    formData.append('session_id', workflow.sessionId)
+    formData.append('groups', group.name)
+    formData.append('output_format', workflow.outputFormat)
+    
+    const res = await api.post('/conversion/convert', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
     })
-    if (res.data.job_id) {
-      alert('Conversion started. Please wait...')
-      setTimeout(() => {
-        downloadConverted()
-      }, 2000)
+    
+    if (res.data.success) {
+      workflow.converted = true
+      toast.success(`Conversion complete! ${res.data.stats?.success || 0} files converted from group ${group.name}.`)
+      
+      // Refresh conversion results component
+      if (conversionResultsRef.value) {
+        await conversionResultsRef.value.refresh()
+      }
     }
   } catch (e) {
-    alert('Conversion failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Conversion failed: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    converting.value = false
   }
 }
 
-function downloadConverted() {
-  if (workflow.sessionId) {
-    window.location.href = `/api/workflow/download/${workflow.sessionId}`
+async function downloadConverted() {
+  if (!workflow.sessionId) {
+    toast.warning('No session ID available')
+    return
+  }
+  try {
+    const res = await api.get(`/conversion/download/${workflow.sessionId}`, {
+      responseType: 'blob'
+    })
+    
+    // Create download link
+    const url = window.URL.createObjectURL(new Blob([res.data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', 'converted_csvs.zip')
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (e) {
+    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
   }
 }
 
 async function bulkConvert() {
-  for (const group of workflow.scannedGroups) {
-    await convertGroup(group)
+  if (!workflow.sessionId) {
+    toast.warning('No session ID. Please scan ZIP file first.')
+    return
   }
-}
-
-function downloadGroup(group) {
-  window.open(`/api/workflow/download/${encodeURIComponent(group.name)}`, '_blank')
+  converting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('session_id', workflow.sessionId)
+    formData.append('output_format', workflow.outputFormat)
+    // Convert all groups at once
+    workflow.scannedGroups.forEach(g => formData.append('groups', g.name))
+    
+    const res = await api.post('/conversion/convert', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    
+    if (res.data.success) {
+      workflow.converted = true
+      const stats = res.data.stats || {}
+      toast.success(`Bulk conversion complete! ${stats.success || 0} files converted, ${stats.failed || 0} failed.`)
+      
+      // Refresh conversion results component
+      if (conversionResultsRef.value) {
+        await conversionResultsRef.value.refresh()
+      }
+    }
+  } catch (e) {
+    toast.error('Bulk conversion failed: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    converting.value = false
+  }
 }
 
 async function runComparison() {
@@ -385,36 +547,53 @@ async function runComparison() {
     formData.append('sideA', compare.sideA)
     formData.append('sideB', compare.sideB)
     
-    const res = await api.post('/compare/run', formData, {
+    const res = await api.post('/comparison/run', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     
     compare.results = res.data
+    toast.success('Comparison complete!')
   } catch (e) {
-    alert('Comparison failed: ' + (e.response?.data?.message || e.message))
+    toast.error('Comparison failed: ' + (e.response?.data?.detail || e.response?.data?.message || e.message))
   } finally {
     comparing.value = false
   }
 }
 
 async function indexGroups() {
+  if (!workflow.sessionId) {
+    toast.warning('No session. Please scan ZIP file first.')
+    ai.indexStatus = 'No session. Please scan ZIP file first.'
+    return
+  }
   try {
-    const res = await api.post('/ai/index', { groups: ai.selectedGroups })
+    const res = await api.post('/ai/index', { 
+      session_id: workflow.sessionId,
+      groups: ai.selectedGroups 
+    })
     ai.indexStatus = res.data.message || 'Groups indexed successfully'
+    toast.success(ai.indexStatus)
     setTimeout(() => ai.indexStatus = null, 5000)
   } catch (e) {
-    ai.indexStatus = 'Indexing failed: ' + (e.response?.data?.message || e.message)
+    const errMsg = 'Indexing failed: ' + (e.response?.data?.detail || e.response?.data?.message || e.message)
+    ai.indexStatus = errMsg
+    toast.error(errMsg)
   }
 }
 
 async function clearMemory() {
+  if (!workflow.sessionId) {
+    toast.warning('No session to clear')
+    return
+  }
   try {
-    await api.post('/ai/clear-memory')
+    await api.post(`/ai/clear-memory/${workflow.sessionId}`)
     ai.indexStatus = 'Memory cleared successfully'
     ai.selectedGroups = []
+    toast.success('AI memory cleared')
     setTimeout(() => ai.indexStatus = null, 3000)
   } catch (e) {
-    alert('Failed to clear memory: ' + (e.response?.data?.message || e.message))
+    toast.error('Failed to clear memory: ' + (e.response?.data?.detail || e.response?.data?.message || e.message))
   }
 }
 
@@ -422,3 +601,57 @@ onMounted(() => {
   // Initialize on mount
 })
 </script>
+
+<style scoped>
+.file-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--space-sm) 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.file-list li {
+  padding: var(--space-xs) 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.file-list .more-files {
+  font-style: italic;
+  color: var(--brand);
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-xl) 0;
+}
+
+.data-table tbody tr.selected {
+  background: rgba(255, 192, 0, 0.1);
+}
+
+.form-input {
+  padding: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  width: 100%;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+</style>

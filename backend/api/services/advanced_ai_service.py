@@ -20,7 +20,7 @@ import re
 import hashlib
 from typing import List, Dict, Optional, Tuple, Any
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from collections import Counter
 import csv
 
@@ -36,12 +36,28 @@ except ImportError:
     AzureOpenAI = None
 
 try:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-    from langchain_core.documents import Document
-    from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
-    LANGCHAIN_AVAILABLE = True
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 except ImportError:
-    LANGCHAIN_AVAILABLE = False
+    try:
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+    except ImportError:
+        RecursiveCharacterTextSplitter = None
+
+try:
+    from langchain_core.documents import Document
+except ImportError:
+    try:
+        from langchain.schema import Document
+    except ImportError:
+        Document = None
+
+try:
+    from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
+except ImportError:
+    AzureOpenAIEmbeddings = None
+    AzureChatOpenAI = None
+
+LANGCHAIN_AVAILABLE = all([RecursiveCharacterTextSplitter, Document, AzureOpenAIEmbeddings, AzureChatOpenAI])
 
 logger = logging.getLogger(__name__)
 

@@ -19,12 +19,10 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         if HAS_LOGURU:
             logger.info(
-                "request",
-                method=request.method,
-                path=request.url.path,
-                status=response.status_code,
-                duration_ms=duration,
-                corr_id=getattr(request.state, "correlation_id", None),
+                f"{request.method} {request.url.path} - {response.status_code} ({duration}ms)",
+                extra={
+                    "correlation_id": getattr(request.state, "correlation_id", None),
+                }
             )
         else:
             logger.info(

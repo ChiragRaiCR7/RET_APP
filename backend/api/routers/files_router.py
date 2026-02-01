@@ -16,37 +16,25 @@ async def scan_files(
 ):
     """Scan a single ZIP file for XML content and group detection"""
     filename = file.filename
-    if not filename or not filename.endswith(".zip"):
+    if not filename or not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="ZIP file required")
 
-    try:
-        data = await file.read()
-        result = scan_zip_with_groups(data, filename, current_user_id)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to scan file: {str(e)}")
+    data = await file.read()
+    return scan_zip_with_groups(data, filename, current_user_id)
 
 
 @router.get("/session/{session_id}")
-async def get_session(
-    session_id: str,
-    current_user_id: str = Depends(get_current_user),
-):
+async def get_session(session_id: str, current_user_id: str = Depends(get_current_user)):
     """Get session information"""
     try:
         info = get_session_info(session_id, current_user_id)
         return info
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to get session: {str(e)}")
 
 
 @router.delete("/session/{session_id}")
-async def delete_session(
-    session_id: str,
-    current_user_id: str = Depends(get_current_user),
-):
+async def delete_session(session_id: str, current_user_id: str = Depends(get_current_user)):
     """Delete a session and clean up all associated data"""
     try:
         cleanup_session(session_id)

@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, HTTPException, status
 from sqlalchemy.orm import Session
+import logging
 
 from api.core.database import get_db
 from api.core.dependencies import get_current_user
+from api.core.session_cache import get_session_cache, clear_cache_pattern
 from api.models.models import User
 from api.schemas.auth import (
     LoginRequest,
@@ -22,6 +24,8 @@ from api.services.auth_service import (
 )
 from api.services.session_service import revoke_refresh_token
 from api.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -63,7 +67,6 @@ def get_me(
 ):
     user = db.query(User).filter(User.id == int(current_user_id)).first()
     if not user:
-        from fastapi import HTTPException, status
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
     return user
 
@@ -75,25 +78,55 @@ def logout(
     current_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """
+    Logout endpoint with comprehensive cleanup
+    Pattern from Streamlit main.py: hard_logout
+    Cleans up:
+    - Database session records
+    - Session directories (XML, CSV, extracted files)
+    - Chroma DB indices
+    - Cache entries
+    """
     from api.services.storage_service import cleanup_user_sessions
     
-    # Revoke refresh token from database
-    refresh_token = request.cookies.get("refresh_token")
-    if refresh_token:
-        revoke_refresh_token(db, refresh_token)
-
-    # Clean up all user sessions and their data
+    logger.info(f"User logout initiated: {current_user_id}")
+    
     try:
+        # Revoke refresh token from database
+        refresh_token = request.cookies.get("refresh_token")
+        if refresh_token:
+            revoke_refresh_token(db, refresh_token)
+            logger.debug(f"Revoked refresh token for user: {current_user_id}")
+    except Exception as e:
+        logger.error(f"Failed to revoke refresh token: {e}")
+    
+    try:
+        # Clean up all user sessions and their data
+        # This removes:
+        # - Session directories with XML/CSV files
+        # - Extracted content
+        # - Chroma DB indices
         cleanup_user_sessions(current_user_id)
-    except Exception:
-        pass  # Continue with logout even if cleanup fails
+        logger.info(f"Cleaned up all sessions for user: {current_user_id}")
+    except Exception as e:
+        logger.error(f"Failed to cleanup sessions: {e}")
+    
+    try:
+        # Clear cache entries for this user
+        cache = get_session_cache()
+        cleared = clear_cache_pattern(f"user:{current_user_id}:")
+        logger.debug(f"Cleared {cleared} cache entries for user: {current_user_id}")
+    except Exception as e:
+        logger.debug(f"Cache cleanup failed: {e}")
 
+    # Delete refresh token cookie
     response.delete_cookie(
         key="refresh_token",
         secure=settings.ENV == "production",
     )
 
-    return {"success": True}
+    logger.info(f"User logout completed: {current_user_id}")
+    return {"success": True, "message": "Logged out successfully"}
 
 
 @router.post("/refresh", response_model=RefreshTokenResponse)
@@ -105,7 +138,6 @@ def refresh(
     # Get refresh token from HttpOnly cookie
     refresh_token = request.cookies.get("refresh_token")
     if not refresh_token:
-        from fastapi import HTTPException, status
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "No refresh token")
     
     tokens = refresh_tokens(db, refresh_token)
@@ -129,7 +161,7 @@ def refresh(
 
 @router.post("/password-reset/request")
 def password_reset_request(req: PasswordResetRequest, db: Session = Depends(get_db)):
-    request_password_reset(db, req.username)
+    request_password_reset(db, req.username, req.reason)
     # Always return success to avoid user enumeration
     return {"success": True, "message": "If account exists, reset email will be sent"}
 

@@ -82,11 +82,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import AIChatInterface from './AIChatInterface.vue'
 import api from '@/utils/api'
+import { useToastStore } from '@/stores/toastStore'
 
-defineProps({
+const toast = useToastStore()
+
+const props = defineProps({
   scannedGroups: {
     type: Array,
     default: () => []
@@ -110,8 +113,12 @@ const availableGroups = computed(() => {
   return [...new Set((props.scannedGroups || []).map(g => g.name || g))]
 })
 
-// Watch for props changes
-const props = defineProps(['scannedGroups', 'sessionId'])
+// Watch for sessionId changes
+watch(() => props.sessionId, async (newSessionId) => {
+  if (newSessionId) {
+    await loadIndexedGroups()
+  }
+})
 
 onMounted(async () => {
   if (props.sessionId) {
@@ -121,7 +128,7 @@ onMounted(async () => {
 
 async function loadIndexedGroups() {
   try {
-    const res = await api.get(`/api/ai/indexed-groups/${props.sessionId}`)
+    const res = await api.get(`/ai/indexed-groups/${props.sessionId}`)
     ai.indexedGroups = res.data.indexed_groups || []
   } catch (e) {
     console.error('Failed to load indexed groups:', e)
@@ -130,7 +137,7 @@ async function loadIndexedGroups() {
 
 async function indexGroups() {
   if (!props.sessionId) {
-    alert('Session ID not available. Scan a file first.')
+    toast.warning('Session ID not available. Scan a file first.')
     return
   }
 
@@ -138,13 +145,13 @@ async function indexGroups() {
   ai.indexStatus = null
 
   try {
-    const res = await api.post(`/api/ai/index`, {
+    const res = await api.post(`/ai/index`, {
       session_id: props.sessionId,
       groups: ai.selectedGroups
     })
 
     ai.indexStatus = res.data.message || 'Groups indexed successfully! ✅'
-    ai.indexedGroups = res.data.indexed_groups || []
+    ai.indexedGroups = res.data.indexed_groups || [...ai.selectedGroups]
     
     // Clear selection after successful indexing
     ai.selectedGroups = []
@@ -161,7 +168,7 @@ async function indexGroups() {
 
 async function clearMemory() {
   if (!props.sessionId) {
-    alert('Session ID not available.')
+    toast.warning('Session ID not available.')
     return
   }
 
@@ -170,7 +177,7 @@ async function clearMemory() {
   }
 
   try {
-    const res = await api.post(`/api/ai/clear-memory/${props.sessionId}`)
+    const res = await api.post(`/ai/clear-memory/${props.sessionId}`)
     
     ai.indexStatus = 'AI memory cleared successfully! 🗑️'
     ai.indexedGroups = []

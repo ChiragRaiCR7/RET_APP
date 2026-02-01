@@ -10,15 +10,65 @@ import json
 from dataclasses import dataclass
 import tempfile
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
-from langchain_community.vectorstores import Chroma
-from langchain.schema import Document, HumanMessage, SystemMessage
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
 from api.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Try to import LangChain components
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    try:
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+    except ImportError:
+        RecursiveCharacterTextSplitter = None
+
+try:
+    from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
+except ImportError:
+    AzureOpenAIEmbeddings = None
+    AzureChatOpenAI = None
+
+try:
+    from langchain_community.vectorstores import Chroma
+except ImportError:
+    try:
+        from langchain.vectorstores import Chroma
+    except ImportError:
+        Chroma = None
+
+try:
+    from langchain_core.documents import Document
+    from langchain_core.messages import HumanMessage, SystemMessage
+except ImportError:
+    try:
+        from langchain.schema import Document, HumanMessage, SystemMessage
+    except ImportError:
+        Document = None
+        HumanMessage = None
+        SystemMessage = None
+
+try:
+    from langchain.chains import RetrievalQA
+except ImportError:
+    RetrievalQA = None
+
+try:
+    from langchain.prompts import PromptTemplate
+except ImportError:
+    PromptTemplate = None
+
+LANGCHAIN_AVAILABLE = all([
+    RecursiveCharacterTextSplitter,
+    AzureOpenAIEmbeddings,
+    AzureChatOpenAI,
+    Chroma,
+    Document,
+    HumanMessage,
+    SystemMessage,
+    RetrievalQA,
+    PromptTemplate,
+])
 
 
 @dataclass
@@ -52,7 +102,7 @@ class LangChainAIService:
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             api_version=settings.AZURE_OPENAI_API_VERSION,
-            model=settings.AZURE_OPENAI_CHAT_MODEL,
+            model=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
             temperature=0.2,
             max_tokens=2000,
         )
@@ -62,7 +112,6 @@ class LangChainAIService:
         self.retriever = None
         self.qa_chain = None
         self._init_vector_store()
-    
     def _init_vector_store(self):
         """Initialize or load vector store"""
         try:

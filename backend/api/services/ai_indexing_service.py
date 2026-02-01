@@ -15,6 +15,10 @@ import tempfile
 logger = logging.getLogger(__name__)
 
 # Try to import chroma
+chromadb = None
+Settings = None
+CHROMA_AVAILABLE = False
+
 try:
     import chromadb
     from chromadb.config import Settings
@@ -24,6 +28,9 @@ except ImportError:
     logger.warning("Chroma not available - AI indexing disabled")
 
 # Try to import embeddings
+SentenceTransformer = None
+EMBEDDINGS_AVAILABLE = False
+
 try:
     from sentence_transformers import SentenceTransformer
     EMBEDDINGS_AVAILABLE = True
@@ -88,17 +95,32 @@ class SessionIndexer:
             logger.warning("Chroma not available")
             return
         
+        if not chromadb:
+            logger.warning("chromadb module not loaded")
+            return
+        
         try:
             # Use session-specific persistent storage
             chroma_path = str(self.index_dir / "chroma")
             
-            settings = Settings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory=chroma_path,
-                anonymized_telemetry=False,
-            )
-            
-            self.client = chromadb.Client(settings)
+            # Create settings object properly
+            try:
+                if Settings:
+                    settings = Settings(
+                        chroma_db_impl="duckdb+parquet",
+                        persist_directory=chroma_path,
+                        anonymized_telemetry=False,
+                    )
+                    self.client = chromadb.Client(settings)
+                else:
+                    # Fallback for different chromadb versions
+                    self.client = chromadb.PersistentClient(path=chroma_path)
+            except (TypeError, AttributeError):
+                # Fallback for different chromadb versions
+                try:
+                    self.client = chromadb.PersistentClient(path=chroma_path)
+                except:
+                    self.client = chromadb.Client()
             
             # Get or create collection
             self.collection = self.client.get_or_create_collection(
@@ -119,6 +141,10 @@ class SessionIndexer:
             return
         
         try:
+            if not SentenceTransformer:
+                logger.warning("SentenceTransformer not available")
+                return
+            
             # Use a small, efficient model
             self.model = SentenceTransformer('all-MiniLM-L6-v2')
             logger.info("Initialized embeddings model")
@@ -206,10 +232,11 @@ class SessionIndexer:
                 groups_indexed += 1
                 logger.info(f"Indexed group {group_name} with {group_doc_count} documents")
         
-        # Persist changes
+        # Persist changes (for older chromadb versions)
         if self.client:
             try:
-                self.client.persist()
+                if hasattr(self.client, 'persist'):
+                    self.client.persist()
             except Exception as e:
                 logger.warning(f"Failed to persist Chroma: {e}")
         
@@ -242,13 +269,22 @@ class SessionIndexer:
             
             # Format results
             formatted = []
-            if results and results.get("documents"):
-                for i, doc in enumerate(results["documents"][0]):
-                    formatted.append({
-                        "document": doc,
-                        "metadata": results["metadatas"][0][i] if results.get("metadatas") else {},
-                        "distance": results["distances"][0][i] if results.get("distances") else 0,
-                    })
+            if results:
+                documents = results.get("documents", [])
+                metadatas_list = results.get("metadatas", [])
+                distances_list = results.get("distances", [])
+                
+                if documents and isinstance(documents, list) and len(documents) > 0:
+                    docs = documents[0] if isinstance(documents[0], list) else []
+                    metas = metadatas_list[0] if metadatas_list and isinstance(metadatas_list[0], list) else []
+                    dists = distances_list[0] if distances_list and isinstance(distances_list[0], list) else []
+                    
+                    for i, doc in enumerate(docs):
+                        formatted.append({
+                            "document": doc,
+                            "metadata": metas[i] if i < len(metas) else {},
+                            "distance": dists[i] if i < len(dists) else 0.0,
+                        })
             
             return formatted
         except Exception as e:

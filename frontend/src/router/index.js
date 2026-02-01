@@ -16,21 +16,39 @@ const router = createRouter({
   routes
 })
 
-router.beforeEach((to, from, next) => {
+// Track if we've attempted a refresh in this session to avoid loops
+let hasAttemptedRefresh = false
+
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  
-  if (to.meta.requiresAuth && !auth.isAuthenticated) {
-    // Redirect to login if trying to access protected route without auth
-    next({ name: 'login', query: { redirect: to.fullPath } })
-  } else if (to.meta.requiresGuest && auth.isAuthenticated) {
-    // Redirect authenticated users away from login
-    next({ name: 'main' })
-  } else if (to.meta.requiresAdmin && !auth.isAdmin) {
-    // Redirect non-admins away from admin
-    next({ name: 'main' })
-  } else {
-    next()
+
+  // One-time attempt to restore session when app first loads
+  if (!hasAttemptedRefresh && !auth.isAuthenticated) {
+    hasAttemptedRefresh = true
+    try {
+      const refreshed = await auth.refreshToken()
+      if (refreshed) {
+        await auth.fetchMe()
+      }
+    } catch (e) {
+      // Silent fail - no valid refresh cookie is normal for new sessions
+    }
   }
+
+  // Now apply standard guards
+  if (to.meta.requiresAuth && !auth.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+
+  if (to.meta.requiresGuest && auth.isAuthenticated) {
+    return { name: auth.user?.role === 'admin' ? 'admin' : 'main' }
+  }
+
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'main' }
+  }
+
+  return true
 })
 
 export default router

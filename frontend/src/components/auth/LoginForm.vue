@@ -54,7 +54,7 @@ async function submit() {
     // Emit success to parent
     emit('success')
   } catch (e) {
-    error.value = e.response?.data?.message || 'Login failed'
+    error.value = e.response?.data?.detail || e.response?.data?.message || 'Login failed'
   } finally {
     loading.value = false
   }

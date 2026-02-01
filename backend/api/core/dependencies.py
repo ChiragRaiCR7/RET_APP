@@ -10,6 +10,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 def get_current_user(
     token: str = Depends(oauth2_scheme),
 ):
+    if not settings.JWT_SECRET_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="JWT configuration error",
+        )
+    
     try:
         payload = jwt.decode(
             token,
