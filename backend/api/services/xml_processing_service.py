@@ -1,19 +1,28 @@
 """
 XML Processing Service using LXML and logic from main.py
 Handles:
-- ZIP file extraction and scanning
+- ZIP file extraction and scanning with NESTED ZIP support
 - XML file detection
-- Group detection from files and paths
+- Group detection from MODULE PREFIX of business ZIPs
 - XML to CSV flattening
 - Record-wise chunking for embeddings
+
+Grouping Strategy:
+- Groups are defined by the MODULE PREFIX of business ZIPs (e.g., AR_PAYMENT_TERM.zip → AR)
+- Root ZIPs (like "Manufacturing and Supply Chain...zip") do NOT become groups
+- Batch ZIPs (like "1_BATCH.zip", "2_BATCH.zip") do NOT become groups - they inherit from parent
+- Folders are traversed but do NOT become groups
 """
 
 import os
+import re
 import tempfile
 import zipfile
+import shutil
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Iterator, Set
+from typing import List, Dict, Tuple, Optional, Iterator, Set, Literal
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 import logging
 
 try:
@@ -22,6 +31,28 @@ except ImportError:
     import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+# Pattern to detect batch ZIPs like: 1_BATCH.zip, 7_BATCH (1).zip, 123_BATCH.zip, etc.
+BATCH_ZIP_PATTERN = re.compile(r"^\d+[_\-]?BATCH", re.IGNORECASE)
+
+# Pattern to detect root/container ZIPs that should NOT become groups
+# These are usually long names with timestamps like: "Manufacturing and Supply Chain...20260113_055727.zip"
+ROOT_ZIP_PATTERN = re.compile(r".*_\d{8}_\d{4,6}.*\.zip$", re.IGNORECASE)
+
+
+@dataclass
+class XmlFileEntry:
+    """Represents a single XML file found during scanning"""
+    filename: str
+    path: str  # Logical path within the ZIP hierarchy
+    group: str
+    size: int
+    abs_path: str  # Physical path on disk
+    # Metadata for tree display
+    business_zip: str = ""  # The business ZIP this file belongs to (e.g., "AR_PAYMENT_TERM.zip")
+    folder_path: str = ""   # Folder path after the business ZIP
+    root_folder: str = ""   # First folder after business ZIP
+    zip_chain: List[str] = field(default_factory=list)  # Chain of ZIPs traversed
 
 
 def strip_ns(tag) -> str:
@@ -41,7 +72,7 @@ def strip_ns(tag) -> str:
 
 
 def extract_alpha_prefix(token: str) -> str:
-    """Extract alphabetic prefix from a string"""
+    """Extract alphabetic prefix from a string (letters before first non-letter)"""
     out = []
     for ch in token:
         if ch.isalpha():
@@ -51,8 +82,72 @@ def extract_alpha_prefix(token: str) -> str:
     return "".join(out).upper()
 
 
+def is_batch_zip(filename: str) -> bool:
+    """Check if filename is a batch ZIP like 1_BATCH.zip, 7_BATCH.zip, etc."""
+    stem = Path(filename).stem
+    return bool(BATCH_ZIP_PATTERN.match(stem))
+
+
+def is_root_zip(filename: str) -> bool:
+    """Check if filename looks like a root/container ZIP (not a business module ZIP)"""
+    # Root ZIPs typically have timestamps and long descriptive names
+    if ROOT_ZIP_PATTERN.match(filename):
+        return True
+    # Also check if the name has spaces (business ZIPs usually don't)
+    stem = Path(filename).stem
+    if " " in stem and len(stem) > 30:
+        return True
+    return False
+
+
+def extract_module_prefix_from_zipname(zip_filename: str, prefix_len: Optional[int] = None) -> Optional[str]:
+    """
+    Extract module prefix from a business ZIP filename.
+    
+    Examples:
+        AR_PAYMENT_TERM.zip → AR
+        ATK_KR_TOPIC.zip → ATK
+        CST_COST_BOOK.zip → CST
+        AP_AGING_PERIOD.zip → AP
+    
+    Args:
+        zip_filename: ZIP filename like "AR_PAYMENT_TERM.zip"
+        prefix_len: Optional max length for prefix (2, 3, 4, etc.)
+    
+    Returns:
+        Module prefix (uppercase) or None if not a valid business ZIP
+    """
+    stem = Path(zip_filename).stem
+    
+    # Skip batch ZIPs
+    if is_batch_zip(zip_filename):
+        return None
+    
+    # Skip root ZIPs
+    if is_root_zip(zip_filename):
+        return None
+    
+    # Extract prefix before first underscore
+    if "_" in stem:
+        prefix = stem.split("_", 1)[0]
+    else:
+        prefix = stem
+    
+    # Get alphabetic prefix
+    alpha = extract_alpha_prefix(prefix)
+    
+    if not alpha:
+        return None
+    
+    # Apply optional length limit
+    if prefix_len and len(alpha) > prefix_len:
+        alpha = alpha[:prefix_len]
+    
+    return alpha
+
+
 def infer_group_from_folder(folder_full: str, custom_prefixes: Optional[Set[str]] = None) -> str:
-    """Infer group from folder path"""
+    """Infer group from folder path (legacy support)"""
     if not folder_full or "/" not in folder_full:
         return "OTHER"
     
@@ -66,7 +161,7 @@ def infer_group_from_folder(folder_full: str, custom_prefixes: Optional[Set[str]
 
 
 def infer_group_from_filename(filename: str, custom_prefixes: Optional[Set[str]] = None) -> str:
-    """Infer group from filename"""
+    """Infer group from filename (legacy support)"""
     base = Path(filename).stem
     token = base.split("_", 1)[0] if "_" in base else base
     alpha = extract_alpha_prefix(token)
@@ -77,7 +172,7 @@ def infer_group_from_filename(filename: str, custom_prefixes: Optional[Set[str]]
 
 
 def infer_group(logical_path: str, filename: str, custom_prefixes: Optional[Set[str]] = None) -> str:
-    """Infer group from path and filename"""
+    """Infer group from path and filename (legacy fallback)"""
     # Try folder-based detection first
     group = infer_group_from_folder(logical_path, custom_prefixes)
     if group != "OTHER":
@@ -133,9 +228,28 @@ def scan_zip_for_xml(
     temp_dir: Optional[Path] = None,
     max_depth: int = 10,
     custom_prefixes: Optional[Set[str]] = None,
+    group_prefix_len: Optional[int] = None,
+    max_files: int = 20000,
+    max_unzipped_bytes: int = 300 * 1024 * 1024,
 ) -> Tuple[List[Dict], Dict[str, List[Dict]], int]:
     """
-    Scan ZIP for XML files and group them
+    Recursively scan ZIP (and nested ZIPs) for XML files.
+    Groups by MODULE PREFIX of business ZIPs.
+    
+    Grouping Rules:
+    - Business ZIPs like AR_PAYMENT_TERM.zip → group "AR"
+    - Root ZIPs (long names with timestamps) do NOT become groups
+    - Batch ZIPs (1_BATCH.zip) inherit group from nearest business ZIP
+    - Folders are traversed but do NOT affect grouping
+    
+    Args:
+        zip_path: Path to the ZIP file
+        temp_dir: Working directory (will use session dir if provided)
+        max_depth: Maximum nesting depth for ZIPs within ZIPs
+        custom_prefixes: Optional set of known prefixes
+        group_prefix_len: Optional max length for group prefix (2, 3, 4...)
+        max_files: Maximum XML files to collect
+        max_unzipped_bytes: Maximum total bytes to extract
     
     Returns:
         (xml_files_list, groups_dict, total_size)
@@ -146,33 +260,206 @@ def scan_zip_for_xml(
     extract_dir = temp_dir / "extracted"
     extract_dir.mkdir(parents=True, exist_ok=True)
     
-    # Extract ZIP
-    safe_extract_zip(zip_path, extract_dir)
-    
-    # Find XML files
-    xml_files: List[Dict[str, str]] = []
+    xml_files: List[Dict] = []
     groups: Dict[str, List[Dict]] = defaultdict(list)
-    group_counter: Counter = Counter()
-    total_size = 0
+    total_bytes_copied = 0
+    files_found = 0
     
-    for xml_path in extract_dir.rglob("*.xml"):
-        relative_path = str(xml_path.relative_to(extract_dir))
-        group = infer_group(relative_path, xml_path.name, custom_prefixes)
+    def _get_group_for_zip_chain(zip_chain: List[str]) -> str:
+        """
+        Find the module group from a chain of ZIP names.
         
-        file_size = xml_path.stat().st_size
-        total_size += file_size
+        The chain goes from root to current, e.g.:
+        ["Manufacturing...zip", "businessObjectData", "AR_PAYMENT_TERM.zip"]
         
-        file_info = {
-            "filename": xml_path.name,
-            "path": relative_path,
-            "group": group,
-            "size": file_size,
-            "abs_path": str(xml_path),
-        }
+        We find the first valid business ZIP (not root, not batch) and extract its prefix.
+        """
+        for zip_name in zip_chain:
+            # Skip folders (no .zip extension)
+            if not zip_name.lower().endswith(".zip"):
+                continue
+            
+            prefix = extract_module_prefix_from_zipname(zip_name, group_prefix_len)
+            if prefix:
+                return prefix
         
-        xml_files.append(file_info)
-        groups[group].append(file_info)
-        group_counter[group] += 1
+        # Fallback: try to infer from the last item in chain
+        if zip_chain:
+            last_item = zip_chain[-1]
+            stem = Path(last_item).stem
+            alpha = extract_alpha_prefix(stem.split("_", 1)[0] if "_" in stem else stem)
+            if alpha:
+                return alpha
+        
+        return "OTHER"
+    
+    def _recursive_scan(
+        current_path: Path,
+        depth: int,
+        zip_chain: List[str],
+        current_group: str,
+    ):
+        """Recursively scan directory for XMLs and nested ZIPs"""
+        nonlocal total_bytes_copied, files_found
+        
+        if depth > max_depth:
+            logger.warning(f"Max depth {max_depth} reached, stopping recursion")
+            return
+        
+        if files_found >= max_files:
+            logger.warning(f"Max files {max_files} reached, stopping scan")
+            return
+        
+        if not current_path.exists():
+            return
+        
+        # Collect items to process (files and directories)
+        try:
+            items = list(current_path.iterdir())
+        except Exception as e:
+            logger.warning(f"Failed to read directory {current_path}: {e}")
+            return
+        
+        # Process nested ZIPs first (so we can recurse into them)
+        nested_zips = [p for p in items if p.suffix.lower() == ".zip" and p.is_file()]
+        xml_files_here = [p for p in items if p.suffix.lower() == ".xml" and p.is_file()]
+        subdirs = [p for p in items if p.is_dir()]
+        
+        # Process nested ZIPs
+        for nested_zip in nested_zips:
+            if total_bytes_copied >= max_unzipped_bytes:
+                logger.warning(f"Max unzipped bytes {max_unzipped_bytes} reached")
+                break
+            
+            nested_name = nested_zip.name
+            
+            # Determine the group for this ZIP's contents
+            new_chain = zip_chain + [nested_name]
+            nested_group = _get_group_for_zip_chain(new_chain)
+            
+            # If this ZIP is a batch ZIP, inherit the current group
+            if is_batch_zip(nested_name):
+                nested_group = current_group
+            
+            logger.debug(f"Processing nested ZIP: {nested_name}, group={nested_group}, depth={depth}")
+            
+            # Extract nested ZIP
+            nested_extract_dir = extract_dir / f"_nested_{depth}_{nested_zip.stem}"
+            try:
+                nested_extract_dir.mkdir(parents=True, exist_ok=True)
+                
+                with zipfile.ZipFile(nested_zip, 'r') as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        
+                        # Check compression ratio
+                        if info.compress_size > 0:
+                            ratio = info.file_size / info.compress_size
+                            if ratio > 200:
+                                logger.warning(f"Skipping {info.filename}: high compression ratio {ratio}")
+                                continue
+                        
+                        total_bytes_copied += info.file_size
+                        if total_bytes_copied > max_unzipped_bytes:
+                            logger.warning(f"Stopping extraction: max bytes exceeded")
+                            break
+                        
+                        zf.extract(info, nested_extract_dir)
+                
+                # Recurse into the extracted content
+                _recursive_scan(nested_extract_dir, depth + 1, new_chain, nested_group)
+                
+            except Exception as e:
+                logger.error(f"Failed to extract nested ZIP {nested_name}: {e}")
+        
+        # Process XML files at this level
+        for xml_file in xml_files_here:
+            if files_found >= max_files:
+                break
+            
+            try:
+                file_size = xml_file.stat().st_size
+                relative_path = str(xml_file.relative_to(extract_dir))
+                
+                # Determine the group for this XML
+                # Use the current_group determined by the ZIP chain
+                group = current_group if current_group != "OTHER" else infer_group_from_filename(xml_file.name, custom_prefixes)
+                
+                # Build folder path metadata
+                folder_path = ""
+                root_folder = ""
+                if "/" in relative_path:
+                    folder_parts = relative_path.rsplit("/", 1)[0].split("/")
+                    folder_path = "/".join(folder_parts)
+                    root_folder = folder_parts[0] if folder_parts else ""
+                
+                file_info = {
+                    "filename": xml_file.name,
+                    "path": relative_path,
+                    "group": group,
+                    "size": file_size,
+                    "abs_path": str(xml_file),
+                    "business_zip": zip_chain[-1] if zip_chain and zip_chain[-1].lower().endswith(".zip") else "",
+                    "folder_path": folder_path,
+                    "root_folder": root_folder,
+                    "zip_chain": zip_chain.copy(),
+                }
+                
+                xml_files.append(file_info)
+                groups[group].append(file_info)
+                files_found += 1
+                
+                logger.debug(f"Found XML: {xml_file.name}, group={group}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to process XML {xml_file}: {e}")
+        
+        # Process subdirectories (folders - just traverse, don't change group)
+        for subdir in subdirs:
+            folder_name = subdir.name
+            new_chain = zip_chain + [folder_name]
+            # Folders do NOT change the group - we inherit from the ZIP
+            _recursive_scan(subdir, depth, new_chain, current_group)
+    
+    # Step 1: Extract root ZIP
+    logger.info(f"Scanning ZIP: {zip_path.name}")
+    root_zip_name = zip_path.name
+    is_root = is_root_zip(root_zip_name)
+    
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                
+                # Check compression ratio
+                if info.compress_size > 0:
+                    ratio = info.file_size / info.compress_size
+                    if ratio > 200:
+                        logger.warning(f"Skipping {info.filename}: high compression ratio")
+                        continue
+                
+                total_bytes_copied += info.file_size
+                if total_bytes_copied > max_unzipped_bytes:
+                    logger.warning(f"Stopping extraction: max bytes exceeded")
+                    break
+                
+                zf.extract(info, extract_dir)
+    except Exception as e:
+        logger.error(f"Failed to extract root ZIP: {e}")
+        raise
+    
+    # Step 2: Recursively scan extracted content
+    # Start with root ZIP in chain, but group is "OTHER" until we find business ZIPs
+    root_chain = [root_zip_name]
+    initial_group = "OTHER" if is_root else extract_module_prefix_from_zipname(root_zip_name, group_prefix_len) or "OTHER"
+    
+    _recursive_scan(extract_dir, depth=1, zip_chain=root_chain, current_group=initial_group)
+    
+    total_size = sum(f["size"] for f in xml_files)
+    
+    logger.info(f"Scan complete: {len(xml_files)} XML files in {len(groups)} groups, {total_size} bytes")
     
     return xml_files, dict(groups), total_size
 

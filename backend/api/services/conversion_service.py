@@ -5,8 +5,9 @@ import io
 import json
 import hashlib
 import time
+import re
 from pathlib import Path
-from typing import List, Dict, Optional, Set, Any, Tuple
+from typing import List, Dict, Optional, Set, Any, Tuple, Literal
 from collections import defaultdict
 import logging
 
@@ -25,6 +26,9 @@ from api.services.xml_processing_service import (
 from api.services.xlsx_service import get_xlsx_bytes_from_csv
 
 logger = logging.getLogger(__name__)
+
+# Type alias for group mode (kept for backwards compatibility)
+GroupMode = Literal["zip", "folder", "hybrid"]
 
 
 def _sha_short(s: str, n: int = 16) -> str:
@@ -66,10 +70,40 @@ def logical_xml_to_output_relpath(logical_path: str, out_ext: str = ".csv") -> s
     return lp
 
 
-def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict:
+def scan_zip_with_groups(
+    file_bytes: bytes,
+    filename: str,
+    user_id: str,
+    group_mode: GroupMode = "zip",  # Kept for backwards compatibility
+    group_prefix_len: Optional[int] = None,
+    max_depth: int = 10,
+    max_files: int = 20000,
+    max_unzipped_bytes: int = 300 * 1024 * 1024,
+) -> Dict:
     """
-    Save uploaded file to a fresh session and scan it for XML files; return session metadata and groups.
-    Handles both ZIP files and single XML files.
+    Save uploaded file to a fresh session and scan it for XML files.
+    Returns session metadata and groups.
+    
+    Groups are determined by the MODULE PREFIX of business ZIPs:
+    - AR_PAYMENT_TERM.zip → AR
+    - ATK_KR_TOPIC.zip → ATK
+    - CST_COST_BOOK.zip → CST
+    
+    Root ZIPs and batch ZIPs do NOT become groups.
+    Folders are traversed but do NOT affect grouping.
+    
+    Args:
+        file_bytes: Raw file bytes
+        filename: Original filename
+        user_id: User ID for ownership
+        group_mode: Legacy parameter (kept for compatibility, not used)
+        group_prefix_len: Optional max prefix length (2, 3, 4...)
+        max_depth: Maximum ZIP nesting depth
+        max_files: Maximum XML files to collect
+        max_unzipped_bytes: Maximum bytes to extract
+    
+    Returns:
+        Scan result with session_id, xml_count, groups, files
     """
     session_id = create_session_dir(user_id)
     sess_dir = get_session_dir(session_id)
@@ -99,6 +133,10 @@ def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict
             "group": group,
             "size": file_size,
             "abs_path": str(dest_path),
+            "business_zip": "",
+            "folder_path": "",
+            "root_folder": "",
+            "zip_chain": [],
         }]
         groups = {group: xml_files}
         total_size = file_size
@@ -106,13 +144,21 @@ def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict
         logger.info(f"Processed single XML file: {filename} ({file_size} bytes)")
         
     elif is_zip:
-        # ZIP file - extract and scan
-        xml_files, groups, total_size = scan_zip_for_xml(zip_path, sess_dir)
+        # ZIP file - extract and scan recursively
+        xml_files, groups, total_size = scan_zip_for_xml(
+            zip_path,
+            temp_dir=sess_dir,
+            max_depth=max_depth,
+            custom_prefixes=None,
+            group_prefix_len=group_prefix_len,
+            max_files=max_files,
+            max_unzipped_bytes=max_unzipped_bytes,
+        )
         logger.info(f"Scanned ZIP: {filename}, found {len(xml_files)} XML files in {len(groups)} groups")
     else:
         raise ValueError(f"Unsupported file type: {filename}")
 
-    # save metadata
+    # Save metadata
     metadata = {
         "session_id": session_id,
         "user_id": user_id,
@@ -121,6 +167,8 @@ def scan_zip_with_groups(file_bytes: bytes, filename: str, user_id: str) -> Dict
         "groups": {k: len(v) for k, v in groups.items()},
         "group_list": list(groups.keys()),
         "total_size": total_size,
+        "group_prefix_len": group_prefix_len,
+        "max_depth": max_depth,
     }
     save_session_metadata(session_id, metadata)
 

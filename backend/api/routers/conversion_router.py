@@ -5,7 +5,7 @@ from pathlib import Path
 import zipfile
 import io
 import logging
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from api.schemas.conversion import (
     ZipScanResponse, 
@@ -35,9 +35,32 @@ workflow_router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 @router.post("/scan", response_model=ZipScanResponse)
 async def scan(
     file: UploadFile = File(...),
+    # Kept for compatibility - actual grouping is prefix-based in service
+    group_mode: Literal["zip", "folder", "hybrid"] = Query("zip"),
+    group_prefix_len: Optional[int] = Query(
+        None, ge=1, le=10,
+        description="Optional: limit group prefix length (2/3/4). Default uses full prefix token."
+    ),
+    max_depth: int = Query(10, ge=0, le=50, description="Max nested zip recursion depth."),
+    max_files: int = Query(20000, ge=100, le=200000, description="Max XML files to collect."),
+    max_unzipped_mb: int = Query(
+        300, ge=1, le=50000,
+        description="Max total bytes copied during scan (MB)."
+    ),
     current_user_id: str = Depends(get_current_user),
 ):
-    """Scan a ZIP or XML file for content and detect groups"""
+    """
+    Scan a ZIP (recursively, including nested ZIPs) or XML file for content.
+    
+    Groups are determined by the MODULE PREFIX of business ZIPs:
+    - AR_PAYMENT_TERM.zip → group "AR"
+    - ATK_KR_TOPIC.zip → group "ATK"
+    - CST_COST_BOOK.zip → group "CST"
+    
+    Root ZIPs (like "Manufacturing and Supply Chain...zip") do NOT become groups.
+    Batch ZIPs (like "1_BATCH.zip") inherit group from parent business ZIP.
+    Folders are traversed but do NOT affect grouping.
+    """
     filename = file.filename
     if not filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -49,7 +72,16 @@ async def scan(
 
     try:
         data = await file.read()
-        result = scan_zip_with_groups(data, filename, current_user_id)
+        result = scan_zip_with_groups(
+            file_bytes=data,
+            filename=filename,
+            user_id=current_user_id,
+            group_mode=group_mode,
+            group_prefix_len=group_prefix_len,
+            max_depth=max_depth,
+            max_files=max_files,
+            max_unzipped_bytes=max_unzipped_mb * 1024 * 1024,
+        )
         return result
     except Exception as e:
         logger.exception("Scan failed")
@@ -288,9 +320,22 @@ def download_single(
 @workflow_router.post("/scan", response_model=ZipScanResponse)
 async def workflow_scan(
     file: UploadFile = File(...),
+    group_mode: Literal["zip", "folder", "hybrid"] = Query("zip"),
+    group_prefix_len: Optional[int] = Query(None, ge=1, le=10),
+    max_depth: int = Query(10, ge=0, le=50),
+    max_files: int = Query(20000, ge=100, le=200000),
+    max_unzipped_mb: int = Query(300, ge=1, le=50000),
     current_user_id: str = Depends(get_current_user),
 ):
-    return await scan(file, current_user_id)
+    return await scan(
+        file=file,
+        group_mode=group_mode,
+        group_prefix_len=group_prefix_len,
+        max_depth=max_depth,
+        max_files=max_files,
+        max_unzipped_mb=max_unzipped_mb,
+        current_user_id=current_user_id,
+    )
 
 
 @workflow_router.post("/convert")
