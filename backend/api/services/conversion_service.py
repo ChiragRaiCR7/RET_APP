@@ -148,17 +148,26 @@ def get_session_info(session_id: str, user_id: str) -> Dict:
     return metadata
 
 
-def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict:
+def convert_session(session_id: str, groups: Optional[List[str]] = None, output_format: str = "csv") -> Dict:
     """
-    Convert all XML files present in session's extracted folder into CSVs (optionally filtering by group).
+    Convert all XML files present in session's extracted folder into CSVs or XLSX files.
     Result files are placed in session/output/.
+    
+    Args:
+        session_id: Session ID
+        groups: Optional list of groups to convert
+        output_format: Output format ('csv' or 'xlsx')
     """
     sess_dir = get_session_dir(session_id)
     extract_dir = sess_dir / "extracted"
     out_dir = sess_dir / "output"
     out_dir.mkdir(exist_ok=True)
     
-    logger.info(f"Converting session {session_id}, groups filter: {groups}")
+    output_format = output_format.lower().strip()
+    if output_format not in ["csv", "xlsx"]:
+        output_format = "csv"
+    
+    logger.info(f"Converting session {session_id}, groups filter: {groups}, format: {output_format}")
     logger.info(f"Extract dir: {extract_dir}, exists: {extract_dir.exists()}")
 
     if not extract_dir.exists():
@@ -210,6 +219,7 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict
                 logger.warning("No records found in %s", xml_file)
                 continue
 
+            # Create CSV first (always needed)
             csv_name = xml_file.stem + ".csv"
             csv_path = out_dir / csv_name
             with open(csv_path, "w", newline="", encoding="utf-8") as outf:
@@ -218,15 +228,46 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None) -> Dict
                 for r in rows:
                     row_data = {h: r.get(h, "") for h in headers}
                     writer.writerow(row_data)
-
-            converted_files.append({
-                "filename": csv_name, 
-                "group": group, 
-                "rows": len(rows), 
-                "columns": len(headers)
-            })
+            
+            # If XLSX format requested, convert CSV to XLSX
+            if output_format == "xlsx":
+                try:
+                    from api.services.xlsx_service import csv_to_xlsx_bytes
+                    xlsx_name = xml_file.stem + ".xlsx"
+                    xlsx_path = out_dir / xlsx_name
+                    
+                    xlsx_bytes = csv_to_xlsx_bytes(str(csv_path))
+                    with open(xlsx_path, "wb") as f:
+                        f.write(xlsx_bytes)
+                    
+                    converted_files.append({
+                        "filename": xlsx_name, 
+                        "group": group, 
+                        "rows": len(rows), 
+                        "columns": len(headers),
+                        "format": "xlsx"
+                    })
+                    logger.info("Converted %s -> %s (XLSX, %d rows, %d cols)", xml_file.name, xlsx_name, len(rows), len(headers))
+                except Exception as xlsx_err:
+                    logger.warning(f"XLSX conversion failed for {xml_file.name}, keeping CSV: {xlsx_err}")
+                    converted_files.append({
+                        "filename": csv_name, 
+                        "group": group, 
+                        "rows": len(rows), 
+                        "columns": len(headers),
+                        "format": "csv"
+                    })
+            else:
+                converted_files.append({
+                    "filename": csv_name, 
+                    "group": group, 
+                    "rows": len(rows), 
+                    "columns": len(headers),
+                    "format": "csv"
+                })
+                logger.info("Converted %s -> %s (%d rows, %d cols)", xml_file.name, csv_name, len(rows), len(headers))
+            
             success += 1
-            logger.info("Converted %s -> %s (%d rows, %d cols)", xml_file.name, csv_name, len(rows), len(headers))
         except Exception as e:
             failed += 1
             errors.append({"file": xml_file.name, "error": str(e)})

@@ -4,11 +4,9 @@ Implements RAG and conversation management
 """
 
 import logging
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 from pathlib import Path
-import json
 from dataclasses import dataclass
-import tempfile
 
 from api.core.config import settings
 

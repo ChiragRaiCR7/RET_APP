@@ -5,11 +5,9 @@ Can be upgraded to LangChain/LangGraph later
 """
 
 import logging
-import json
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 import csv
-from collections import defaultdict
 
 # Try to import chromadb
 chromadb = None
@@ -18,7 +16,6 @@ CHROMA_AVAILABLE = False
 
 try:
     import chromadb
-    from chromadb.config import Settings
     CHROMA_AVAILABLE = True
 except ImportError:
     CHROMA_AVAILABLE = False

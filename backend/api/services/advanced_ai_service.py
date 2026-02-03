@@ -26,7 +26,6 @@ import csv
 
 try:
     import chromadb
-    from chromadb.config import Settings
 except ImportError:
     chromadb = None
 

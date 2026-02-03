@@ -111,8 +111,8 @@ const scanning = ref(false)
 const scanResults = ref(null)
 const error = ref('')
 
-// Define emits
-const emit = defineEmits(['uploaded', 'scanned'])
+// Define emits - 'files-added' for raw files, 'uploaded'/'scanned' for scan results
+const emit = defineEmits(['uploaded', 'scanned', 'files-added'])
 
 function open() {
   input.value?.click()
@@ -122,6 +122,8 @@ function onFiles(e) {
   const list = Array.from(e.target.files || [])
   files.value.push(...list)
   error.value = ''
+  // Emit raw files immediately so parent can track them
+  emit('files-added', list)
 }
 
 function onDrop(e) {
@@ -129,6 +131,8 @@ function onDrop(e) {
   const list = Array.from(e.dataTransfer.files || [])
   files.value.push(...list)
   error.value = ''
+  // Emit raw files immediately so parent can track them
+  emit('files-added', list)
 }
 
 function remove(i) {
@@ -171,27 +175,78 @@ async function scanFile(file) {
 
 <style scoped>
 .file-upload-zone {
-  border: 2px dashed #ccc;
-  border-radius: 8px;
-  padding: 2rem;
+  border: 2px dashed var(--border-medium);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl) var(--space-lg);
   text-align: center;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-base);
+  background: var(--surface-base);
 }
 
 .file-upload-zone:hover {
-  border-color: #666;
-  background: #f9f9f9;
+  border-color: var(--brand-primary);
+  background: var(--brand-subtle);
 }
 
 .file-upload-zone.dragging {
-  border-color: #007bff;
-  background: #e7f3ff;
+  border-color: var(--brand-primary);
+  background: var(--brand-subtle);
+  border-style: solid;
 }
 
 .file-upload-icon {
-  font-size: 2.5rem;
-  margin-bottom: 0.5rem;
+  font-size: 3rem;
+  margin-bottom: var(--space-md);
+}
+
+.info-item {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+
+.metric-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.metric-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--brand-primary);
+}
+
+.metric-label {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+  margin-top: var(--space-xs);
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .spinner {

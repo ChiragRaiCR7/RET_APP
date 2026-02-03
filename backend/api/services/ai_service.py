@@ -1,5 +1,3 @@
-from pathlib import Path
-from typing import List, Optional
 import logging
 
 from api.integrations.azure_openai import AzureOpenAIClient

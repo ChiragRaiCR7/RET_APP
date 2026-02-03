@@ -75,7 +75,7 @@ async def convert_async(
 
     try:
         job = create_job(db, "conversion")
-        result = convert_session(session_id, groups)
+        result = convert_session(session_id, groups, output_format)
         return {"success": True, "job_id": job.id, **result}
     except Exception as e:
         logger.exception("Conversion failed")
@@ -308,3 +308,229 @@ async def workflow_convert(
 @workflow_router.get("/download/{session_id}")
 def workflow_download(session_id: str, current_user_id: str = Depends(get_current_user)):
     return download(session_id, current_user_id)
+
+
+@router.post("/update-cell/{session_id}/{filename}")
+def update_cell(
+    session_id: str,
+    filename: str,
+    row_index: int = Form(...),
+    column: str = Form(...),
+    value: str = Form(...),
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Update a single cell in a converted CSV file.
+    """
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    import pandas as pd
+    
+    try:
+        # Verify ownership
+        metadata = get_session_metadata(session_id)
+        stored_user = metadata.get("user_id", "")
+        if stored_user and stored_user != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Continue if metadata not found
+    
+    sess_dir = get_session_dir(session_id)
+    file_path = sess_dir / "output" / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        df = pd.read_csv(file_path)
+        if row_index < 0 or row_index >= len(df):
+            raise HTTPException(status_code=400, detail="Invalid row index")
+        if column not in df.columns:
+            raise HTTPException(status_code=400, detail=f"Column '{column}' not found")
+        
+        df.at[row_index, column] = value
+        df.to_csv(file_path, index=False)
+        
+        return {"success": True, "message": "Cell updated"}
+    except Exception as e:
+        logger.exception("Cell update failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-row/{session_id}/{filename}")
+def update_row(
+    session_id: str,
+    filename: str,
+    row_index: int = Form(...),
+    row_data: str = Form(...),  # JSON string of column:value pairs
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Update an entire row in a converted CSV file.
+    """
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    import pandas as pd
+    import json
+    
+    try:
+        metadata = get_session_metadata(session_id)
+        stored_user = metadata.get("user_id", "")
+        if stored_user and stored_user != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    
+    sess_dir = get_session_dir(session_id)
+    file_path = sess_dir / "output" / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        df = pd.read_csv(file_path)
+        if row_index < 0 or row_index >= len(df):
+            raise HTTPException(status_code=400, detail="Invalid row index")
+        
+        data = json.loads(row_data)
+        for col, val in data.items():
+            if col in df.columns:
+                df.at[row_index, col] = val
+        
+        df.to_csv(file_path, index=False)
+        return {"success": True, "message": "Row updated"}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON for row_data")
+    except Exception as e:
+        logger.exception("Row update failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/add-row/{session_id}/{filename}")
+def add_row(
+    session_id: str,
+    filename: str,
+    row_data: str = Form(...),  # JSON string of column:value pairs
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Add a new row to a converted CSV file.
+    """
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    import pandas as pd
+    import json
+    
+    try:
+        metadata = get_session_metadata(session_id)
+        stored_user = metadata.get("user_id", "")
+        if stored_user and stored_user != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    
+    sess_dir = get_session_dir(session_id)
+    file_path = sess_dir / "output" / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        df = pd.read_csv(file_path)
+        data = json.loads(row_data)
+        new_row = {col: data.get(col, '') for col in df.columns}
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        df.to_csv(file_path, index=False)
+        return {"success": True, "message": "Row added", "new_row_index": len(df) - 1}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON for row_data")
+    except Exception as e:
+        logger.exception("Add row failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/delete-row/{session_id}/{filename}/{row_index}")
+def delete_row(
+    session_id: str,
+    filename: str,
+    row_index: int,
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Delete a row from a converted CSV file.
+    """
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    import pandas as pd
+    
+    try:
+        metadata = get_session_metadata(session_id)
+        stored_user = metadata.get("user_id", "")
+        if stored_user and stored_user != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    
+    sess_dir = get_session_dir(session_id)
+    file_path = sess_dir / "output" / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        df = pd.read_csv(file_path)
+        if row_index < 0 or row_index >= len(df):
+            raise HTTPException(status_code=400, detail="Invalid row index")
+        
+        df = df.drop(index=row_index).reset_index(drop=True)
+        df.to_csv(file_path, index=False)
+        return {"success": True, "message": "Row deleted"}
+    except Exception as e:
+        logger.exception("Delete row failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/cleanup/{session_id}")
+def cleanup_session(
+    session_id: str,
+    current_user_id: str = Depends(get_current_user),
+):
+    """Clean up extracted and output files from a session"""
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    from pathlib import Path
+    import shutil
+
+    try:
+        metadata = get_session_metadata(session_id)
+        stored_user = metadata.get("user_id", "")
+        if stored_user and stored_user != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized - session belongs to another user")
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # Continue if we can't check metadata
+
+    try:
+        sess_dir = get_session_dir(session_id)
+        extract_dir = sess_dir / "extracted"
+        out_dir = sess_dir / "output"
+
+        # Remove directories
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir)
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+
+        # Clear conversion index
+        index_file = sess_dir / "conversion_index.json"
+        if index_file.exists():
+            index_file.unlink()
+
+        logger.info(f"Cleaned up session {session_id}")
+        return {"success": True, "message": "Session cleaned up successfully"}
+    except Exception as e:
+        logger.exception("Cleanup failed")
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")

@@ -4,13 +4,11 @@ Handles indexing of XML groups into Chroma vector DB for RAG
 Session-specific indexing - cleared on logout
 """
 
-import os
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Set
 from dataclasses import dataclass
-import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +117,8 @@ class SessionIndexer:
                 # Fallback for different chromadb versions
                 try:
                     self.client = chromadb.PersistentClient(path=chroma_path)
-                except:
+                except Exception as e:
+                    logger.warning(f"Failed to create persistent client: {e}")
                     self.client = chromadb.Client()
             
             # Get or create collection

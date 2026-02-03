@@ -1,4 +1,13 @@
 {
-  "auto_indexed_groups": [],
-  "default_collection": "documents"
+  "auto_indexed_groups": [
+    "DISSERTATION"
+  ],
+  "default_collection": "documents",
+  "chunk_size": 10000,
+  "retrieval_top_k": 16,
+  "hybrid_alpha": 0.7,
+  "hybrid_beta": 0.3,
+  "max_zip_size_mb": 10000,
+  "max_nested_depth": 50,
+  "enable_auto_indexing": false
 }

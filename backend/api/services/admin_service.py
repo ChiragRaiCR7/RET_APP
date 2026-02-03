@@ -245,7 +245,7 @@ def generate_reset_token(db: Session, user_id: int, admin_username: str = None):
     # Delete old unused tokens
     db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user_id,
-        PasswordResetToken.used == False
+        ~PasswordResetToken.used
     ).delete()
     
     # Create new token (valid for 24 hours)
@@ -378,14 +378,23 @@ def list_ops_logs(db: Session, limit: int = 200):
 def get_ai_indexing_config_data() -> dict:
     """Get AI indexing configuration"""
     defaults = {
-        "auto_indexed_groups": ["JOURNAL", "BOOK", "CONFERENCE"],
-        "default_collection": "documents"
+        "auto_indexed_groups": [],
+        "default_collection": "documents",
+        "chunk_size": 10000,
+        "retrieval_top_k": 16,
+        "hybrid_alpha": 0.70,
+        "hybrid_beta": 0.30,
+        "max_zip_size_mb": 10000,
+        "max_nested_depth": 50,
+        "enable_auto_indexing": False,
     }
     
     if AI_CONFIG_FILE.exists():
         try:
             with open(AI_CONFIG_FILE, "r") as f:
-                return json.load(f)
+                loaded = json.load(f)
+                # Merge with defaults to ensure new keys are present
+                return {**defaults, **loaded}
         except Exception as e:
             logger.error(f"Failed to load AI config: {e}")
             return defaults
@@ -407,4 +416,5 @@ def save_ai_indexing_config_data(config: dict):
 def get_user_by_username(db: Session, username: str):
     """Get user by username"""
     return db.query(User).filter(User.username == username).first()
+
 
