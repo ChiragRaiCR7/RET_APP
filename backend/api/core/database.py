@@ -1,9 +1,13 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from typing import cast
 from api.core.config import settings
 
+# Type-safe database URL with fallback (explicit cast for type checker)
+_database_url: str = cast(str, settings.DATABASE_URL) if settings.DATABASE_URL else "sqlite:///./test.db"
+
 engine = create_engine(
-    settings.DATABASE_URL,
+    _database_url,
     pool_pre_ping=True,
     pool_recycle=3600,  # Recycle connections every hour
 )

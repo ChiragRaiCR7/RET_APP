@@ -471,6 +471,20 @@ def list_converted_files(session_id: str, user_id: str, group: Optional[str] = N
     }
 
 
+def _safe_cell_value(value) -> str:
+    """Convert any cell value to string, handling None/NaN/etc."""
+    if value is None:
+        return ""
+    # Handle pandas NaN or other float NaN
+    try:
+        import math
+        if isinstance(value, float) and math.isnan(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
 def get_file_preview(
     session_id: str, 
     user_id: str, 
@@ -478,7 +492,7 @@ def get_file_preview(
     max_rows: int = 100
 ) -> Dict:
     """
-    Get preview data for a converted file.
+    Get preview data for a converted file (CSV or XLSX).
     Returns headers and rows for table display.
     """
     sess_dir = get_session_dir(session_id)
@@ -489,39 +503,72 @@ def get_file_preview(
         raise ValueError("Unauthorized")
     
     out_dir = sess_dir / "output"
-    csv_path = out_dir / filename
+    file_path = out_dir / filename
     
-    if not csv_path.exists():
+    # Handle XLSX files - look for corresponding CSV or try to read XLSX
+    is_xlsx = filename.lower().endswith('.xlsx')
+    
+    if is_xlsx:
+        # Try to find corresponding CSV file first
+        csv_filename = filename[:-5] + '.csv'
+        csv_path = out_dir / csv_filename
+        if csv_path.exists():
+            file_path = csv_path
+            is_xlsx = False
+        elif not file_path.exists():
+            raise FileNotFoundError(f"File not found: {filename}")
+    
+    if not file_path.exists():
         raise FileNotFoundError(f"File not found: {filename}")
     
     headers = []
     rows = []
     total_rows = 0
     
-    try:
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames or []
+    if is_xlsx:
+        # Try to read XLSX with pandas
+        try:
+            import pandas as pd
+            df = pd.read_excel(file_path, nrows=max_rows + 1)
+            headers = [str(h) for h in df.columns.tolist()]
+            total_rows = len(df)
             
-            for i, row in enumerate(reader):
-                total_rows += 1
-                if i < max_rows:
-                    # Convert row to list for table display
-                    rows.append([row.get(h, "") for h in headers])
-    except UnicodeDecodeError:
-        # Fallback to latin-1
-        with open(csv_path, "r", encoding="latin-1", newline="") as f:
-            reader = csv.DictReader(f)
-            headers = reader.fieldnames or []
-            
-            for i, row in enumerate(reader):
-                total_rows += 1
-                if i < max_rows:
-                    rows.append([row.get(h, "") for h in headers])
+            for idx, row in df.iterrows():
+                if idx < max_rows:
+                    # Convert each cell to string, handling None/NaN
+                    rows.append([_safe_cell_value(row.get(h)) for h in headers])
+        except ImportError:
+            logger.warning("pandas/openpyxl not available for XLSX preview")
+            raise FileNotFoundError(f"XLSX preview not supported. CSV file not found: {filename[:-5]}.csv")
+        except Exception as e:
+            logger.warning(f"Failed to read XLSX {filename}: {e}")
+            raise FileNotFoundError(f"Failed to read XLSX file: {str(e)}")
+    else:
+        # Read CSV file
+        try:
+            with open(file_path, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                headers = list(reader.fieldnames or [])
+                
+                for i, row in enumerate(reader):
+                    total_rows += 1
+                    if i < max_rows:
+                        # Convert row to list for table display, handling None values
+                        rows.append([_safe_cell_value(row.get(h)) for h in headers])
+        except UnicodeDecodeError:
+            # Fallback to latin-1
+            with open(file_path, "r", encoding="latin-1", newline="") as f:
+                reader = csv.DictReader(f)
+                headers = list(reader.fieldnames or [])
+                
+                for i, row in enumerate(reader):
+                    total_rows += 1
+                    if i < max_rows:
+                        rows.append([_safe_cell_value(row.get(h)) for h in headers])
     
     return {
         "filename": filename,
-        "headers": headers,
+        "headers": list(headers),
         "rows": rows,
         "total_rows": total_rows,
         "preview_rows": len(rows),

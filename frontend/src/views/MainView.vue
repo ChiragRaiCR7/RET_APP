@@ -227,6 +227,59 @@
         </div>
       </div>
 
+      <!-- AI Indexing Section -->
+      <div v-if="workflow.converted && conversionData.groups.length" class="ai-index-section">
+        <h4 class="section-title">🤖 Quick AI Indexing</h4>
+        <p class="section-desc">
+          Index selected groups for AI-powered search and chat. 
+          This enables asking questions about your converted data.
+        </p>
+        
+        <div class="ai-index-controls">
+          <div class="group-select-grid">
+            <label 
+              v-for="group in conversionData.groups" 
+              :key="group.name"
+              class="checkbox-label ai-group-item"
+              :class="{ 'indexed': indexedGroups.includes(group.name) }"
+            >
+              <input 
+                type="checkbox" 
+                :value="group.name"
+                v-model="aiSelectedGroups"
+                :disabled="aiIndexing"
+              />
+              <span class="group-name">{{ group.name }}</span>
+              <span class="group-meta">{{ group.file_count || 0 }} files</span>
+              <span v-if="indexedGroups.includes(group.name)" class="indexed-badge">✅ Indexed</span>
+            </label>
+          </div>
+          
+          <div class="ai-index-actions">
+            <button class="btn btn-sm btn-secondary" @click="selectAllAIGroups" :disabled="aiIndexing">
+              Select All
+            </button>
+            <button class="btn btn-sm btn-secondary" @click="clearAIGroups" :disabled="aiIndexing">
+              Clear
+            </button>
+          </div>
+
+          <button 
+            class="btn btn-primary ai-index-btn" 
+            @click="startAIIndexing" 
+            :disabled="aiIndexing || aiSelectedGroups.length === 0"
+          >
+            <span v-if="aiIndexing" class="spinner"></span>
+            {{ aiIndexing ? 'Indexing for AI...' : `🚀 Index ${aiSelectedGroups.length} Group(s) for AI` }}
+          </button>
+          
+          <p v-if="indexedGroups.length" class="index-status">
+            ✅ {{ indexedGroups.length }} group(s) indexed — 
+            <button class="btn-link" @click="activeTab = 2">Open AI Chat →</button>
+          </p>
+        </div>
+      </div>
+
       <!-- Edit Mode Panel -->
       <EditModePanel 
         v-if="workflow.editMode && workflow.sessionId"
@@ -301,6 +354,11 @@ const conversionData = reactive({
   files: [],
   totalFiles: 0
 })
+
+// AI Indexing state
+const aiSelectedGroups = ref([])
+const indexedGroups = ref([])
+const aiIndexing = ref(false)
 
 // Computed
 const filteredGroups = computed(() => {
@@ -579,7 +637,57 @@ function onComparisonComplete(results) {
   toast.success('Comparison complete!')
 }
 
+// AI Indexing functions
+function selectAllAIGroups() {
+  aiSelectedGroups.value = conversionData.groups.map(g => g.name)
+}
+
+function clearAIGroups() {
+  aiSelectedGroups.value = []
+}
+
+async function startAIIndexing() {
+  if (!workflow.sessionId || aiSelectedGroups.value.length === 0) {
+    toast.error('No session or groups selected')
+    return
+  }
+  
+  aiIndexing.value = true
+  
+  try {
+    // Try v2 endpoint first
+    let res
+    try {
+      res = await api.post('/v2/ai/index/groups', {
+        session_id: workflow.sessionId,
+        groups: aiSelectedGroups.value
+      })
+    } catch (v2Error) {
+      // Fallback to legacy endpoint
+      const formData = new FormData()
+      formData.append('session_id', workflow.sessionId)
+      formData.append('groups', aiSelectedGroups.value.join(','))
+      
+      res = await api.post('/ai/index-session', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+    }
+    
+    const indexed = res.data.indexed_groups || res.data.groups || aiSelectedGroups.value
+    indexedGroups.value = [...new Set([...indexedGroups.value, ...indexed])]
+    
+    const count = res.data.indexed_count || res.data.files_indexed || indexed.length
+    toast.success(`${count} group(s) indexed successfully for AI!`)
+    
+  } catch (e) {
+    toast.error('AI indexing failed: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    aiIndexing.value = false
+  }
+}
+
 function onGroupsIndexed(groups) {
+  indexedGroups.value = [...new Set([...indexedGroups.value, ...(groups || [])])]
   toast.success(`${groups.length} groups indexed for AI`)
 }
 
@@ -913,5 +1021,101 @@ onMounted(() => {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* AI Indexing Section */
+.ai-index-section {
+  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  border-radius: var(--radius-md);
+  padding: var(--space-lg);
+  margin-top: var(--space-lg);
+  border: 1px solid var(--border-light);
+}
+
+.ai-index-section .section-desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-md);
+}
+
+.ai-index-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.group-select-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--space-sm);
+  background: var(--surface-base);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.ai-group-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  background: var(--surface-elevated);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ai-group-item:hover {
+  background: var(--brand-subtle);
+}
+
+.ai-group-item.indexed {
+  border-left: 3px solid var(--success);
+}
+
+.ai-group-item .group-name {
+  font-weight: 600;
+  flex: 1;
+}
+
+.ai-group-item .group-meta {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.ai-group-item .indexed-badge {
+  font-size: 0.7rem;
+  color: var(--success);
+}
+
+.ai-index-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.ai-index-btn {
+  align-self: flex-start;
+}
+
+.index-status {
+  font-size: 0.9rem;
+  color: var(--success);
+  margin-top: var(--space-sm);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--brand-primary);
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+  font-size: inherit;
+}
+
+.btn-link:hover {
+  color: var(--brand-light);
 }
 </style>

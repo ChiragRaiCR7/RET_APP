@@ -203,6 +203,8 @@ class SessionMessage(BaseModel):
     role: str  # 'user' or 'assistant'
     content: str
     timestamp: Optional[str] = None
+    sources: Optional[List[SourceDocument]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class AISessionState(BaseModel):
@@ -212,6 +214,8 @@ class AISessionState(BaseModel):
     instructions: str = ""
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    indexed_groups: List[str] = []
+    document_count: int = 0
 
 
 class CreateSessionRequest(BaseModel):
@@ -237,4 +241,107 @@ class SessionListItem(BaseModel):
     message_count: int
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+# ============================================================
+# Enhanced RAG Chat Schemas
+# ============================================================
+
+class RAGChatRequest(BaseModel):
+    """Request for RAG-based chat"""
+    session_id: str
+    message: Optional[str] = None
+    question: Optional[str] = None  # Alias for message (frontend compatibility)
+    use_rag: bool = True
+    top_k: int = Field(default=16, ge=1, le=50)
+    group_filter: Optional[str] = None
+    file_filter: Optional[str] = None
+    history: Optional[List[Dict[str, str]]] = None
+    
+    @property
+    def query(self) -> str:
+        """Get the query from either message or question field"""
+        return self.message or self.question or ""
+
+
+class RAGChatResponse(BaseModel):
+    """Response from RAG chat"""
+    answer: str
+    sources: List[SourceDocument] = []
+    citations: List[str] = []
+    query_time_ms: float
+    query_plan: Optional[Dict[str, Any]] = None
+    chunks_retrieved: int = 0
+
+
+# ============================================================
+# Auto-Indexing Schemas
+# ============================================================
+
+class AutoIndexProgress(BaseModel):
+    """Progress of auto-indexing operation"""
+    status: str  # idle, preparing, indexing, completed, failed, stopped
+    progress: float = Field(default=0.0, ge=0.0, le=1.0)
+    files_done: int = 0
+    files_total: int = 0
+    docs_done: int = 0
+    current_file: str = ""
+    groups_done: List[str] = []
+    error: Optional[str] = None
+
+
+class StartAutoIndexRequest(BaseModel):
+    """Request to start auto-indexing"""
+    session_id: str
+    groups: List[str]
+    xml_inventory: List[Dict[str, Any]]
+
+
+class AutoIndexStatusResponse(BaseModel):
+    """Status response for auto-indexing"""
+    session_id: str
+    progress: AutoIndexProgress
+    eligible_groups: List[str] = []
+
+
+# ============================================================
+# Group Selection Schemas
+# ============================================================
+
+class GroupSelectionRequest(BaseModel):
+    """Request to select groups for indexing"""
+    session_id: str
+    selected_groups: Optional[List[str]] = None
+    groups: Optional[List[str]] = None  # Alias for selected_groups (frontend compatibility)
+    
+    @property
+    def group_list(self) -> List[str]:
+        """Get the group list from either field"""
+        return self.selected_groups or self.groups or []
+
+
+class DetectedGroupsResponse(BaseModel):
+    """Response with detected groups from ZIP scan"""
+    session_id: str
+    groups: List[GroupInfo]
+    auto_index_eligible: List[str] = []
+    auto_index_status: str = "pending"  # pending, in_progress, completed
+
+
+# ============================================================
+# Transcript Download Schema
+# ============================================================
+
+class TranscriptFormat(str, Enum):
+    """Supported transcript export formats"""
+    JSON = "json"
+    TXT = "txt"
+    MD = "markdown"
+
+
+class TranscriptRequest(BaseModel):
+    """Request to download chat transcript"""
+    session_id: str
+    format: TranscriptFormat = TranscriptFormat.JSON
+    include_sources: bool = True
 

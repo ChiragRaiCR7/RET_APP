@@ -1377,7 +1377,7 @@ def build_transcript_bytes(chat: List[Dict[str, Any]], *, fmt: str = "json") -> 
 
 
 # ============================================================
-# Retry helper (used by AOAI calls in Part 3)
+# Retry helper (used by AOAI calls)
 # ============================================================
 def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
     def decorator(func):

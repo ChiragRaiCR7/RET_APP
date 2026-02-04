@@ -291,33 +291,44 @@
           <label class="form-label">Pick a file (Group+Filename)</label>
           <select v-model="drilldownFile" class="form-select" @change="loadDrilldown">
             <option value="">Select a file...</option>
-            <option v-for="change in results.changes.filter(c => c.status === 'MODIFIED')" :key="change.filename" :value="change.filename">{{ change.group }} | {{ change.filename }}</option>
+            <option v-for="change in results.changes.filter(c => ['MODIFIED','ADDED','REMOVED'].includes(c.status))" :key="change.filename + change.group" :value="change.filename + '||' + (change.group || '')">
+              {{ change.group }} | {{ change.filename }} ({{ change.status }})
+            </option>
           </select>
         </div>
 
         <div v-if="drilldownFile && drilldownData" class="drilldown-content">
-          <p class="diff-complexity">Diff complexity: A={{ drilldownData.sizeA }}, B={{ drilldownData.sizeB }}</p>
-          <p class="delta-summary">Deltas: modified={{ drilldownData.modified }} | added={{ drilldownData.added }} | removed={{ drilldownData.removed }}</p>
+          <p class="diff-complexity">Row counts: Side A = {{ drilldownData.sizeA }}, Side B = {{ drilldownData.sizeB }}</p>
+          <p class="delta-summary">
+            Deltas: 
+            <span class="delta-modified">✏️ modified={{ drilldownData.modified }}</span> | 
+            <span class="delta-added">➕ added={{ drilldownData.added }}</span> | 
+            <span class="delta-removed">🗑️ removed={{ drilldownData.removed }}</span>
+          </p>
+          <p v-if="drilldownData.truncated" class="truncation-warning">⚠️ Results truncated (too many changes to display)</p>
 
           <div class="delta-tables">
             <div class="delta-side">
-              <h5>Side A — only changes</h5>
+              <h5>🅰️ Side A — only changes</h5>
               <div class="data-table-wrapper">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
-                      <th>_kind_</th>
-                      <th>_rowA_</th>
-                      <th>_rowB_</th>
-                      <th v-for="col in drilldownData.changedCols" :key="col">{{ col }}</th>
+                      <th>Kind</th>
+                      <th>Row A</th>
+                      <th>Row B</th>
+                      <th v-for="col in drilldownData.columns" :key="col">{{ col }}</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(row, idx) in drilldownData.deltaA" :key="idx" :class="getRowClass(row._kind_)">
-                      <td>{{ row._kind_ }}</td>
+                      <td><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
                       <td>{{ row._rowA_ }}</td>
                       <td>{{ row._rowB_ }}</td>
-                      <td v-for="col in drilldownData.changedCols" :key="col" :class="getCellClass(row, col, 'A')">{{ row[col] }}</td>
+                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'A')">
+                        <span class="cell-indicator" :class="getCellIndicatorClass(row, col)" title="Change indicator">●</span>
+                        {{ row[col] || '' }}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -325,23 +336,26 @@
             </div>
 
             <div class="delta-side">
-              <h5>Side B — only changes</h5>
+              <h5>🅱️ Side B — only changes</h5>
               <div class="data-table-wrapper">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
-                      <th>_kind_</th>
-                      <th>_rowA_</th>
-                      <th>_rowB_</th>
-                      <th v-for="col in drilldownData.changedCols" :key="col">{{ col }}</th>
+                      <th>Kind</th>
+                      <th>Row A</th>
+                      <th>Row B</th>
+                      <th v-for="col in drilldownData.columns" :key="col">{{ col }}</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(row, idx) in drilldownData.deltaB" :key="idx" :class="getRowClass(row._kind_)">
-                      <td>{{ row._kind_ }}</td>
+                      <td><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
                       <td>{{ row._rowA_ }}</td>
                       <td>{{ row._rowB_ }}</td>
-                      <td v-for="col in drilldownData.changedCols" :key="col" :class="getCellClass(row, col, 'B')">{{ row[col] }}</td>
+                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'B')">
+                        <span class="cell-indicator" :class="getCellIndicatorClass(row, col)" title="Change indicator">●</span>
+                        {{ row[col] || '' }}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -466,23 +480,83 @@ function getRowClass(kind) {
 }
 
 function getCellClass(row, col, side) {
-  if (row._changed_cols_?.includes(col)) return side === 'A' ? 'cell-old' : 'cell-new'
+  const changedCols = row._changed_cols_ || []
+  const colIndex = drilldownData.value?.columns?.indexOf(col)
+  const isChanged = row._kind_ === 'ADDED' || row._kind_ === 'REMOVED'
+    ? true
+    : (changedCols.includes(colIndex) || changedCols.includes(col))
+  if (isChanged) return side === 'A' ? 'cell-old' : 'cell-new'
   return ''
 }
 
+function getCellIndicatorClass(row, col) {
+  const changedCols = row._changed_cols_ || []
+  const colIndex = drilldownData.value?.columns?.indexOf(col)
+  const isChanged = row._kind_ === 'ADDED' || row._kind_ === 'REMOVED'
+    ? true
+    : (changedCols.includes(colIndex) || changedCols.includes(col))
+  return isChanged ? 'indicator-changed' : 'indicator-unchanged'
+}
+
 async function loadDrilldown() {
-  if (!drilldownFile.value) return
-  drilldownData.value = {
-    sizeA: 0, sizeB: 0, modified: 2, added: 1, removed: 1,
-    changedCols: ['Attribute1@null', 'Attribute2@null'],
-    deltaA: [
-      { _kind_: 'MODIFIED', _rowA_: 1, _rowB_: 1, 'Attribute1@null': 'None', 'Attribute2@null': 'None' },
-      { _kind_: 'REMOVED', _rowA_: 0, _rowB_: '', 'Attribute1@null': 'true', 'Attribute2@null': 'true' }
-    ],
-    deltaB: [
-      { _kind_: 'MODIFIED', _rowA_: 1, _rowB_: 1, 'Attribute1@null': 'None', 'Attribute2@null': 'None' },
-      { _kind_: 'ADDED', _rowA_: '', _rowB_: 0, 'Attribute1@null': 'true', 'Attribute2@null': 'true' }
-    ]
+  if (!drilldownFile.value || !results.value) return
+
+  const [filename, group] = drilldownFile.value.split('||')
+  const change = results.value.changes.find(c => c.filename === filename && (c.group || '') === (group || ''))
+  if (!change) {
+    toast.warning('Cannot load drilldown - file not found')
+    return
+  }
+
+  const hasA = !!change.csv_path_a
+  const hasB = !!change.csv_path_b
+  if (!hasA && !hasB) {
+    toast.warning('Cannot load drilldown - file paths not available')
+    return
+  }
+
+  try {
+    toast.info('Loading drilldown comparison...')
+
+    const params = new URLSearchParams({
+      ignore_case: options.ignoreCase.toString(),
+      trim_whitespace: options.trimWhitespace.toString(),
+      similarity_pairing: options.similarityPairing.toString(),
+      sim_threshold: '0.65'
+    })
+
+    if (hasA) params.append('csv_path_a', change.csv_path_a)
+    if (hasB) params.append('csv_path_b', change.csv_path_b)
+
+    const res = await api.post(`/comparison/drilldown?${params.toString()}`)
+
+    if (res.data.error) {
+      toast.error('Drilldown failed: ' + res.data.error)
+      return
+    }
+
+    const deltaA = res.data.deltaA || {}
+    const deltaB = res.data.deltaB || {}
+    const stats = res.data.stats || {}
+    const header = res.data.header || []
+
+    drilldownData.value = {
+      sizeA: res.data.row_count_A || 0,
+      sizeB: res.data.row_count_B || 0,
+      modified: stats.modified || 0,
+      added: stats.added || 0,
+      removed: stats.removed || 0,
+      columns: header,
+      deltaA: deltaA.rows || [],
+      deltaB: deltaB.rows || [],
+      truncated: res.data.truncated || false,
+      header
+    }
+
+    toast.success('Drilldown loaded!')
+  } catch (e) {
+    toast.error('Failed to load drilldown: ' + (e.response?.data?.detail || e.message))
+    drilldownData.value = null
   }
 }
 </script>
@@ -564,6 +638,17 @@ async function loadDrilldown() {
 .row-removed { background: var(--error-bg); }
 .cell-old { background: #fee2e2; }
 .cell-new { background: #d1fae5; }
+.cell-indicator { font-size: 0.7rem; margin-right: 4px; }
+.indicator-changed { color: #ef4444; }
+.indicator-unchanged { color: #22c55e; }
+.kind-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.kind-modified { background: #fef3c7; color: #92400e; }
+.kind-added { background: #d1fae5; color: #065f46; }
+.kind-removed { background: #fee2e2; color: #991b1b; }
+.truncation-warning { color: var(--warning); font-weight: 600; background: var(--warning-bg); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); }
+.delta-modified { color: #f59e0b; font-weight: 600; }
+.delta-added { color: #10b981; font-weight: 600; }
+.delta-removed { color: #ef4444; font-weight: 600; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid transparent; border-top-color: currentColor; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 768px) { .sides-grid { grid-template-columns: 1fr; } .delta-tables { grid-template-columns: 1fr; } }

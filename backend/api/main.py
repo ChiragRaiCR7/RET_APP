@@ -15,10 +15,12 @@ from api.routers import admin_router
 from api.routers import job_router
 from api.routers import files_router
 from api.routers import advanced_router
+from api.routers import rag_router  # New RAG AI router
 
 from api.middleware.correlation_id import CorrelationIdMiddleware
 from api.middleware.logging_middleware import LoggingMiddleware
 from api.middleware.rate_limit import RateLimitMiddleware
+from api.middleware.security_headers import SecurityHeadersMiddleware
 from api.middleware.error_handler import global_exception_handler
 
 import logging
@@ -44,6 +46,7 @@ def create_app() -> FastAPI:
     )
 
     # Add middleware in correct order (last added = first executed)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
@@ -90,3 +93,4 @@ app.include_router(admin_router.router)
 app.include_router(job_router.router)
 app.include_router(files_router.router)
 app.include_router(advanced_router.router)
+app.include_router(rag_router.router)  # New RAG AI router

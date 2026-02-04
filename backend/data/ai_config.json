@@ -1,6 +1,7 @@
 {
   "auto_indexed_groups": [
-    "DISSERTATION"
+    "DISSERTATION",
+    "BOOK"
   ],
   "default_collection": "documents",
   "chunk_size": 10000,

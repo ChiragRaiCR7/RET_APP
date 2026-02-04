@@ -3,7 +3,7 @@ Advanced API Routes
 
 Handles XLSX conversion, file comparison, and advanced RAG endpoints.
 Integrates with:
-- xlsx_conversion_service
+- xlsx_service
 - comparison_service
 - advanced_ai_service
 """
@@ -18,8 +18,8 @@ from dataclasses import asdict
 import tempfile
 from api.core.dependencies import get_current_user
 from api.services.storage_service import get_session_dir, get_session_metadata
-from api.services.xlsx_conversion_service import get_xlsx_bytes_from_csv
-from api.services.comparison_service import compare_files, DiffResult, compare_sessions
+from api.services.xlsx_service import get_xlsx_bytes_from_csv
+from api.services.comparison_service import compare_files, compare_sessions
 from api.services.advanced_ai_service import (
     get_rag_service,
     clear_rag_service,

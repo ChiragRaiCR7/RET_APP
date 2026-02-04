@@ -1,4 +1,4 @@
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, Request
 
@@ -91,7 +91,7 @@ def request_password_reset(db: Session, username: str, reason: str | None = None
         username=normalized,
         reason=reason,
         status="pending",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(req)
     db.commit()
@@ -104,7 +104,7 @@ def confirm_password_reset(db: Session, token: str, new_password: str):
         db.query(PasswordResetToken)
         .filter(
             PasswordResetToken.used == False,
-            PasswordResetToken.expires_at > datetime.utcnow(),
+            PasswordResetToken.expires_at > datetime.now(timezone.utc),
         )
         .all()
     )

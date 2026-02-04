@@ -184,7 +184,6 @@
           :disabled="indexing || selectedGroupsForIndex.length === 0"
           :title="selectedGroupsForIndex.length === 0 ? 'Select at least one group to index' : 'Index selected converted files for AI search'"
         >
-        >
           {{ indexing ? 'Indexing...' : '⚡ Index Converted Files' }}
         </button>
       </div>
@@ -389,20 +388,68 @@ async function sendMessage() {
     // Use conversion session for RAG queries (where indexed data is)
     const useSessionId = conversionSessionId.value || aiSessionId.value
     
-    const res = await api.post('/ai/chat', {
-      message: text,
-      session_id: useSessionId,
-      instructions: sessionInstructions.value
-    })
+    // Parse query modifiers (group filter, top_k)
+    let query = text
+    let groupFilter = null
+    let topK = 8
+    
+    const groupMatch = text.match(/group=(\w+)/i)
+    if (groupMatch) {
+      groupFilter = groupMatch[1]
+      query = query.replace(/group=\w+/i, '').trim()
+    }
+    
+    const topKMatch = text.match(/top_k=(\d+)/i)
+    if (topKMatch) {
+      topK = parseInt(topKMatch[1])
+      query = query.replace(/top_k=\d+/i, '').trim()
+    }
+    
+    // Try new RAG endpoint first, fallback to legacy
+    let res
+    try {
+      res = await api.post('/v2/ai/chat', {
+        session_id: useSessionId,
+        question: query,
+        group_filter: groupFilter,
+        top_k: topK,
+        use_rag: true
+      })
+    } catch (v2Error) {
+      // Fallback to legacy endpoint
+      res = await api.post('/ai/chat', {
+        message: text,
+        session_id: useSessionId,
+        instructions: sessionInstructions.value
+      })
+    }
+    
+    const answer = res.data.answer || res.data.response
+    const sources = res.data.sources || res.data.retrievals || []
     
     messages.value.push({
       role: 'assistant',
-      content: res.data.response,
+      content: answer,
       timestamp: new Date().toISOString(),
-      sources: res.data.sources || []
+      sources: sources.map(s => ({
+        filename: s.source || s.doc || s.file || 'unknown',
+        score: s.score || 0,
+        snippet: s.snippet || s.content || ''
+      }))
     })
     
-    lastRetrievalInfo.value = res.data.retrieval_info || null
+    // Store retrieval info for inspector
+    lastRetrievalInfo.value = {
+      chunks: sources.map(s => ({
+        filename: s.source || s.doc || s.file,
+        score: s.score || 0,
+        content: s.snippet || s.content || ''
+      })),
+      queryTime: res.data.query_time_ms || 0,
+      embeddingModel: res.data.embedding_model || 'text-embedding-3-small',
+      topK: res.data.top_k || topK
+    }
+    
     emit('message-sent', { text, response: res.data })
   } catch (e) {
     toast.error('Failed to get response: ' + (e.response?.data?.detail || e.message))
@@ -521,8 +568,21 @@ async function loadSessionGroups() {
   
   loadingGroups.value = true
   try {
-    const res = await api.get(`/ai/session-groups/${conversionSessionId.value}`)
-    availableGroups.value = res.data.groups || []
+    // Try new v2 endpoint first
+    let res
+    try {
+      res = await api.get('/v2/ai/index/groups', {
+        params: { session_id: conversionSessionId.value }
+      })
+      availableGroups.value = (res.data.groups || []).map(g => 
+        typeof g === 'string' ? g : g.name
+      )
+    } catch (v2Error) {
+      // Fallback to legacy endpoint
+      res = await api.get(`/ai/session-groups/${conversionSessionId.value}`)
+      availableGroups.value = res.data.groups || []
+    }
+    
     // Pre-select all groups by default
     selectedGroupsForIndex.value = [...availableGroups.value]
   } catch (e) {
@@ -543,23 +603,32 @@ async function indexConvertedFiles() {
   indexing.value = true
   
   try {
-    const formData = new FormData()
-    formData.append('session_id', conversionSessionId.value)
-    
-    // Add selected groups
-    if (selectedGroupsForIndex.value.length > 0) {
-      formData.append('groups', selectedGroupsForIndex.value.join(','))
+    // Try new v2 endpoint first
+    let res
+    try {
+      res = await api.post('/v2/ai/index/groups', {
+        session_id: conversionSessionId.value,
+        groups: selectedGroupsForIndex.value
+      })
+    } catch (v2Error) {
+      // Fallback to legacy endpoint
+      const formData = new FormData()
+      formData.append('session_id', conversionSessionId.value)
+      
+      if (selectedGroupsForIndex.value.length > 0) {
+        formData.append('groups', selectedGroupsForIndex.value.join(','))
+      }
+      
+      res = await api.post('/ai/index-session', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
     }
     
-    const res = await api.post('/ai/index-session', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    
-    const filesIndexed = res.data.files_indexed || 0
+    const filesIndexed = res.data.files_indexed || res.data.indexed_count || 0
     if (filesIndexed > 0) {
       toast.success(`${filesIndexed} converted file(s) indexed successfully!`)
       emit('files-indexed', filesIndexed)
-      emit('groups-indexed', res.data.indexed_groups || [])
+      emit('groups-indexed', res.data.indexed_groups || res.data.groups || [])
     } else {
       toast.warning('No files found to index. Have you converted files yet?')
     }

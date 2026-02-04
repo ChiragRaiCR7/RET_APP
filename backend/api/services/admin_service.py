@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
 import json
 from pathlib import Path
@@ -38,7 +38,7 @@ def write_audit_log(
             action=action,
             area=area,
             message=message,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         db.add(log)
         # We don't commit here to allow the caller to commit in transaction
@@ -59,7 +59,7 @@ def write_ops_log(
             action=action,
             area=area,
             message=message,
-            created_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
         )
         db.add(log)
     except Exception as e:
@@ -102,7 +102,7 @@ def create_user(
     if not password:
         token = secrets.token_urlsafe(32)
         token_hash = hash_password(token)
-        expires_at = datetime.utcnow() + timedelta(minutes=token_ttl_minutes)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=token_ttl_minutes)
         
         reset_token = PasswordResetToken(
             user_id=user.id,
@@ -251,7 +251,7 @@ def generate_reset_token(db: Session, user_id: int, admin_username: str = None):
     # Create new token (valid for 24 hours)
     token = secrets.token_urlsafe(32)
     token_hash = hash_password(token)
-    expires_at = datetime.utcnow() + timedelta(hours=24)
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     
     reset_token = PasswordResetToken(
         user_id=user_id,
@@ -272,7 +272,7 @@ def generate_reset_token(db: Session, user_id: int, admin_username: str = None):
     )
     if pending_req:
         pending_req.status = "approved"
-        pending_req.decided_at = datetime.utcnow()
+        pending_req.decided_at = datetime.now(timezone.utc)
     
     write_audit_log(
         db, 
@@ -323,7 +323,7 @@ def list_sessions(db: Session):
 
 def cleanup_old_sessions(db: Session, hours: int = 24, admin_username: str = None):
     """Delete sessions older than specified hours"""
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     deleted = db.query(LoginSession).filter(
         LoginSession.last_used_at < cutoff
     ).delete()

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 import secrets
 import hashlib
@@ -20,7 +20,7 @@ def create_login_session(
     raw_token = secrets.token_urlsafe(48)
     token_hash = _hash_token(raw_token)
 
-    expires = datetime.utcnow() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expires = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 
     session = LoginSession(
         user_id=user_id,
@@ -36,6 +36,13 @@ def create_login_session(
     return raw_token
 
 
+def _ensure_timezone_aware(dt: datetime) -> datetime:
+    """Ensure datetime is timezone-aware (UTC)"""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def validate_refresh_token(db: Session, token: str) -> LoginSession | None:
     token_hash = _hash_token(token)
 
@@ -48,12 +55,16 @@ def validate_refresh_token(db: Session, token: str) -> LoginSession | None:
     if not session:
         return None
 
-    if session.expires_at < datetime.utcnow():
+    # Ensure timezone-aware comparison
+    expires_at = _ensure_timezone_aware(session.expires_at)
+    now = datetime.now(timezone.utc)
+    
+    if expires_at < now:
         db.delete(session)
         db.commit()
         return None
 
-    session.last_used_at = datetime.utcnow()
+    session.last_used_at = now
     db.commit()
     return session
 

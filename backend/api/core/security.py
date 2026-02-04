@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHash
@@ -25,7 +25,7 @@ def create_token(subject: str, expires_delta: timedelta) -> str:
     
     payload = {
         "sub": subject,
-        "exp": datetime.utcnow() + expires_delta,
+        "exp": datetime.now(timezone.utc) + expires_delta,
     }
     return jwt.encode(
         payload,

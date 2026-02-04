@@ -1,10 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from api.core.database import SessionLocal
 from api.models.models import LoginSession
 
 if __name__ == "__main__":
     db = SessionLocal()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     deleted = (
         db.query(LoginSession)
