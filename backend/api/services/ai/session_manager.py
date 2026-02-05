@@ -1,6 +1,9 @@
 """
 AI Service Manager
-Manages RAG engine instances and auto-indexing per session
+Manages Advanced RAG engine instances and auto-indexing per session.
+
+Updated to use AdvancedRAGEngine with LangGraph for complete RAG workflow.
+Session-specific vector stores are cleared on logout.
 """
 
 import logging
@@ -9,9 +12,27 @@ from pathlib import Path
 import threading
 from datetime import datetime
 import json
+import shutil
 
 from api.core.config import settings
-from api.services.ai.rag_engine import RAGEngine, RAGResponse
+
+# Import both RAG engines for fallback support
+try:
+    from api.services.ai.advanced_rag_engine import (
+        AdvancedRAGEngine,
+        RAGResponse,
+        create_advanced_rag_engine,
+    )
+    ADVANCED_RAG_AVAILABLE = True
+except ImportError:
+    ADVANCED_RAG_AVAILABLE = False
+
+try:
+    from api.services.ai.rag_engine import RAGEngine
+    BASIC_RAG_AVAILABLE = True
+except ImportError:
+    BASIC_RAG_AVAILABLE = False
+
 from api.services.ai.auto_indexer import AutoIndexer, IndexingProgress
 
 logger = logging.getLogger(__name__)
@@ -20,7 +41,14 @@ logger = logging.getLogger(__name__)
 class SessionAIManager:
     """
     Manages AI resources for a single session.
-    Includes RAG engine and auto-indexer.
+    Uses AdvancedRAGEngine for complete RAG workflow with:
+    - Query transformation
+    - Query routing 
+    - Fusion retrieval (vector + lexical + summary)
+    - Reranking
+    - Citation-aware generation
+    
+    Session-specific vector stores are automatically cleared on logout.
     """
     
     def __init__(
@@ -28,10 +56,12 @@ class SessionAIManager:
         session_id: str,
         user_id: str,
         runtime_root: Path,
+        use_advanced_rag: bool = True,
     ):
         self.session_id = session_id
         self.user_id = user_id
         self.runtime_root = Path(runtime_root)
+        self.use_advanced_rag = use_advanced_rag and ADVANCED_RAG_AVAILABLE
         
         self.session_dir = self.runtime_root / "sessions" / session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +70,7 @@ class SessionAIManager:
         self.metadata_path = self.session_dir / "ai_metadata.json"
         
         # Lazy initialization
-        self._rag_engine: Optional[RAGEngine] = None
+        self._rag_engine = None  # Can be AdvancedRAGEngine or RAGEngine
         self._auto_indexer: Optional[AutoIndexer] = None
         self._lock = threading.Lock()
         
@@ -49,6 +79,11 @@ class SessionAIManager:
         
         # Load existing metadata
         self._load_metadata()
+        
+        logger.info(
+            f"SessionAIManager initialized: session={session_id}, "
+            f"advanced_rag={self.use_advanced_rag}"
+        )
     
     def _load_metadata(self):
         """Load AI session metadata"""
@@ -68,6 +103,7 @@ class SessionAIManager:
                 "user_id": self.user_id,
                 "chat_history": self._chat_history[-100:],  # Keep last 100 messages
                 "updated_at": datetime.utcnow().isoformat(),
+                "rag_type": "advanced" if self.use_advanced_rag else "basic",
             }
             with open(self.metadata_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -75,21 +111,41 @@ class SessionAIManager:
             logger.error(f"Error saving AI metadata: {e}")
     
     @property
-    def rag_engine(self) -> RAGEngine:
-        """Get or create RAG engine"""
+    def rag_engine(self):
+        """Get or create RAG engine (Advanced or Basic based on configuration)"""
         if self._rag_engine is None:
             with self._lock:
                 if self._rag_engine is None:
-                    self._rag_engine = RAGEngine(
-                        session_id=self.session_id,
-                        persist_dir=self.session_dir / "ai_index",
-                        azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT or ""),
-                        azure_api_key=settings.AZURE_OPENAI_API_KEY or "",
-                        azure_api_version=settings.AZURE_OPENAI_API_VERSION or "2024-02-01",
-                        chat_deployment=settings.AZURE_OPENAI_CHAT_MODEL or "gpt-4o",
-                        embed_deployment=settings.AZURE_OPENAI_EMBED_MODEL or "text-embedding-3-small",
-                        temperature=settings.RET_AI_TEMPERATURE,
-                    )
+                    ai_index_dir = self.session_dir / "ai_index"
+                    
+                    if self.use_advanced_rag and ADVANCED_RAG_AVAILABLE:
+                        # Use Advanced RAG Engine with LangGraph
+                        self._rag_engine = AdvancedRAGEngine(
+                            session_id=self.session_id,
+                            persist_dir=ai_index_dir,
+                            azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT or ""),
+                            azure_api_key=settings.AZURE_OPENAI_API_KEY or "",
+                            azure_api_version=settings.AZURE_OPENAI_API_VERSION or "2024-02-01",
+                            chat_model=settings.AZURE_OPENAI_CHAT_MODEL or "gpt-4o",
+                            embed_model=settings.AZURE_OPENAI_EMBED_MODEL or "text-embedding-3-small",
+                            temperature=settings.RET_AI_TEMPERATURE,
+                        )
+                        logger.info(f"Created AdvancedRAGEngine for session {self.session_id}")
+                    elif BASIC_RAG_AVAILABLE:
+                        # Fallback to basic RAG Engine
+                        self._rag_engine = RAGEngine(
+                            session_id=self.session_id,
+                            persist_dir=ai_index_dir,
+                            azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT or ""),
+                            azure_api_key=settings.AZURE_OPENAI_API_KEY or "",
+                            azure_api_version=settings.AZURE_OPENAI_API_VERSION or "2024-02-01",
+                            chat_deployment=settings.AZURE_OPENAI_CHAT_MODEL or "gpt-4o",
+                            embed_deployment=settings.AZURE_OPENAI_EMBED_MODEL or "text-embedding-3-small",
+                            temperature=settings.RET_AI_TEMPERATURE,
+                        )
+                        logger.info(f"Created basic RAGEngine for session {self.session_id}")
+                    else:
+                        raise RuntimeError("No RAG engine available")
         return self._rag_engine
     
     @property 
@@ -120,7 +176,7 @@ class SessionAIManager:
         top_k: int = 16,
     ) -> Dict[str, Any]:
         """
-        Send a chat message and get response.
+        Send a chat message and get response using Advanced RAG.
         
         Args:
             message: User message
@@ -129,7 +185,7 @@ class SessionAIManager:
             top_k: Number of chunks to retrieve
             
         Returns:
-            Response dict with answer, sources, etc.
+            Response dict with answer, sources, citations, and advanced metadata
         """
         if not self.is_configured():
             return {
@@ -148,7 +204,7 @@ class SessionAIManager:
         
         try:
             if use_rag:
-                # Use RAG engine
+                # Use RAG engine (Advanced or Basic)
                 response = self.rag_engine.query(
                     question=message,
                     history=self._chat_history[-10:],  # Last 5 exchanges
@@ -156,21 +212,47 @@ class SessionAIManager:
                     top_k=top_k,
                 )
                 
+                # Build sources list
+                sources = []
+                for i, c in enumerate(response.chunks[:8]):  # Top 8 sources
+                    sources.append({
+                        "content": c.content[:500] if hasattr(c, 'content') else "",
+                        "source": c.source if hasattr(c, 'source') else "",
+                        "group": c.group if hasattr(c, 'group') else "",
+                        "score": c.score if hasattr(c, 'score') else 0.0,
+                        "rank": i,
+                        "retrieval_method": getattr(c, 'retrieval_method', 'unknown'),
+                    })
+                
+                # Build result with advanced metadata
                 result = {
                     "answer": response.answer,
-                    "sources": [
-                        {
-                            "content": c.content[:500],
-                            "source": c.source,
-                            "group": c.group,
-                            "score": c.score,
-                        }
-                        for c in response.chunks[:5]
-                    ],
-                    "citations": response.citations,
-                    "query_time_ms": response.query_time_ms,
-                    "metadata": response.metadata,
+                    "sources": sources,
+                    "citations": response.citations if hasattr(response, 'citations') else [],
+                    "query_time_ms": response.query_time_ms if hasattr(response, 'query_time_ms') else 0,
+                    "metadata": {},
                 }
+                
+                # Add Advanced RAG specific metadata if available
+                if hasattr(response, 'transformed_query') and response.transformed_query:
+                    tq = response.transformed_query
+                    result["metadata"]["query_transformation"] = {
+                        "original": tq.original if hasattr(tq, 'original') else message,
+                        "transformed": tq.transformed if hasattr(tq, 'transformed') else message,
+                        "intent": tq.intent.value if hasattr(tq, 'intent') else "factual",
+                        "keywords": tq.keywords if hasattr(tq, 'keywords') else [],
+                    }
+                
+                if hasattr(response, 'retrieval_strategy'):
+                    result["metadata"]["retrieval_strategy"] = (
+                        response.retrieval_strategy.value 
+                        if hasattr(response.retrieval_strategy, 'value') 
+                        else str(response.retrieval_strategy)
+                    )
+                
+                if hasattr(response, 'metadata'):
+                    result["metadata"].update(response.metadata or {})
+                    
             else:
                 # Direct LLM call without RAG
                 from langchain_core.messages import HumanMessage, SystemMessage

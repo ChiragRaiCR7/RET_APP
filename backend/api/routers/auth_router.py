@@ -80,14 +80,16 @@ def logout(
 ):
     """
     Logout endpoint with comprehensive cleanup
-    Pattern from Streamlit main.py: hard_logout
+    
     Cleans up:
     - Database session records
     - Session directories (XML, CSV, extracted files)
-    - Chroma DB indices
+    - ChromaDB vector indices (Advanced RAG)
+    - AI session managers
     - Cache entries
     """
     from api.services.storage_service import cleanup_user_sessions
+    from api.services.ai.session_manager import cleanup_session_ai
     
     logger.info(f"User logout initiated: {current_user_id}")
     
@@ -101,11 +103,32 @@ def logout(
         logger.error(f"Failed to revoke refresh token: {e}")
     
     try:
+        # Clean up AI session managers and their ChromaDB indices
+        # This is important for session-isolated vector stores
+        # Note: cleanup_user_sessions below will also clean directories,
+        # but we call this first to properly shutdown AI resources
+        from api.services.storage_service import get_user_sessions
+        
+        user_sessions = get_user_sessions(current_user_id)
+        for session_info in user_sessions:
+            session_id = session_info.get("session_id", "")
+            if session_id:
+                try:
+                    cleanup_session_ai(session_id, current_user_id)
+                    logger.debug(f"Cleaned up AI resources for session: {session_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup AI for session {session_id}: {e}")
+        
+        logger.info(f"Cleaned up AI sessions for user: {current_user_id}")
+    except Exception as e:
+        logger.error(f"Failed to cleanup AI sessions: {e}")
+    
+    try:
         # Clean up all user sessions and their data
         # This removes:
         # - Session directories with XML/CSV files
         # - Extracted content
-        # - Chroma DB indices
+        # - Remaining ChromaDB files
         cleanup_user_sessions(current_user_id)
         logger.info(f"Cleaned up all sessions for user: {current_user_id}")
     except Exception as e:

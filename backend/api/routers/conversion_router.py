@@ -12,6 +12,10 @@ from api.schemas.conversion import (
     ConversionFilesResponse,
     FilePreviewResponse,
     GroupsListResponse,
+    AddRowRequest,
+    AddFileRequest,
+    SaveEditsRequest,
+    UpdateCellsRequest,
 )
 from api.services.conversion_service import (
     scan_zip_with_groups, 
@@ -21,6 +25,11 @@ from api.services.conversion_service import (
     build_download_zip,
     download_single_file,
     get_conversion_index,
+    add_row_to_file,
+    add_new_file,
+    delete_file,
+    apply_cell_changes,
+    refresh_conversion_index,
 )
 from api.services.job_service import create_job
 from api.core.database import get_db
@@ -355,6 +364,109 @@ def workflow_download(session_id: str, current_user_id: str = Depends(get_curren
     return download(session_id, current_user_id)
 
 
+# ---------------------------------------------------------------------------
+# Edit & save helpers (frontend-friendly routes)
+# ---------------------------------------------------------------------------
+
+@router.post("/add-row/{session_id}")
+def add_row_api(
+    session_id: str,
+    payload: AddRowRequest,
+    current_user_id: str = Depends(get_current_user),
+):
+    try:
+        return add_row_to_file(session_id, current_user_id, payload.filename, payload.row)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Add row failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/add-file/{session_id}")
+def add_file_api(
+    session_id: str,
+    payload: AddFileRequest,
+    current_user_id: str = Depends(get_current_user),
+):
+    try:
+        return add_new_file(session_id, current_user_id, payload.filename, payload.group, payload.headers)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.exception("Add file failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/delete-file/{session_id}/{filename}")
+def delete_file_api(
+    session_id: str,
+    filename: str,
+    current_user_id: str = Depends(get_current_user),
+):
+    try:
+        return delete_file(session_id, current_user_id, filename)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Delete file failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-cells/{session_id}")
+def update_cells_api(
+    session_id: str,
+    payload: UpdateCellsRequest,
+    current_user_id: str = Depends(get_current_user),
+):
+    try:
+        return apply_cell_changes(session_id, current_user_id, payload.filename, [c.dict() for c in payload.changes])
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Batch cell update failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/save-edits/{session_id}")
+def save_edits_api(
+    session_id: str,
+    payload: SaveEditsRequest,
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Placeholder endpoint to align with frontend workflow.
+    Rebuilds conversion index after prior edits and returns a simple receipt.
+    """
+    try:
+        index = refresh_conversion_index(session_id)
+        return {"success": True, "changes": len(payload.changes or []), "index": index}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.exception("Save edits failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/download-modified/{session_id}")
+def download_modified(
+    session_id: str,
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Alias for download that simply packages the current output (including edits).
+    """
+    return download(session_id, current_user_id)
+
+
 @router.post("/update-cell/{session_id}/{filename}")
 def update_cell(
     session_id: str,
@@ -396,6 +508,7 @@ def update_cell(
         
         df.at[row_index, column] = value
         df.to_csv(file_path, index=False)
+        refresh_conversion_index(session_id)
         
         return {"success": True, "message": "Cell updated"}
     except Exception as e:
@@ -445,6 +558,7 @@ def update_row(
                 df.at[row_index, col] = val
         
         df.to_csv(file_path, index=False)
+        refresh_conversion_index(session_id)
         return {"success": True, "message": "Row updated"}
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON for row_data")
@@ -489,6 +603,7 @@ def add_row(
         new_row = {col: data.get(col, '') for col in df.columns}
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
         df.to_csv(file_path, index=False)
+        refresh_conversion_index(session_id)
         return {"success": True, "message": "Row added", "new_row_index": len(df) - 1}
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON for row_data")
@@ -533,6 +648,7 @@ def delete_row(
         
         df = df.drop(index=row_index).reset_index(drop=True)
         df.to_csv(file_path, index=False)
+        refresh_conversion_index(session_id)
         return {"success": True, "message": "Row deleted"}
     except Exception as e:
         logger.exception("Delete row failed")

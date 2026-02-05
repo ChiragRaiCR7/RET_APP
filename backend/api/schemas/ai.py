@@ -264,14 +264,45 @@ class RAGChatRequest(BaseModel):
         return self.message or self.question or ""
 
 
+class QueryTransformationInfo(BaseModel):
+    """Information about query transformation (Advanced RAG)"""
+    original: str
+    transformed: str
+    intent: str = "factual"  # factual, analytical, summary, exploratory, specific
+    sub_queries: List[str] = []
+    keywords: List[str] = []
+    filters: Dict[str, str] = {}
+
+
+class RetrievalMetadata(BaseModel):
+    """Metadata about the retrieval process"""
+    retrieval_strategy: str = "hybrid"  # vector, lexical, hybrid, summary, fusion
+    chunks_retrieved: int = 0
+    vector_results: int = 0
+    lexical_results: int = 0
+    summary_results: int = 0
+    timing: Optional[Dict[str, float]] = None
+
+
+class SourceDocumentAdvanced(SourceDocument):
+    """Enhanced source document with retrieval details"""
+    rank: int = 0
+    retrieval_method: str = "unknown"  # vector, lexical, summary, fusion
+    fusion_score: Optional[float] = None
+
+
 class RAGChatResponse(BaseModel):
-    """Response from RAG chat"""
+    """Response from RAG chat with Advanced RAG metadata"""
     answer: str
     sources: List[SourceDocument] = []
     citations: List[str] = []
     query_time_ms: float
     query_plan: Optional[Dict[str, Any]] = None
     chunks_retrieved: int = 0
+    
+    # Advanced RAG metadata
+    query_transformation: Optional[QueryTransformationInfo] = None
+    retrieval_metadata: Optional[RetrievalMetadata] = None
 
 
 # ============================================================

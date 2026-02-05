@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 class XmlFileInfo(BaseModel):
@@ -84,4 +84,30 @@ class DownloadRequest(BaseModel):
     output_format: str = "csv"
     groups: Optional[List[str]] = None
     preserve_structure: bool = False
+
+
+class AddRowRequest(BaseModel):
+    filename: str
+    row: Dict[str, Any]
+
+
+class AddFileRequest(BaseModel):
+    filename: str
+    group: Optional[str] = None
+    headers: List[str]
+
+
+class SaveEditsRequest(BaseModel):
+    changes: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class CellChange(BaseModel):
+    row_index: int
+    column: str
+    value: Any
+
+
+class UpdateCellsRequest(BaseModel):
+    filename: str
+    changes: List[CellChange]
 

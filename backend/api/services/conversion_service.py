@@ -25,6 +25,10 @@ from api.services.xml_processing_service import (
 )
 from api.services.xlsx_service import get_xlsx_bytes_from_csv
 
+# ---------------------------------------------------------------------------
+# Helpers for edit/save operations
+# ---------------------------------------------------------------------------
+
 logger = logging.getLogger(__name__)
 
 # Type alias for group mode (kept for backwards compatibility)
@@ -43,6 +47,141 @@ def _format_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024
     return f"{size_bytes:.1f} TB"
+
+
+def _assert_session_owner(session_id: str, user_id: str):
+    metadata = get_session_metadata(session_id)
+    stored_user = metadata.get("user_id", "")
+    if stored_user and stored_user != user_id:
+        raise ValueError("Unauthorized")
+
+
+def _load_csv(path: Path):
+    """Load CSV into (headers, rows as dicts). Handles BOM."""
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        headers = list(reader.fieldnames or [])
+        rows = [dict(r) for r in reader]
+    return headers, rows
+
+
+def _write_csv(path: Path, headers: List[str], rows: List[Dict[str, Any]]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({h: row.get(h, "") for h in headers})
+
+
+def refresh_conversion_index(session_id: str) -> Dict[str, Any]:
+    """Rebuild conversion_index.json from output directory."""
+    index = _build_index_from_output(session_id)
+    sess_dir = get_session_dir(session_id)
+    index_path = sess_dir / "conversion_index.json"
+    index_path.write_text(json.dumps(index, indent=2))
+    return index
+
+
+def add_row_to_file(session_id: str, user_id: str, filename: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    _assert_session_owner(session_id, user_id)
+    out_dir = get_session_dir(session_id) / "output"
+    file_path = out_dir / filename
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {filename}")
+
+    headers, rows = _load_csv(file_path)
+    # Expand headers for any new columns provided
+    new_cols = [c for c in row.keys() if c not in headers]
+    if new_cols:
+        headers.extend(new_cols)
+        for existing in rows:
+            for c in new_cols:
+                existing.setdefault(c, "")
+
+    rows.append({h: _safe_cell_value(row.get(h)) for h in headers})
+    _write_csv(file_path, headers, rows)
+    index = refresh_conversion_index(session_id)
+    return {"filename": filename, "rows": len(rows), "columns": len(headers), "index": index}
+
+
+def add_new_file(session_id: str, user_id: str, filename: str, group: Optional[str], headers: List[str]) -> Dict[str, Any]:
+    _assert_session_owner(session_id, user_id)
+    if not headers:
+        raise ValueError("Headers are required to create a file")
+    out_dir = get_session_dir(session_id) / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    file_path = out_dir / filename
+    if file_path.exists():
+        raise FileExistsError("File already exists")
+
+    _write_csv(file_path, headers, [])
+
+    # Update index; allow overriding group via metadata in index
+    index = refresh_conversion_index(session_id)
+    if group:
+        # Patch index entry with explicit group if needed
+        for f in index.get("files", []):
+            if f.get("filename") == filename:
+                f["group"] = group
+        index_path = get_session_dir(session_id) / "conversion_index.json"
+        index_path.write_text(json.dumps(index, indent=2))
+
+    return {"filename": filename, "group": group, "headers": headers}
+
+
+def delete_file(session_id: str, user_id: str, filename: str) -> Dict[str, Any]:
+    _assert_session_owner(session_id, user_id)
+    out_dir = get_session_dir(session_id) / "output"
+    file_path = out_dir / filename
+    xlsx_path = out_dir / (Path(filename).stem + ".xlsx")
+    removed = 0
+    for p in [file_path, xlsx_path]:
+        if p.exists():
+            p.unlink()
+            removed += 1
+    if removed == 0:
+        raise FileNotFoundError(f"File not found: {filename}")
+    index = refresh_conversion_index(session_id)
+    return {"removed": removed, "index": index}
+
+
+def apply_cell_changes(session_id: str, user_id: str, filename: str, changes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    _assert_session_owner(session_id, user_id)
+    if not changes:
+        return {"updated": 0}
+
+    out_dir = get_session_dir(session_id) / "output"
+    file_path = out_dir / filename
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {filename}")
+
+    headers, rows = _load_csv(file_path)
+    updated = 0
+
+    # Add missing columns if any change references them
+    missing_cols = {c.get("column") for c in changes if c.get("column") not in headers}
+    missing_cols.discard(None)
+    if missing_cols:
+        headers.extend([c for c in missing_cols if c])
+        for row in rows:
+            for c in missing_cols:
+                row.setdefault(c, "")
+
+    for change in changes:
+        row_idx = change.get("row_index")
+        col = change.get("column")
+        val = change.get("value", "")
+        if row_idx is None or col is None:
+            continue
+        if row_idx < 0 or row_idx >= len(rows):
+            continue
+        rows[row_idx][col] = _safe_cell_value(val)
+        updated += 1
+
+    _write_csv(file_path, headers, rows)
+    index = refresh_conversion_index(session_id)
+    return {"updated": updated, "rows": len(rows), "columns": len(headers), "index": index}
 
 
 def _sanitize_path(p: str) -> str:

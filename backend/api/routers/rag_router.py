@@ -1,6 +1,12 @@
 """
-Enhanced AI Router
-Provides endpoints for the new LangChain/LangGraph RAG system
+Enhanced AI Router with Advanced RAG
+
+Provides endpoints for the LangChain/LangGraph Advanced RAG system:
+- Query transformation and intent detection
+- Query routing (vector/lexical/summary/fusion)
+- Fusion retrieval combining multiple strategies
+- Reranking and postprocessing
+- Citation-aware response generation
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Form, BackgroundTasks
@@ -25,6 +31,8 @@ from api.schemas.ai import (
     SourceDocument,
     TranscriptRequest,
     TranscriptFormat,
+    QueryTransformationInfo,
+    RetrievalMetadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +70,49 @@ def get_ai_status(
 
 
 # ============================================================
+# AI Config Endpoint
+# ============================================================
+
+def _load_ai_config() -> dict:
+    """Load AI config from data/ai_config.json"""
+    config_path = Path(settings.RET_RUNTIME_ROOT).parent / "data" / "ai_config.json"
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"auto_indexed_groups": [], "default_collection": "documents"}
+
+
+@router.get("/config")
+def get_ai_config(
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Get AI configuration including auto-indexed groups.
+    """
+    try:
+        config = _load_ai_config()
+        return {
+            "auto_indexed_groups": config.get("auto_indexed_groups", []),
+            "default_collection": config.get("default_collection", "documents"),
+            "chunk_size": config.get("chunk_size", 10000),
+            "retrieval_top_k": config.get("retrieval_top_k", 16),
+            "enable_auto_indexing": config.get("enable_auto_indexing", False),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get AI config: {e}")
+        return {
+            "auto_indexed_groups": [],
+            "default_collection": "documents",
+            "chunk_size": 10000,
+            "retrieval_top_k": 16,
+            "enable_auto_indexing": False,
+        }
+
+
+# ============================================================
 # RAG Chat Endpoints
 # ============================================================
 
@@ -71,10 +122,17 @@ async def rag_chat(
     current_user_id: str = Depends(get_current_user),
 ):
     """
-    Send a message and get RAG-powered response.
-    Uses hybrid retrieval (vector + lexical) over indexed documents.
+    Send a message and get Advanced RAG-powered response.
+    
+    Features:
+    - Query transformation for better retrieval
+    - Intent detection and query routing
+    - Fusion retrieval (vector + lexical + summary)
+    - Reranking with hybrid scoring
+    - Citation-aware response generation
     """
     from api.services.ai.session_manager import get_session_ai_manager
+    from api.schemas.ai import QueryTransformationInfo, RetrievalMetadata
     
     try:
         # Verify session ownership
@@ -97,7 +155,7 @@ async def rag_chat(
                 detail="AI service not configured. Set Azure OpenAI credentials."
             )
         
-        # Execute chat
+        # Execute chat with Advanced RAG
         result = manager.chat(
             message=query_text,
             use_rag=req.use_rag,
@@ -105,24 +163,48 @@ async def rag_chat(
             top_k=req.top_k,
         )
         
-        # Convert to response format
+        # Convert to response format with enhanced sources
         sources = [
             SourceDocument(
                 file=src.get("source", ""),
                 group=src.get("group"),
                 snippet=src.get("content", "")[:500],
                 score=src.get("score"),
+                chunk_index=src.get("rank", i),
             )
-            for src in result.get("sources", [])
+            for i, src in enumerate(result.get("sources", []))
         ]
+        
+        # Build Advanced RAG metadata if available
+        metadata = result.get("metadata", {})
+        
+        query_transformation = None
+        if "query_transformation" in metadata:
+            qt = metadata["query_transformation"]
+            query_transformation = QueryTransformationInfo(
+                original=qt.get("original", query_text),
+                transformed=qt.get("transformed", query_text),
+                intent=qt.get("intent", "factual"),
+                keywords=qt.get("keywords", []),
+            )
+        
+        retrieval_metadata = None
+        if "retrieval_strategy" in metadata or "timing" in metadata:
+            retrieval_metadata = RetrievalMetadata(
+                retrieval_strategy=metadata.get("retrieval_strategy", "hybrid"),
+                chunks_retrieved=metadata.get("chunks_retrieved", len(sources)),
+                timing=metadata.get("timing"),
+            )
         
         return RAGChatResponse(
             answer=result.get("answer", ""),
             sources=sources,
             citations=result.get("citations", []),
             query_time_ms=result.get("query_time_ms", 0),
-            query_plan=result.get("metadata", {}).get("query_plan"),
-            chunks_retrieved=result.get("metadata", {}).get("chunks_retrieved", 0),
+            query_plan=metadata.get("query_plan"),
+            chunks_retrieved=metadata.get("chunks_retrieved", len(sources)),
+            query_transformation=query_transformation,
+            retrieval_metadata=retrieval_metadata,
         )
         
     except HTTPException:

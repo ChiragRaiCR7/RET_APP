@@ -206,13 +206,35 @@
         </div>
       </details>
 
-      <details class="collapsible-section">
-        <summary>📁 Folder structure changes (logical paths only)</summary>
+      <details class="collapsible-section folder-tree-section">
+        <summary>📁 Folder structure (tree view)</summary>
         <div class="section-content">
-          <p v-if="!results.folderChanges?.length">No folder structure changes detected.</p>
-          <ul v-else>
-            <li v-for="(change, idx) in results.folderChanges" :key="idx">{{ change }}</li>
-          </ul>
+          <p v-if="!results.folderChanges?.length && !results.changes?.length" class="no-changes">No folder structure changes detected.</p>
+          <div v-else class="folder-tree-container">
+            <div class="tree-legend">
+              <span class="legend-item"><span class="tree-icon folder">📁</span> Folder</span>
+              <span class="legend-item"><span class="tree-icon file-same">📄</span> Same</span>
+              <span class="legend-item"><span class="tree-icon file-modified">📝</span> Modified</span>
+              <span class="legend-item"><span class="tree-icon file-added">➕</span> Added</span>
+              <span class="legend-item"><span class="tree-icon file-removed">🗑️</span> Removed</span>
+            </div>
+            <div class="tree-view">
+              <div v-for="node in buildFolderTree" :key="node.path" :class="['tree-node', `depth-${node.depth}`]" :style="{ paddingLeft: (node.depth * 20) + 'px' }">
+                <span v-if="node.isFolder" class="tree-icon folder">📁</span>
+                <span v-else-if="node.status === 'SAME'" class="tree-icon file-same">📄</span>
+                <span v-else-if="node.status === 'MODIFIED'" class="tree-icon file-modified">📝</span>
+                <span v-else-if="node.status === 'ADDED'" class="tree-icon file-added">➕</span>
+                <span v-else-if="node.status === 'REMOVED'" class="tree-icon file-removed">🗑️</span>
+                <span v-else class="tree-icon">📄</span>
+                <span class="tree-name" :class="{ 'folder-name': node.isFolder, ['status-' + (node.status || '').toLowerCase()]: !node.isFolder }">
+                  {{ node.name }}
+                </span>
+                <span v-if="node.status && !node.isFolder" class="tree-status-badge" :class="'badge-' + node.status.toLowerCase()">
+                  {{ node.status }}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </details>
 
@@ -287,6 +309,8 @@
       <!-- Drilldown Section -->
       <div class="drilldown-section">
         <h4 class="section-title">🔍 Drilldown: Side-by-side deltas (only changes)</h4>
+        <p class="drilldown-hint">Select a file to see row-level differences. Click on <span class="dot-example red">●</span> or <span class="dot-example green">●</span> dots to view details.</p>
+        
         <div class="form-group">
           <label class="form-label">Pick a file (Group+Filename)</label>
           <select v-model="drilldownFile" class="form-select" @change="loadDrilldown">
@@ -298,36 +322,59 @@
         </div>
 
         <div v-if="drilldownFile && drilldownData" class="drilldown-content">
-          <p class="diff-complexity">Row counts: Side A = {{ drilldownData.sizeA }}, Side B = {{ drilldownData.sizeB }}</p>
-          <p class="delta-summary">
-            Deltas: 
-            <span class="delta-modified">✏️ modified={{ drilldownData.modified }}</span> | 
-            <span class="delta-added">➕ added={{ drilldownData.added }}</span> | 
-            <span class="delta-removed">🗑️ removed={{ drilldownData.removed }}</span>
-          </p>
+          <div class="drilldown-stats-bar">
+            <div class="stat-item">
+              <span class="stat-label">Side A Rows</span>
+              <span class="stat-value">{{ drilldownData.sizeA }}</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Side B Rows</span>
+              <span class="stat-value">{{ drilldownData.sizeB }}</span>
+            </div>
+            <div class="stat-item modified">
+              <span class="stat-label">Modified</span>
+              <span class="stat-value">{{ drilldownData.modified }}</span>
+            </div>
+            <div class="stat-item added">
+              <span class="stat-label">Added</span>
+              <span class="stat-value">{{ drilldownData.added }}</span>
+            </div>
+            <div class="stat-item removed">
+              <span class="stat-label">Removed</span>
+              <span class="stat-value">{{ drilldownData.removed }}</span>
+            </div>
+          </div>
+          
+          <div class="drilldown-legend">
+            <span class="legend-item"><span class="dot red">●</span> Removed/Changed in A</span>
+            <span class="legend-item"><span class="dot green">●</span> Added/Changed in B</span>
+            <span class="legend-item"><span class="dot gray">○</span> Unchanged</span>
+          </div>
+          
           <p v-if="drilldownData.truncated" class="truncation-warning">⚠️ Results truncated (too many changes to display)</p>
 
           <div class="delta-tables">
-            <div class="delta-side">
-              <h5>🅰️ Side A — only changes</h5>
+            <div class="delta-side side-a">
+              <h5>🅰️ Side A — Original</h5>
               <div class="data-table-wrapper">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
-                      <th>Kind</th>
-                      <th>Row A</th>
-                      <th>Row B</th>
-                      <th v-for="col in drilldownData.columns" :key="col">{{ col }}</th>
+                      <th class="col-narrow">Kind</th>
+                      <th class="col-narrow">Row#</th>
+                      <th v-for="col in drilldownData.columns" :key="col" :class="{ 'col-changed': isColumnChanged(col) }">
+                        <span v-if="isColumnChanged(col)" class="col-indicator">●</span>
+                        {{ col }}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(row, idx) in drilldownData.deltaA" :key="idx" :class="getRowClass(row._kind_)">
-                      <td><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
-                      <td>{{ row._rowA_ }}</td>
-                      <td>{{ row._rowB_ }}</td>
-                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'A')">
-                        <span class="cell-indicator" :class="getCellIndicatorClass(row, col)" title="Change indicator">●</span>
-                        {{ row[col] || '' }}
+                      <td class="col-narrow"><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
+                      <td class="col-narrow">{{ row._rowA_ }}</td>
+                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'A')" @click="onCellClick(row, col, 'A')">
+                        <span v-if="cellHasChange(row, col)" class="cell-dot" :class="getCellDotClass(row, col, 'A')" title="Click to view change details">●</span>
+                        <span class="cell-value" :class="{ 'cell-muted': !cellHasChange(row, col) }">{{ formatCellValue(row[col]) }}</span>
                       </td>
                     </tr>
                   </tbody>
@@ -335,30 +382,119 @@
               </div>
             </div>
 
-            <div class="delta-side">
-              <h5>🅱️ Side B — only changes</h5>
+            <div class="delta-side side-b">
+              <h5>🅱️ Side B — Modified</h5>
               <div class="data-table-wrapper">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
-                      <th>Kind</th>
-                      <th>Row A</th>
-                      <th>Row B</th>
-                      <th v-for="col in drilldownData.columns" :key="col">{{ col }}</th>
+                      <th class="col-narrow">Kind</th>
+                      <th class="col-narrow">Row#</th>
+                      <th v-for="col in drilldownData.columns" :key="col" :class="{ 'col-changed': isColumnChanged(col) }">
+                        <span v-if="isColumnChanged(col)" class="col-indicator">●</span>
+                        {{ col }}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr v-for="(row, idx) in drilldownData.deltaB" :key="idx" :class="getRowClass(row._kind_)">
-                      <td><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
-                      <td>{{ row._rowA_ }}</td>
-                      <td>{{ row._rowB_ }}</td>
-                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'B')">
-                        <span class="cell-indicator" :class="getCellIndicatorClass(row, col)" title="Change indicator">●</span>
-                        {{ row[col] || '' }}
+                      <td class="col-narrow"><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
+                      <td class="col-narrow">{{ row._rowB_ }}</td>
+                      <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'B')" @click="onCellClick(row, col, 'B')">
+                        <span v-if="cellHasChange(row, col)" class="cell-dot" :class="getCellDotClass(row, col, 'B')" title="Click to view change details">●</span>
+                        <span class="cell-value" :class="{ 'cell-muted': !cellHasChange(row, col) }">{{ formatCellValue(row[col]) }}</span>
                       </td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Cell Detail Modal -->
+      <div v-if="showCellModal" class="modal-overlay" @click.self="showCellModal = false">
+        <div class="cell-detail-modal full-drilldown-modal">
+          <div class="modal-header">
+            <div>
+              <h4>Full Drilldown View</h4>
+              <p class="modal-subtitle">Side-by-side tables with the selected change highlighted.</p>
+            </div>
+            <button class="modal-close" @click="showCellModal = false">×</button>
+          </div>
+          <div class="modal-body full-drilldown-body">
+            <div class="cell-meta">
+              <p><strong>Column:</strong> {{ cellModalData.column }}</p>
+              <p><strong>Row A:</strong> {{ cellModalData.rowA }} | <strong>Row B:</strong> {{ cellModalData.rowB }}</p>
+              <p><strong>Change Type:</strong> <span :class="'kind-badge kind-' + (cellModalData.kind || '').toLowerCase()">{{ cellModalData.kind }}</span></p>
+              <div class="cell-comparison compact">
+                <div class="cell-side old">
+                  <h5>🅰️ Side A (Original)</h5>
+                  <div class="cell-content">{{ cellModalData.valueA || '(empty)' }}</div>
+                </div>
+                <div class="cell-side new">
+                  <h5>🅱️ Side B (Modified)</h5>
+                  <div class="cell-content">{{ cellModalData.valueB || '(empty)' }}</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="delta-tables full-view">
+              <div class="delta-side side-a">
+                <h5>🅰️ Side A — Original</h5>
+                <div class="data-table-wrapper tall-scroll">
+                  <table class="data-table delta-table">
+                    <thead>
+                      <tr>
+                        <th class="col-narrow">Kind</th>
+                        <th class="col-narrow">Row#</th>
+                        <th v-for="col in drilldownData.columns" :key="col" :class="{ 'col-changed': isColumnChanged(col) }">
+                          <span v-if="isColumnChanged(col)" class="col-indicator">●</span>
+                          {{ col }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, idx) in drilldownData.deltaA" :key="idx" :class="getRowClass(row._kind_)">
+                        <td class="col-narrow"><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
+                        <td class="col-narrow">{{ row._rowA_ }}</td>
+                        <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'A')">
+                          <span v-if="cellHasChange(row, col)" class="cell-dot" :class="getCellDotClass(row, col, 'A')">●</span>
+                          <span class="cell-value" :class="{ 'cell-muted': !cellHasChange(row, col) }">{{ formatCellValue(row[col]) }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="delta-side side-b">
+                <h5>🅱️ Side B — Modified</h5>
+                <div class="data-table-wrapper tall-scroll">
+                  <table class="data-table delta-table">
+                    <thead>
+                      <tr>
+                        <th class="col-narrow">Kind</th>
+                        <th class="col-narrow">Row#</th>
+                        <th v-for="col in drilldownData.columns" :key="col" :class="{ 'col-changed': isColumnChanged(col) }">
+                          <span v-if="isColumnChanged(col)" class="col-indicator">●</span>
+                          {{ col }}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(row, idx) in drilldownData.deltaB" :key="idx" :class="getRowClass(row._kind_)">
+                        <td class="col-narrow"><span :class="'kind-badge kind-' + (row._kind_ || '').toLowerCase()">{{ row._kind_ }}</span></td>
+                        <td class="col-narrow">{{ row._rowB_ }}</td>
+                        <td v-for="col in drilldownData.columns" :key="col" :class="getCellClass(row, col, 'B')">
+                          <span v-if="cellHasChange(row, col)" class="cell-dot" :class="getCellDotClass(row, col, 'B')">●</span>
+                          <span class="cell-value" :class="{ 'cell-muted': !cellHasChange(row, col) }">{{ formatCellValue(row[col]) }}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
@@ -389,6 +525,16 @@ const searchQuery = ref('')
 const availableStatuses = ['MODIFIED', 'SAME', 'ADDED', 'REMOVED']
 const drilldownFile = ref('')
 const drilldownData = ref(null)
+const showCellModal = ref(false)
+const cellModalData = ref({
+  column: '',
+  valueA: '',
+  valueB: '',
+  rowA: '',
+  rowB: '',
+  kind: ''
+})
+const changedColumns = ref(new Set())
 
 const canCompare = computed(() => sideA.file && sideB.file)
 
@@ -403,6 +549,54 @@ const filteredChanges = computed(() => {
     changes = changes.filter(c => c.group?.toLowerCase().includes(q) || c.filename?.toLowerCase().includes(q))
   }
   return changes
+})
+
+// Build tree structure from changes
+const buildFolderTree = computed(() => {
+  if (!results.value?.changes) return []
+  
+  const folderMap = new Map()
+  const nodes = []
+  
+  // Group files by their group/folder
+  results.value.changes.forEach(change => {
+    const folder = change.group || 'root'
+    if (!folderMap.has(folder)) {
+      folderMap.set(folder, [])
+    }
+    folderMap.get(folder).push({
+      name: change.filename,
+      status: change.status,
+      isFolder: false
+    })
+  })
+  
+  // Build tree nodes
+  const sortedFolders = Array.from(folderMap.keys()).sort()
+  sortedFolders.forEach(folder => {
+    // Add folder node
+    nodes.push({
+      path: folder,
+      name: folder,
+      isFolder: true,
+      depth: 0,
+      status: null
+    })
+    
+    // Add file nodes under folder
+    const files = folderMap.get(folder).sort((a, b) => a.name.localeCompare(b.name))
+    files.forEach(file => {
+      nodes.push({
+        path: folder + '/' + file.name,
+        name: file.name,
+        isFolder: false,
+        depth: 1,
+        status: file.status
+      })
+    })
+  })
+  
+  return nodes
 })
 
 function formatSize(bytes) {
@@ -498,6 +692,63 @@ function getCellIndicatorClass(row, col) {
   return isChanged ? 'indicator-changed' : 'indicator-unchanged'
 }
 
+function cellHasChange(row, col) {
+  const changedCols = row._changed_cols_ || []
+  const colIndex = drilldownData.value?.columns?.indexOf(col)
+  if (row._kind_ === 'ADDED' || row._kind_ === 'REMOVED') return true
+  return changedCols.includes(colIndex) || changedCols.includes(col)
+}
+
+function getCellDotClass(row, col, side) {
+  if (!cellHasChange(row, col)) return 'dot-unchanged'
+  if (row._kind_ === 'REMOVED') return 'dot-red'
+  if (row._kind_ === 'ADDED') return 'dot-green'
+  return side === 'A' ? 'dot-red' : 'dot-green'
+}
+
+function onCellClick(row, col, side) {
+  if (!cellHasChange(row, col)) return
+  showCellDetail(row, col, side)
+}
+
+function isColumnChanged(col) {
+  return changedColumns.value.has(col)
+}
+
+function formatCellValue(value, maxLen = 40) {
+  if (value === null || value === undefined) return ''
+  const str = String(value)
+  return str.length > maxLen ? str.substring(0, maxLen) + '…' : str
+}
+
+function showCellDetail(row, col, side) {
+  // Find matching row in the other side
+  const deltaA = drilldownData.value?.deltaA || []
+  const deltaB = drilldownData.value?.deltaB || []
+  
+  let rowA = null, rowB = null
+  
+  if (side === 'A') {
+    rowA = row
+    // Find matching row in B by row index
+    rowB = deltaB.find(r => r._rowB_ === row._rowB_ || r._rowA_ === row._rowA_)
+  } else {
+    rowB = row
+    rowA = deltaA.find(r => r._rowA_ === row._rowA_ || r._rowB_ === row._rowB_)
+  }
+  
+  cellModalData.value = {
+    column: col,
+    valueA: rowA ? rowA[col] : '(not found)',
+    valueB: rowB ? rowB[col] : '(not found)',
+    rowA: row._rowA_ || '-',
+    rowB: row._rowB_ || '-',
+    kind: row._kind_ || 'MODIFIED'
+  }
+  
+  showCellModal.value = true
+}
+
 async function loadDrilldown() {
   if (!drilldownFile.value || !results.value) return
 
@@ -552,6 +803,26 @@ async function loadDrilldown() {
       truncated: res.data.truncated || false,
       header
     }
+    
+    // Build set of changed columns
+    const changedCols = new Set()
+    const allRows = [...(deltaA.rows || []), ...(deltaB.rows || [])]
+    allRows.forEach(row => {
+      if (row._changed_cols_) {
+        row._changed_cols_.forEach(c => {
+          if (typeof c === 'number' && header[c]) {
+            changedCols.add(header[c])
+          } else {
+            changedCols.add(c)
+          }
+        })
+      }
+      // For ADDED/REMOVED, all columns are changed
+      if (row._kind_ === 'ADDED' || row._kind_ === 'REMOVED') {
+        header.forEach(h => changedCols.add(h))
+      }
+    })
+    changedColumns.value = changedCols
 
     toast.success('Drilldown loaded!')
   } catch (e) {
@@ -636,20 +907,113 @@ async function loadDrilldown() {
 .row-modified { background: var(--warning-bg); }
 .row-added { background: var(--success-bg); }
 .row-removed { background: var(--error-bg); }
-.cell-old { background: #fee2e2; }
-.cell-new { background: #d1fae5; }
-.cell-indicator { font-size: 0.7rem; margin-right: 4px; }
+.cell-old { background: #fecaca; border-left: 3px solid #ef4444; }
+.cell-new { background: #bbf7d0; border-left: 3px solid #22c55e; }
+.cell-indicator { font-size: 0.85rem; margin-right: 6px; font-weight: bold; }
 .indicator-changed { color: #ef4444; }
-.indicator-unchanged { color: #22c55e; }
+.indicator-unchanged { color: #9ca3af; opacity: 0.5; }
 .kind-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
 .kind-modified { background: #fef3c7; color: #92400e; }
 .kind-added { background: #d1fae5; color: #065f46; }
 .kind-removed { background: #fee2e2; color: #991b1b; }
 .truncation-warning { color: var(--warning); font-weight: 600; background: var(--warning-bg); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); }
+
+/* Folder Tree View Styles */
+.folder-tree-section .section-content { max-height: 400px; overflow-y: auto; }
+.folder-tree-container { margin-top: var(--space-md); }
+.tree-legend { display: flex; flex-wrap: wrap; gap: var(--space-md); padding: var(--space-sm); background: var(--surface-elevated); border-radius: var(--radius-sm); margin-bottom: var(--space-md); font-size: 0.85rem; }
+.legend-item { display: flex; align-items: center; gap: var(--space-xs); }
+.tree-view { font-family: 'Menlo', 'Monaco', 'Consolas', monospace; font-size: 0.9rem; }
+.tree-node { display: flex; align-items: center; gap: var(--space-sm); padding: 4px 8px; border-radius: var(--radius-sm); transition: background 0.1s; position: relative; }
+.tree-node:hover { background: var(--surface-hover); }
+.tree-node.depth-1::before { content: ''; position: absolute; left: 10px; top: -6px; bottom: -6px; width: 1px; background: var(--border-light); opacity: 0.6; }
+.tree-node.depth-1::after { content: ''; position: absolute; left: 10px; top: 50%; width: 12px; height: 1px; background: var(--border-light); opacity: 0.6; }
+.tree-icon { font-size: 1rem; flex-shrink: 0; }
+.tree-name { flex: 1; }
+.tree-name.folder-name { font-weight: 600; color: var(--text-heading); }
+.tree-name.status-modified { color: #d97706; }
+.tree-name.status-added { color: #059669; }
+.tree-name.status-removed { color: #dc2626; text-decoration: line-through; }
+.tree-name.status-same { color: var(--text-secondary); }
+.tree-status-badge { padding: 2px 8px; border-radius: var(--radius-full); font-size: 0.7rem; font-weight: 600; }
+.tree-status-badge.badge-modified { background: #fef3c7; color: #92400e; }
+.tree-status-badge.badge-added { background: #d1fae5; color: #065f46; }
+.tree-status-badge.badge-removed { background: #fee2e2; color: #991b1b; }
+.tree-status-badge.badge-same { background: #e5e7eb; color: #6b7280; }
+.no-changes { color: var(--text-tertiary); font-style: italic; }
+
 .delta-modified { color: #f59e0b; font-weight: 600; }
 .delta-added { color: #10b981; font-weight: 600; }
 .delta-removed { color: #ef4444; font-weight: 600; }
 .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid transparent; border-top-color: currentColor; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 768px) { .sides-grid { grid-template-columns: 1fr; } .delta-tables { grid-template-columns: 1fr; } }
+
+/* Enhanced Drilldown Styles */
+.drilldown-hint { font-size: 0.9rem; color: var(--text-secondary); margin-bottom: var(--space-md); }
+.dot-example { font-weight: bold; margin: 0 2px; }
+.dot-example.red { color: #ef4444; }
+.dot-example.green { color: #22c55e; }
+
+.drilldown-stats-bar { display: flex; flex-wrap: wrap; gap: var(--space-md); margin-bottom: var(--space-md); padding: var(--space-md); background: var(--surface-elevated); border-radius: var(--radius-md); }
+.stat-item { display: flex; flex-direction: column; padding: var(--space-sm) var(--space-md); background: var(--surface-base); border-radius: var(--radius-sm); min-width: 80px; text-align: center; }
+.stat-item.modified { border-left: 3px solid #f59e0b; }
+.stat-item.added { border-left: 3px solid #22c55e; }
+.stat-item.removed { border-left: 3px solid #ef4444; }
+.stat-label { font-size: 0.75rem; color: var(--text-tertiary); }
+.stat-value { font-size: 1.25rem; font-weight: 700; }
+
+.drilldown-legend { display: flex; gap: var(--space-lg); margin-bottom: var(--space-md); padding: var(--space-sm); background: var(--surface-base); border-radius: var(--radius-sm); font-size: 0.85rem; }
+.drilldown-legend .legend-item { display: flex; align-items: center; gap: var(--space-xs); }
+.drilldown-legend .dot { font-size: 1.2rem; }
+.drilldown-legend .dot.red { color: #ef4444; }
+.drilldown-legend .dot.green { color: #22c55e; }
+.drilldown-legend .dot.gray { color: #9ca3af; }
+
+.delta-side { overflow: hidden; }
+.delta-side.side-a h5 { color: #dc2626; }
+.delta-side.side-b h5 { color: #16a34a; }
+
+.col-narrow { width: 60px; max-width: 60px; }
+.col-changed { background: linear-gradient(to bottom, #fef3c7, transparent); }
+.col-indicator { color: #f59e0b; margin-right: 4px; }
+
+.cell-dot { cursor: pointer; font-size: 1rem; margin-right: 6px; transition: transform 0.2s; }
+.cell-dot:hover { transform: scale(1.3); }
+.cell-dot.dot-red { color: #ef4444; }
+.cell-dot.dot-green { color: #22c55e; }
+.cell-dot.dot-unchanged { color: #d1d5db; font-size: 0.8rem; }
+.cell-value { font-size: 0.85rem; }
+.cell-muted { color: var(--text-tertiary); }
+
+/* Cell Detail Modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.cell-detail-modal { background: var(--surface-elevated); border-radius: var(--radius-lg); width: 90%; max-width: 700px; box-shadow: var(--shadow-heavy); overflow: hidden; }
+.cell-detail-modal .modal-header { display: flex; justify-content: space-between; align-items: center; padding: var(--space-md) var(--space-lg); background: var(--surface-base); border-bottom: 1px solid var(--border-light); }
+.cell-detail-modal .modal-header h4 { margin: 0; }
+.cell-detail-modal .modal-close { background: transparent; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-secondary); }
+.cell-detail-modal .modal-body { padding: var(--space-lg); }
+.modal-subtitle { margin: 4px 0 0; color: var(--text-tertiary); font-size: 0.95rem; }
+
+.full-drilldown-modal { max-width: 1400px; width: 96%; max-height: 90vh; display: flex; flex-direction: column; }
+.full-drilldown-modal .modal-header { position: sticky; top: 0; z-index: 2; }
+.full-drilldown-body { display: flex; flex-direction: column; gap: var(--space-md); max-height: calc(90vh - 110px); overflow: hidden; }
+.delta-tables.full-view { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
+.tall-scroll { max-height: 60vh; overflow: auto; }
+.cell-comparison.compact { grid-template-columns: 1fr 1fr; gap: var(--space-md); margin-bottom: var(--space-md); }
+.full-drilldown-modal .cell-meta { border: 1px solid var(--border-light); border-radius: var(--radius-md); padding: var(--space-md); background: var(--surface-base); }
+.full-drilldown-modal .cell-content { max-height: 120px; }
+
+.cell-comparison { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-md); align-items: stretch; margin-bottom: var(--space-lg); }
+.cell-side { padding: var(--space-md); border-radius: var(--radius-md); }
+.cell-side.old { background: #fef2f2; border: 2px solid #fecaca; }
+.cell-side.new { background: #f0fdf4; border: 2px solid #bbf7d0; }
+.cell-side h5 { margin: 0 0 var(--space-sm) 0; font-size: 0.9rem; }
+.cell-side.old h5 { color: #dc2626; }
+.cell-side.new h5 { color: #16a34a; }
+.cell-content { font-family: monospace; font-size: 0.9rem; word-break: break-all; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: white; padding: var(--space-sm); border-radius: var(--radius-sm); }
+.cell-arrow { display: flex; align-items: center; font-size: 1.5rem; color: var(--text-tertiary); }
+.cell-meta { padding-top: var(--space-md); border-top: 1px solid var(--border-light); font-size: 0.9rem; }
+.cell-meta p { margin: var(--space-xs) 0; }
+
+@media (max-width: 768px) { .sides-grid { grid-template-columns: 1fr; } .delta-tables { grid-template-columns: 1fr; } .delta-tables.full-view { grid-template-columns: 1fr; } .cell-comparison { grid-template-columns: 1fr; } .cell-arrow { transform: rotate(90deg); justify-self: center; } }
 </style>
