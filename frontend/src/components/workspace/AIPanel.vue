@@ -150,87 +150,88 @@
       </div>
     </details>
 
-    <!-- Auto-Index Section -->
-    <div class="auto-index-section">
-      <h4 class="section-header">📂 Auto-Index Documents</h4>
-      <p class="section-desc">Index files for AI-powered search and chat.</p>
+    <!-- Group Embedding Status Section -->
+    <div class="embedding-status-section">
+      <h4 class="section-header">📊 Document Embedding Status</h4>
+      <p class="section-desc">Manage which groups are indexed for AI-powered search. Auto-indexed groups are highlighted.</p>
       
-      <!-- Quick Index Converted Files -->
-      <div v-if="conversionSessionId" class="quick-index-bar">
-        <span class="quick-index-label">📦 Converted files available in session</span>
-        
-        <!-- Group Selection for Indexing -->
-        <div v-if="availableGroups.length > 0" class="group-selection">
-          <label class="form-label">Select groups to index:</label>
-          <div class="group-checkboxes">
-            <label v-for="group in availableGroups" :key="group" class="checkbox-label">
-              <input 
-                type="checkbox" 
-                :value="group"
-                v-model="selectedGroupsForIndex"
-              />
-              <span>{{ group }}</span>
-            </label>
+      <div v-if="conversionSessionId" class="embedding-content">
+        <!-- Embedded Groups List -->
+        <div class="groups-status-panel">
+          <div class="status-header">
+            <span class="status-title">📁 Available Groups</span>
+            <span class="status-count">{{ availableGroups.length }} total</span>
+          </div>
+          
+          <div v-if="loadingGroups" class="loading-indicator">
+            <span class="spinner-sm"></span> Loading groups...
+          </div>
+          
+          <div v-else-if="availableGroups.length > 0" class="groups-list">
+            <div 
+              v-for="group in groupsWithStatus" 
+              :key="group.name"
+              class="group-status-item"
+              :class="{ 
+                'indexed': group.isIndexed, 
+                'auto-indexed': group.isAutoIndexed,
+                'selected': selectedGroupsForIndex.includes(group.name)
+              }"
+            >
+              <label class="group-checkbox-label">
+                <input 
+                  type="checkbox" 
+                  :value="group.name"
+                  v-model="selectedGroupsForIndex"
+                  :disabled="indexing"
+                />
+                <span class="group-info">
+                  <span class="group-name">{{ group.name }}</span>
+                  <span v-if="group.isAutoIndexed" class="auto-badge">Auto</span>
+                  <span v-if="group.isIndexed" class="indexed-badge">✅ Indexed</span>
+                  <span v-else class="not-indexed-badge">○ Not indexed</span>
+                </span>
+              </label>
+            </div>
+          </div>
+          
+          <div v-else class="no-groups-message">
+            <span class="no-groups-icon">📂</span>
+            <p>No groups available. Please convert files in the Utility tab first.</p>
           </div>
         </div>
         
-        <div v-else class="group-selection" style="color: var(--text-tertiary); font-size: 0.9rem;">
-          <p>📁 No groups detected. Please convert files first.</p>
+        <!-- Index Actions -->
+        <div class="index-actions">
+          <button class="btn btn-sm btn-secondary" @click="selectAllGroups" :disabled="indexing">
+            Select All
+          </button>
+          <button class="btn btn-sm btn-secondary" @click="selectAutoGroups" :disabled="indexing">
+            Select Auto Groups
+          </button>
+          <button class="btn btn-sm btn-secondary" @click="clearGroupSelection" :disabled="indexing">
+            Clear Selection
+          </button>
         </div>
         
         <button 
-          class="btn btn-primary" 
+          class="btn btn-primary index-btn" 
           @click="indexConvertedFiles" 
           :disabled="indexing || selectedGroupsForIndex.length === 0"
-          :title="selectedGroupsForIndex.length === 0 ? 'Select at least one group to index' : 'Index selected converted files for AI search'"
         >
-          {{ indexing ? 'Indexing...' : '⚡ Index Converted Files' }}
+          <span v-if="indexing" class="spinner-sm"></span>
+          {{ indexing ? 'Indexing...' : `🚀 Index ${selectedGroupsForIndex.length} Group(s)` }}
         </button>
+        
+        <p v-if="indexedGroupsList.length > 0" class="indexed-summary">
+          ✅ <strong>{{ indexedGroupsList.length }}</strong> group(s) currently indexed: 
+          <span class="indexed-names">{{ indexedGroupsList.join(', ') }}</span>
+        </p>
       </div>
       
-      <div class="drop-divider" v-if="conversionSessionId">
-        <span>or upload additional files</span>
-      </div>
-      
-      <div 
-        class="index-drop-zone"
-        :class="{ dragging: isDragging }"
-        @dragover.prevent="isDragging = true"
-        @dragleave.prevent="isDragging = false"
-        @drop.prevent="onDropFiles"
-      >
-        <div class="drop-content">
-          <span class="drop-icon">📁</span>
-          <p>Drag & drop files to index</p>
-          <p class="drop-hint">Supports PDF, TXT, CSV, XML, DOCX</p>
-        </div>
-        <button class="btn btn-secondary" @click="$refs.fileInput.click()">Browse Files</button>
-      </div>
-      <input 
-        ref="fileInput" 
-        type="file" 
-        multiple 
-        @change="onSelectFiles"
-        accept=".pdf,.txt,.csv,.xml,.docx"
-        style="display: none"
-      />
-      
-      <!-- Pending Files -->
-      <div v-if="pendingFiles.length" class="pending-files">
-        <div class="pending-header">
-          <span>{{ pendingFiles.length }} file(s) pending</span>
-          <button class="btn btn-primary btn-sm" @click="indexFiles" :disabled="indexing">
-            {{ indexing ? 'Indexing...' : 'Index Now' }}
-          </button>
-        </div>
-        <div class="files-list">
-          <div v-for="(file, idx) in pendingFiles" :key="idx" class="file-item">
-            <span class="file-icon">📄</span>
-            <span class="file-name">{{ file.name }}</span>
-            <span class="file-size">{{ formatSize(file.size) }}</span>
-            <button class="btn-remove" @click="removePendingFile(idx)">×</button>
-          </div>
-        </div>
+      <div v-else class="no-session-message">
+        <span class="info-icon">ℹ️</span>
+        <p>Upload and convert files in the <strong>Utility</strong> tab to enable AI indexing.</p>
       </div>
     </div>
 
@@ -260,7 +261,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -295,6 +296,34 @@ const conversionSessionId = ref(null)  // Conversion session ID for indexing
 const availableGroups = ref([])  // Groups available in the conversion session
 const selectedGroupsForIndex = ref([])  // Groups selected for indexing
 const loadingGroups = ref(false)  // Loading state for group fetching
+const indexedGroupsList = ref([])  // List of already indexed groups
+const autoIndexedGroups = ref(['DISSERTATION', 'BOOK'])  // Auto-indexed groups from config
+
+// Computed: Groups with their status
+const groupsWithStatus = computed(() => {
+  return availableGroups.value.map(groupName => ({
+    name: groupName,
+    isIndexed: indexedGroupsList.value.includes(groupName),
+    isAutoIndexed: autoIndexedGroups.value.some(ag => 
+      groupName.toUpperCase().includes(ag.toUpperCase())
+    )
+  }))
+})
+
+// Helper functions for group selection
+function selectAllGroups() {
+  selectedGroupsForIndex.value = [...availableGroups.value]
+}
+
+function selectAutoGroups() {
+  selectedGroupsForIndex.value = availableGroups.value.filter(g =>
+    autoIndexedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase()))
+  )
+}
+
+function clearGroupSelection() {
+  selectedGroupsForIndex.value = []
+}
 
 // Use conversion session from props
 watch(() => props.sessionId, (newVal) => {
@@ -563,11 +592,20 @@ async function loadSessionGroups() {
   if (!conversionSessionId.value) {
     availableGroups.value = []
     selectedGroupsForIndex.value = []
+    indexedGroupsList.value = []
     return
   }
   
   loadingGroups.value = true
   try {
+    // Load auto-indexed groups config
+    try {
+      const configRes = await api.get('/v2/ai/config')
+      autoIndexedGroups.value = configRes.data.auto_indexed_groups || ['DISSERTATION', 'BOOK']
+    } catch {
+      // Keep defaults
+    }
+    
     // Try new v2 endpoint first
     let res
     try {
@@ -577,18 +615,27 @@ async function loadSessionGroups() {
       availableGroups.value = (res.data.groups || []).map(g => 
         typeof g === 'string' ? g : g.name
       )
+      // Track which groups are already indexed
+      indexedGroupsList.value = (res.data.indexed_groups || []).map(g =>
+        typeof g === 'string' ? g : g.name
+      )
     } catch (v2Error) {
       // Fallback to legacy endpoint
       res = await api.get(`/ai/session-groups/${conversionSessionId.value}`)
       availableGroups.value = res.data.groups || []
+      indexedGroupsList.value = res.data.indexed_groups || []
     }
     
-    // Pre-select all groups by default
-    selectedGroupsForIndex.value = [...availableGroups.value]
+    // Pre-select auto-indexed groups if not already indexed
+    selectedGroupsForIndex.value = availableGroups.value.filter(g =>
+      autoIndexedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase())) &&
+      !indexedGroupsList.value.includes(g)
+    )
   } catch (e) {
     console.error('Failed to load session groups:', e)
     availableGroups.value = []
     selectedGroupsForIndex.value = []
+    indexedGroupsList.value = []
   } finally {
     loadingGroups.value = false
   }
@@ -627,8 +674,16 @@ async function indexConvertedFiles() {
     const filesIndexed = res.data.files_indexed || res.data.indexed_count || 0
     if (filesIndexed > 0) {
       toast.success(`${filesIndexed} converted file(s) indexed successfully!`)
+      
+      // Update indexed groups list
+      const newIndexedGroups = res.data.indexed_groups || res.data.groups || selectedGroupsForIndex.value
+      indexedGroupsList.value = [...new Set([...indexedGroupsList.value, ...newIndexedGroups])]
+      
       emit('files-indexed', filesIndexed)
-      emit('groups-indexed', res.data.indexed_groups || res.data.groups || [])
+      emit('groups-indexed', newIndexedGroups)
+      
+      // Clear selection after successful indexing
+      selectedGroupsForIndex.value = []
     } else {
       toast.warning('No files found to index. Have you converted files yet?')
     }
@@ -751,4 +806,35 @@ async function indexConvertedFiles() {
 .modal-body { padding: var(--space-lg); }
 .instructions-input { width: 100%; padding: var(--space-md); border: 1px solid var(--border-medium); border-radius: var(--radius-md); resize: vertical; font-family: inherit; background: var(--surface-base); color: var(--text-body); }
 .modal-footer { display: flex; justify-content: flex-end; gap: var(--space-sm); padding: var(--space-md) var(--space-lg); border-top: 1px solid var(--border-light); }
+
+/* Embedding Status Section */
+.embedding-status-section { margin: var(--space-lg); padding: var(--space-lg); background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated)); border-radius: var(--radius-md); border: 1px solid var(--border-light); }
+.embedding-content { margin-top: var(--space-md); }
+.groups-status-panel { background: var(--surface-base); border-radius: var(--radius-md); border: 1px solid var(--border-light); overflow: hidden; }
+.status-header { display: flex; justify-content: space-between; align-items: center; padding: var(--space-md); background: var(--surface-elevated); border-bottom: 1px solid var(--border-light); }
+.status-title { font-weight: 600; }
+.status-count { font-size: 0.85rem; color: var(--text-tertiary); }
+.loading-indicator { padding: var(--space-lg); text-align: center; color: var(--text-tertiary); display: flex; align-items: center; justify-content: center; gap: var(--space-sm); }
+.groups-list { max-height: 300px; overflow-y: auto; padding: var(--space-sm); }
+.group-status-item { padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); margin-bottom: var(--space-xs); transition: all 0.2s; border: 1px solid transparent; }
+.group-status-item:hover { background: var(--surface-hover); }
+.group-status-item.selected { background: var(--brand-subtle); border-color: var(--brand-primary); }
+.group-status-item.indexed { border-left: 3px solid var(--success); }
+.group-status-item.auto-indexed { border-left: 3px solid var(--brand-primary); }
+.group-checkbox-label { display: flex; align-items: center; gap: var(--space-sm); cursor: pointer; width: 100%; }
+.group-checkbox-label input { width: 18px; height: 18px; accent-color: var(--brand-primary); }
+.group-info { display: flex; align-items: center; gap: var(--space-sm); flex: 1; }
+.group-name { font-weight: 500; }
+.auto-badge { padding: 2px 8px; background: var(--brand-primary); color: #000; font-size: 0.7rem; font-weight: 600; border-radius: var(--radius-full); }
+.indexed-badge { font-size: 0.8rem; color: var(--success); margin-left: auto; }
+.not-indexed-badge { font-size: 0.8rem; color: var(--text-tertiary); margin-left: auto; }
+.no-groups-message { padding: var(--space-xl); text-align: center; color: var(--text-tertiary); }
+.no-groups-icon { font-size: 2rem; display: block; margin-bottom: var(--space-sm); }
+.index-actions { display: flex; gap: var(--space-sm); margin-top: var(--space-md); }
+.btn-sm { padding: var(--space-xs) var(--space-sm); font-size: 0.85rem; }
+.index-btn { margin-top: var(--space-md); width: 100%; }
+.indexed-summary { margin-top: var(--space-md); padding: var(--space-sm); background: var(--success-bg, #d1fae5); border-radius: var(--radius-sm); font-size: 0.9rem; }
+.indexed-names { color: var(--success); font-weight: 500; }
+.no-session-message { padding: var(--space-lg); text-align: center; background: var(--surface-elevated); border-radius: var(--radius-md); border: 1px dashed var(--border-medium); }
+.info-icon { font-size: 1.5rem; display: block; margin-bottom: var(--space-sm); }
 </style>

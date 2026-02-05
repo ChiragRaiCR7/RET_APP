@@ -54,37 +54,34 @@
           </div>
           
           <div class="control-group">
-            <label class="toggle-control">
-              <input type="checkbox" v-model="workflow.editMode" class="toggle-input" />
-              <span class="toggle-text">✏️ Enable Edit Mode (session-only)</span>
-            </label>
-          </div>
-
-          <div class="control-group full-width">
-            <label class="form-label">Custom group prefixes (comma-separated, e.g. ABC,XYZ,PQR). Leave blank for auto.</label>
-            <input 
-              v-model="workflow.customPrefixes" 
-              type="text" 
-              class="form-input"
-              placeholder="ABC,XYZ,PQR"
-            />
+            <div class="edit-mode-toggle">
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="workflow.editMode" />
+                <span class="toggle-slider" aria-hidden="true"></span>
+              </label>
+              <div class="toggle-labels">
+                <span class="toggle-label">✏️ Edit Mode</span>
+                <span class="toggle-subtext">Session-only edits</span>
+              </div>
+              <span v-if="workflow.editMode" class="edit-mode-badge">Active</span>
+            </div>
           </div>
         </div>
 
         <div class="controls-actions">
           <button class="btn btn-secondary" @click="cleanupSession">
-            🧹 Cleanup Session Data (delete temp files)
+            🧹 Cleanup Session
           </button>
-          <button class="btn btn-secondary" @click="clearAllEdits">
-            Clear ALL Edits
+          <button class="btn btn-secondary" @click="clearAllEdits" :disabled="!workflow.editMode">
+            Clear Edits
           </button>
-          <span class="idle-info">Idle cleanup timeout: 60 minutes</span>
+          <span class="idle-info">Session auto-cleanup: 60 min</span>
         </div>
 
         <div class="parser-option">
           <label class="checkbox-label">
             <input type="checkbox" v-model="workflow.fastParser" />
-            <span>Fast XML parser (lxml)</span>
+            <span>🚀 Fast XML parser (lxml)</span>
           </label>
         </div>
       </div>
@@ -99,10 +96,6 @@
         />
         
         <div class="upload-actions">
-          <button class="btn btn-primary" @click="scanZip" :disabled="!workflow.uploadedFiles.length || scanning">
-            <span v-if="scanning" class="spinner"></span>
-            {{ scanning ? 'Scanning...' : 'Scan ZIP' }}
-          </button>
           <button class="btn btn-secondary" @click="clearWorkflow">Clear</button>
           <button 
             class="btn btn-warning" 
@@ -145,16 +138,26 @@
           </div>
         </div>
 
-        <div class="groups-badges">
-          <span 
-            v-for="group in filteredGroups" 
-            :key="group.name"
-            class="group-badge"
-            :class="{ selected: selectedGroups.includes(group.name) }"
-            @click="toggleGroup(group.name)"
-          >
-            {{ group.name }} ×
-          </span>
+        <!-- Group Selection Dropdown -->
+        <div class="group-selection-section">
+          <div class="form-group">
+            <label class="form-label">📂 Select Groups ({{ selectedGroups.length }} selected)</label>
+            <select
+              v-model="selectedGroups"
+              class="form-select group-multi-select"
+              multiple
+              size="6"
+            >
+              <option 
+                v-for="group in filteredGroups" 
+                :key="group.name" 
+                :value="group.name"
+              >
+                {{ group.name }} ({{ group.files?.length || 0 }} files)
+              </option>
+            </select>
+            <p class="form-hint">Tip: Use Ctrl/⌘ + click to select multiple groups.</p>
+          </div>
         </div>
 
         <div class="active-group-section">
@@ -184,6 +187,13 @@
 
           <div v-if="preview" class="preview-info">
             <p><strong>Record Basis:</strong> {{ preview.record_basis || 'AUTO:AccountRuleLevelRow' }} | <strong>Rows:</strong> {{ preview.total_rows }} | <strong>Columns:</strong> {{ preview.headers?.length }}</p>
+          </div>
+
+          <div v-if="workflow.editMode" class="edit-save-bar">
+            <span>{{ pendingChangesCount }} pending change(s)</span>
+            <button class="btn btn-sm btn-primary" @click="saveCellEdits" :disabled="pendingChangesCount === 0">
+              💾 Save edits to CSV
+            </button>
           </div>
 
           <!-- Data Preview Table -->
@@ -241,7 +251,7 @@
               v-for="group in conversionData.groups" 
               :key="group.name"
               class="checkbox-label ai-group-item"
-              :class="{ 'indexed': indexedGroups.includes(group.name) }"
+              :class="{ 'indexed': indexedGroups.includes(group.name), 'auto-indexed': isAutoIndexedGroup(group.name) }"
             >
               <input 
                 type="checkbox" 
@@ -251,6 +261,7 @@
               />
               <span class="group-name">{{ group.name }}</span>
               <span class="group-meta">{{ group.file_count || 0 }} files</span>
+              <span v-if="isAutoIndexedGroup(group.name)" class="auto-badge">Auto</span>
               <span v-if="indexedGroups.includes(group.name)" class="indexed-badge">✅ Indexed</span>
             </label>
           </div>
@@ -258,6 +269,9 @@
           <div class="ai-index-actions">
             <button class="btn btn-sm btn-secondary" @click="selectAllAIGroups" :disabled="aiIndexing">
               Select All
+            </button>
+            <button class="btn btn-sm btn-secondary" @click="selectAutoAIGroups" :disabled="aiIndexing">
+              Select Auto Groups
             </button>
             <button class="btn btn-sm btn-secondary" @click="clearAIGroups" :disabled="aiIndexing">
               Clear
@@ -310,7 +324,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import ComparisonPanel from '@/components/workspace/ComparisonPanel.vue'
 import AIPanel from '@/components/workspace/AIPanel.vue'
@@ -332,14 +346,12 @@ const workflow = reactive({
   outputFormat: 'csv',
   editMode: false,
   fastParser: true,
-  customPrefixes: '',
   uploadedFiles: [],
   scannedGroups: [],
   scanSummary: null,
   converted: false
 })
 
-const scanning = ref(false)
 const converting = ref(false)
 const groupSearch = ref('')
 const selectedGroups = ref([])
@@ -347,6 +359,7 @@ const activeGroup = ref('')
 const activeFile = ref('')
 const preview = ref(null)
 const groupFiles = ref([])
+const pendingCellEdits = ref(new Map())
 
 // Conversion data
 const conversionData = reactive({
@@ -359,12 +372,19 @@ const conversionData = reactive({
 const aiSelectedGroups = ref([])
 const indexedGroups = ref([])
 const aiIndexing = ref(false)
+const autoIndexedGroups = ref([])
 
 // Computed
 const filteredGroups = computed(() => {
   if (!groupSearch.value) return conversionData.groups
   const search = groupSearch.value.toLowerCase()
   return conversionData.groups.filter(g => g.name.toLowerCase().includes(search))
+})
+
+const pendingChangesCount = computed(() => pendingCellEdits.value.size)
+
+watch(() => workflow.editMode, (enabled) => {
+  if (!enabled) pendingCellEdits.value = new Map()
 })
 
 // Helper functions
@@ -405,40 +425,6 @@ function onUploaded(data) {
   }
 }
 
-async function scanZip() {
-  if (!workflow.uploadedFiles.length) {
-    toast.warning('No files to scan. Please upload a ZIP file first.')
-    return
-  }
-  
-  scanning.value = true
-  try {
-    const formData = new FormData()
-    formData.append('file', workflow.uploadedFiles[0])
-    
-    const res = await api.post('/conversion/scan', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    
-    workflow.sessionId = res.data.session_id
-    workflow.scannedGroups = (res.data.groups || []).map(g => ({
-      name: g.name,
-      file_count: g.file_count || 0,
-      size: g.size || 0
-    }))
-    workflow.scanSummary = res.data.summary || { 
-      totalGroups: workflow.scannedGroups.length, 
-      totalFiles: res.data.xml_count || 0
-    }
-    
-    toast.success(`Scan complete: ${workflow.scannedGroups.length} groups found`)
-  } catch (e) {
-    toast.error('Scan failed: ' + (e.response?.data?.detail || e.message))
-  } finally {
-    scanning.value = false
-  }
-}
-
 function clearWorkflow() {
   workflow.sessionId = null
   workflow.uploadedFiles = []
@@ -450,6 +436,7 @@ function clearWorkflow() {
   activeGroup.value = ''
   activeFile.value = ''
   preview.value = null
+   pendingCellEdits.value = new Map()
 }
 
 async function bulkConvert() {
@@ -489,6 +476,7 @@ async function loadConvertedFiles() {
     conversionData.groups = res.data.groups || []
     conversionData.files = res.data.files || []
     conversionData.totalFiles = res.data.total_files || 0
+    await loadAutoIndexConfig()
     
     if (conversionData.groups.length > 0) {
       activeGroup.value = conversionData.groups[0].name
@@ -505,6 +493,7 @@ async function loadGroupFiles() {
   groupFiles.value = conversionData.files.filter(f => f.group === activeGroup.value)
   if (groupFiles.value.length > 0) {
     activeFile.value = groupFiles.value[0].filename
+    pendingCellEdits.value = new Map()
     await loadFilePreview()
   }
 }
@@ -517,6 +506,7 @@ async function loadFilePreview() {
       params: { max_rows: 100 }
     })
     preview.value = res.data
+    pendingCellEdits.value = new Map()
   } catch (e) {
     console.error('Failed to load preview:', e)
     preview.value = null
@@ -531,17 +521,40 @@ function clearGroupSelection() {
   selectedGroups.value = []
 }
 
-function toggleGroup(name) {
-  const idx = selectedGroups.value.indexOf(name)
-  if (idx >= 0) {
-    selectedGroups.value.splice(idx, 1)
-  } else {
-    selectedGroups.value.push(name)
-  }
+function markCellChanged(rowIdx, colIdx) {
+  if (!preview.value || !workflow.editMode) return
+  const column = preview.value.headers?.[colIdx]
+  if (!column) return
+  const value = preview.value.rows?.[rowIdx]?.[colIdx]
+  const key = `${rowIdx}::${column}`
+  const next = new Map(pendingCellEdits.value)
+  next.set(key, { row_index: rowIdx, column, value })
+  pendingCellEdits.value = next
 }
 
-function markCellChanged(rowIdx, colIdx) {
-  // Track cell changes for edit mode
+async function saveCellEdits() {
+  if (!workflow.sessionId || !activeFile.value) {
+    toast.error('No active file to save edits')
+    return
+  }
+
+  const changes = Array.from(pendingCellEdits.value.values())
+  if (!changes.length) {
+    toast.info('No pending cell edits')
+    return
+  }
+
+  try {
+    await api.post(`/conversion/update-cells/${workflow.sessionId}`, {
+      filename: activeFile.value,
+      changes
+    })
+    toast.success(`Saved ${changes.length} change(s) to ${activeFile.value}`)
+    pendingCellEdits.value = new Map()
+    await loadFilePreview()
+  } catch (e) {
+    toast.error('Failed to save edits: ' + (e.response?.data?.detail || e.message))
+  }
 }
 
 async function downloadAll() {
@@ -646,6 +659,12 @@ function clearAIGroups() {
   aiSelectedGroups.value = []
 }
 
+function selectAutoAIGroups() {
+  aiSelectedGroups.value = conversionData.groups
+    .map(g => g.name)
+    .filter(name => isAutoIndexedGroup(name) && !indexedGroups.value.includes(name))
+}
+
 async function startAIIndexing() {
   if (!workflow.sessionId || aiSelectedGroups.value.length === 0) {
     toast.error('No session or groups selected')
@@ -691,6 +710,19 @@ function onGroupsIndexed(groups) {
   toast.success(`${groups.length} groups indexed for AI`)
 }
 
+async function loadAutoIndexConfig() {
+  try {
+    const res = await api.get('/v2/ai/config')
+    autoIndexedGroups.value = res.data.auto_indexed_groups || []
+  } catch {
+    autoIndexedGroups.value = []
+  }
+}
+
+function isAutoIndexedGroup(name) {
+  return autoIndexedGroups.value.some(g => name?.toUpperCase().includes(g.toUpperCase()))
+}
+
 function onFileUpdated(file) {
   loadConvertedFiles()
 }
@@ -703,9 +735,6 @@ function onFileRemoved(filename) {
   loadConvertedFiles()
 }
 
-onMounted(() => {
-  // Initialize
-})
 </script>
 
 <style scoped>
@@ -790,59 +819,89 @@ onMounted(() => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-.toggle-input {
-  width: 56px;
-  height: 28px;
-  appearance: none;
-  background: linear-gradient(135deg, #e0e0e0 0%, #f0f0f0 100%);
-  border-radius: 14px;
+/* Edit Mode Toggle Switch */
+.edit-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.toggle-switch {
   position: relative;
+  width: 48px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.toggle-switch input {
+  appearance: none;
+  width: 48px;
+  height: 28px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  border: 2px solid #d1d5db;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  border: 2px solid #d0d0d0;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
 }
 
-.toggle-input:hover {
-  border-color: #b0b0b0;
-}
-
-.toggle-input:focus {
-  outline: none;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1), 0 0 0 3px rgba(59, 130, 246, 0.1);
+.toggle-switch input:checked {
+  background: var(--brand-primary);
   border-color: var(--brand-primary);
 }
 
-.toggle-input:checked {
-  background: linear-gradient(135deg, var(--brand-primary) 0%, #2563eb 100%);
-  border-color: var(--brand-primary);
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3), inset 0 2px 4px rgba(255, 255, 255, 0.2);
-}
-
-.toggle-input::before {
-  content: '';
+.toggle-slider {
   position: absolute;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
   border-radius: 50%;
-  background: white;
-  top: 2px;
-  left: 2px;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  left: 4px;
+  transition: transform 0.2s ease;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
-.toggle-input:checked::before {
-  transform: translateX(28px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+.toggle-switch input:checked + .toggle-slider {
+  transform: translateX(20px);
 }
 
-.toggle-text {
-  font-weight: 500;
+.toggle-labels {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toggle-label {
+  font-weight: 600;
   font-size: 0.95rem;
   color: var(--text-primary);
-  user-select: none;
 }
+
+.toggle-subtext {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.edit-mode-badge {
+  padding: 2px 10px;
+  background: var(--success);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius-full);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 
 .controls-actions {
   display: flex;
@@ -929,6 +988,36 @@ onMounted(() => {
   margin-bottom: var(--space-lg);
 }
 
+/* Group Selection Dropdown */
+.group-selection-section {
+  margin-bottom: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+
+.group-multi-select {
+  min-height: 170px;
+  background: var(--surface-base);
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: 0.85rem;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
 .group-badge {
   display: inline-flex;
   align-items: center;
@@ -967,6 +1056,17 @@ onMounted(() => {
   padding: var(--space-sm);
   background: var(--surface-hover);
   border-radius: var(--radius-sm);
+}
+
+.edit-save-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: var(--space-sm) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-hover);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
 }
 
 .preview-table {
@@ -1075,6 +1175,10 @@ onMounted(() => {
   border-left: 3px solid var(--success);
 }
 
+.ai-group-item.auto-indexed {
+  border-left: 3px solid var(--brand-primary);
+}
+
 .ai-group-item .group-name {
   font-weight: 600;
   flex: 1;
@@ -1088,6 +1192,14 @@ onMounted(() => {
 .ai-group-item .indexed-badge {
   font-size: 0.7rem;
   color: var(--success);
+}
+
+.ai-group-item .auto-badge {
+  font-size: 0.7rem;
+  color: #000;
+  background: var(--brand-primary);
+  border-radius: var(--radius-full);
+  padding: 2px 6px;
 }
 
 .ai-index-actions {

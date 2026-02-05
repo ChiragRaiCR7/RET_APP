@@ -69,6 +69,37 @@ def save_ai_config(config: dict):
 
 
 # ============================================================
+# AI Config Endpoint
+# ============================================================
+
+@router.get("/config")
+def get_ai_config_endpoint(
+    current_user_id: str = Depends(get_current_user),
+):
+    """
+    Get AI configuration including auto-indexed groups.
+    """
+    try:
+        config = load_ai_config()
+        return {
+            "auto_indexed_groups": config.get("auto_indexed_groups", []),
+            "default_collection": config.get("default_collection", "documents"),
+            "chunk_size": config.get("chunk_size", 10000),
+            "retrieval_top_k": config.get("retrieval_top_k", 16),
+            "enable_auto_indexing": config.get("enable_auto_indexing", False),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get AI config: {e}")
+        return {
+            "auto_indexed_groups": [],
+            "default_collection": "documents",
+            "chunk_size": 10000,
+            "retrieval_top_k": 16,
+            "enable_auto_indexing": False,
+        }
+
+
+# ============================================================
 # AI Session Endpoints
 # ============================================================
 

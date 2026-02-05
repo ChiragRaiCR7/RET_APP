@@ -89,16 +89,33 @@ class BaseConfig(BaseSettings):
     # AI / RET
     # ======================
     RET_AI_TEMPERATURE: float = 0.7
-    AI_STRATEGY: str = "lite"  # lite, langchain, advanced
+    AI_STRATEGY: str = "advanced"  # lite, langchain, advanced
+    
+    # ======================
+    # Advanced RAG Configuration
+    # ======================
+    RAG_USE_ADVANCED: bool = True  # Use Advanced RAG Engine with LangGraph
+    RAG_TOP_K_VECTOR: int = 20  # Top K for vector retrieval
+    RAG_TOP_K_LEXICAL: int = 15  # Top K for lexical retrieval
+    RAG_TOP_K_SUMMARY: int = 5  # Top K for summary retrieval
+    RAG_MAX_CHUNKS: int = 15  # Max chunks for context
+    RAG_MAX_CONTEXT_CHARS: int = 40000  # Max characters in context
+    RAG_VECTOR_WEIGHT: float = 0.6  # Weight for vector similarity in fusion
+    RAG_LEXICAL_WEIGHT: float = 0.3  # Weight for lexical similarity in fusion
+    RAG_SUMMARY_WEIGHT: float = 0.1  # Weight for summary similarity in fusion
+    RAG_CHUNK_SIZE: int = 1500  # Chunk size for text splitting
+    RAG_CHUNK_OVERLAP: int = 200  # Overlap between chunks
+    RAG_ENABLE_QUERY_TRANSFORM: bool = True  # Enable LLM-based query transformation
+    RAG_ENABLE_SUMMARIES: bool = True  # Generate and index document summaries
 
     # ======================
     # Azure OpenAI
     # ======================
     AZURE_OPENAI_API_KEY: Optional[str] = None
     AZURE_OPENAI_ENDPOINT: Optional[AnyHttpUrl] = None
-    AZURE_OPENAI_API_VERSION: Optional[str] = None
-    AZURE_OPENAI_CHAT_MODEL: Optional[str] = None
-    AZURE_OPENAI_EMBED_MODEL: Optional[str] = None
+    AZURE_OPENAI_API_VERSION: Optional[str] = "2024-02-01"
+    AZURE_OPENAI_CHAT_MODEL: Optional[str] = "gpt-4o"
+    AZURE_OPENAI_EMBED_MODEL: Optional[str] = "text-embedding-3-small"
     
     # ======================
     # Rate Limiting

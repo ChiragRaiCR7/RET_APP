@@ -102,18 +102,67 @@ AZURE_OPENAI_EMBED_MODEL=text-embedding-3-small
 3. Chat with RAG → `POST /api/v2/ai/chat`
 4. Download transcript → `POST /api/v2/ai/transcript/download`
 
-### Advanced RAG Implementation
-The RAG engine (`backend/api/services/ai/rag_engine.py`) implements Microsoft's Advanced RAG patterns:
+### Advanced RAG Implementation (LangGraph + ChromaDB + Azure OpenAI)
 
-**Query Transformation:**
-- User queries are rewritten using LLM to improve retrieval
-- Original query preserved for final LLM prompt
-- Transformed query used only for embedding/vector search
+The Advanced RAG Engine (`backend/api/services/ai/advanced_rag_engine.py`) implements a complete RAG system with LangGraph orchestration:
 
-**Hybrid Retrieval:**
-- Vector search (70% weight) via ChromaDB embeddings
-- Lexical search (30% weight) via keyword matching
-- Results reranked using hybrid scoring
+```
+┌──────────────┐       ┌───────────────┐       ┌─────────────────┐
+│    Query     │  ───▶ │    Query      │  ───▶ │    Query        │
+│    Input     │       │ Transformation│       │    Routing      │
+└──────────────┘       └───────────────┘       └─────────────────┘
+                                                        │
+                    ┌───────────────────────────────────┼───────────────────────────────────┐
+                    │                                   │                                   │
+                    ▼                                   ▼                                   ▼
+            ┌───────────────┐                  ┌───────────────┐                   ┌────────────────┐
+            │  Vector Store │                  │ Summary Index │                   │  Hybrid/Fusion │
+            │   Retrieval   │                  │   Retrieval   │                   │    Retrieval   │
+            └───────────────┘                  └───────────────┘                   └────────────────┘
+                    │                                   │                                   │
+                    └───────────────────────────────────┼───────────────────────────────────┘
+                                                        │
+                                                        ▼
+                                                ┌───────────────┐
+                                                │   Reranking   │
+                                                │ Postprocessing│
+                                                └───────────────┘
+                                                        │
+                                                        ▼
+                                                ┌───────────────┐
+                                                │      LLM      │
+                                                │   Generation  │
+                                                └───────────────┘
+```
+
+**Key Components:**
+
+1. **Query Transformation (LLM-based):**
+   - Intent detection (factual, analytical, summary, exploratory, specific)
+   - Query expansion with synonyms
+   - Keyword extraction
+   - Filter detection (group=X, file=Y)
+
+2. **Query Routing:**
+   - Factual/Specific → Vector retrieval
+   - Summary → Summary index
+   - Analytical/Exploratory → Fusion (all strategies)
+
+3. **Fusion Retrieval (Reciprocal Rank Fusion):**
+   - Vector retrieval (semantic similarity)
+   - Lexical retrieval (keyword matching)
+   - Summary retrieval (document-level)
+   - Combined with configurable weights
+
+4. **Reranking:**
+   - Hybrid scoring combining vector and lexical scores
+   - Multi-method boost (items found by multiple methods ranked higher)
+   - Context building with citation markers
+
+5. **Session Isolation:**
+   - Each session has isolated ChromaDB collections
+   - Collections automatically cleared on logout
+   - Files: `runtime/sessions/{session_id}/ai_index/chroma/`
 
 **ChromaDB Filter Syntax:**
 ```python
@@ -127,12 +176,45 @@ The RAG engine (`backend/api/services/ai/rag_engine.py`) implements Microsoft's 
 ]}
 ```
 
-**RAG Settings (configurable in config.py):**
-- `chunk_size=1500` - Document chunk size
-- `top_k=16` - Number of chunks to retrieve
-- `max_context_chars=40000` - Max context for LLM
-- `vector_weight=0.7` - Weight for vector similarity
-- `lexical_weight=0.3` - Weight for keyword matching
+**RAG Settings (configurable in config.py / .env):**
+```
+RAG_USE_ADVANCED=true           # Use Advanced RAG Engine
+RAG_TOP_K_VECTOR=20             # Vector retrieval top-k
+RAG_TOP_K_LEXICAL=15            # Lexical retrieval top-k
+RAG_TOP_K_SUMMARY=5             # Summary retrieval top-k
+RAG_MAX_CHUNKS=15               # Max chunks in final context
+RAG_MAX_CONTEXT_CHARS=40000     # Max context for LLM
+RAG_VECTOR_WEIGHT=0.6           # Fusion weight for vector
+RAG_LEXICAL_WEIGHT=0.3          # Fusion weight for lexical
+RAG_SUMMARY_WEIGHT=0.1          # Fusion weight for summary
+RAG_ENABLE_QUERY_TRANSFORM=true # Enable LLM query transformation
+RAG_ENABLE_SUMMARIES=true       # Generate document summaries
+```
+
+**Usage Example:**
+```python
+from api.services.ai.session_manager import get_session_ai_manager
+
+# Get AI manager for session
+manager = get_session_ai_manager(session_id, user_id)
+
+# Index documents
+manager.index_groups(xml_inventory, groups=["articles", "journals"])
+
+# Chat with RAG
+result = manager.chat(
+    message="What are the top 5 authors by citation count?",
+    use_rag=True,
+    group_filter="articles",
+    top_k=16,
+)
+
+# Response includes:
+# - answer: Generated response with citations
+# - sources: Retrieved documents with scores
+# - citations: List of [source:N] references
+# - metadata: Query transformation, retrieval strategy, timing
+```
 
 ## Testing Patterns
 

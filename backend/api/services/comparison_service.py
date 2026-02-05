@@ -930,14 +930,43 @@ def load_csv(file_bytes: bytes, filename: str) -> List[Dict]:
     return rows
 
 
+# Store active comparison dirs for drilldown access
+_active_comparison_dirs: Dict[str, Path] = {}
+
+
+def get_comparison_dir(prefix: str) -> Optional[Path]:
+    """Get active comparison directory by prefix"""
+    return _active_comparison_dirs.get(prefix)
+
+
+def cleanup_comparison_dir(prefix: str):
+    """Clean up comparison directory"""
+    if prefix in _active_comparison_dirs:
+        work_dir = _active_comparison_dirs.pop(prefix)
+        try:
+            shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def compare_files(file_a_bytes: bytes, file_a_name: str,
                   file_b_bytes: bytes, file_b_name: str) -> ComparisonResult:
     """
     Compare two files (ZIP/XML/CSV).
     Returns ComparisonResult object with changes and statistics.
+    Note: Temp directory is preserved for drilldown access.
     """
-    # Create temp directory for work
+    # Create temp directory for work - keep it for drilldown
     work_dir = Path(tempfile.mkdtemp(prefix="comparison_"))
+    
+    # Clean up old comparison dirs (keep max 10)
+    if len(_active_comparison_dirs) > 10:
+        oldest = list(_active_comparison_dirs.keys())[0]
+        cleanup_comparison_dir(oldest)
+    
+    # Store this comparison dir
+    dir_id = work_dir.name
+    _active_comparison_dirs[dir_id] = work_dir
     
     try:
         # Save files to temp directory
@@ -1007,12 +1036,9 @@ def compare_files(file_a_bytes: bytes, file_a_name: str,
         
     except Exception as e:
         logger.exception(f"Comparison failed: {e}")
+        # Clean up on error only
+        cleanup_comparison_dir(dir_id)
         raise
-    finally:
-        try:
-            shutil.rmtree(work_dir, ignore_errors=True)
-        except Exception:
-            pass
 
 
 def _scan_zip_and_convert(zip_path: Path, output_dir: Path) -> List[CsvArtifact]:
