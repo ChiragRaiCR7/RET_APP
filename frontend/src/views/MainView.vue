@@ -54,30 +54,7 @@
           </div>
           
           <div class="control-group">
-            <SwitchGroup>
-              <div class="edit-mode-toggle">
-                <Switch
-                  v-model="workflow.editMode"
-                  :class="[
-                    workflow.editMode ? 'toggle-active' : 'toggle-inactive',
-                    'toggle-switch'
-                  ]"
-                >
-                  <span
-                    :class="[
-                      workflow.editMode ? 'toggle-knob-on' : 'toggle-knob-off',
-                      'toggle-knob'
-                    ]"
-                    aria-hidden="true"
-                  />
-                </Switch>
-                <div class="toggle-labels">
-                  <SwitchLabel class="toggle-label">Edit Mode</SwitchLabel>
-                  <span class="toggle-subtext">Session-only edits, modify CSVs in-memory</span>
-                </div>
-                <span v-if="workflow.editMode" class="edit-mode-badge">Active</span>
-              </div>
-            </SwitchGroup>
+            <EditModeToggle v-model="workflow.editMode" />
           </div>
         </div>
 
@@ -372,11 +349,12 @@
 
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
-import { Switch, SwitchGroup, SwitchLabel, Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
+import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import ComparisonPanel from '@/components/workspace/ComparisonPanel.vue'
 import AIPanel from '@/components/workspace/AIPanel.vue'
 import EditModePanel from '@/components/workspace/EditModePanel.vue'
+import EditModeToggle from '@/components/workspace/EditModeToggle.vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -884,135 +862,6 @@ function onFileRemoved(filename) {
   border-color: var(--brand-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
-
-/* Edit Mode Toggle Switch — HeadlessUI Switch */
-.edit-mode-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-md);
-  padding: var(--space-lg);
-  background: linear-gradient(135deg, var(--surface-secondary) 0%, var(--surface) 100%);
-  border-radius: var(--radius-lg);
-  border: 2px solid var(--border-light);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}
-
-.edit-mode-toggle:hover {
-  border-color: var(--brand-primary);
-  box-shadow: 0 4px 16px rgba(255, 192, 0, 0.15);
-  transform: translateY(-1px);
-}
-
-.toggle-switch {
-  position: relative;
-  width: 56px;
-  height: 32px;
-  border-radius: 999px;
-  border: 2px solid transparent;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
-}
-
-.toggle-switch:focus-visible {
-  outline: 3px solid var(--brand-primary);
-  outline-offset: 3px;
-}
-
-.toggle-switch:active {
-  transform: scale(0.96);
-}
-
-.toggle-active {
-  background: linear-gradient(135deg, var(--brand-primary) 0%, #FFD700 100%);
-  border-color: var(--brand-primary);
-  box-shadow: 0 4px 12px rgba(255, 192, 0, 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.3);
-}
-
-.toggle-inactive {
-  background: linear-gradient(135deg, #E5E7EB 0%, #D1D5DB 100%);
-  border-color: #D1D5DB;
-}
-
-.toggle-knob {
-  display: block;
-  width: 24px;
-  height: 24px;
-  background: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
-  border-radius: 50%;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-}
-
-.toggle-knob-on {
-  transform: translateX(24px);
-}
-
-.toggle-knob-off {
-  transform: translateX(3px);
-}
-
-.toggle-active .toggle-knob {
-  box-shadow: 0 3px 10px rgba(255, 192, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.2);
-}
-
-.toggle-labels {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  flex: 1;
-}
-
-.toggle-label {
-  font-weight: 700;
-  font-size: 1rem;
-  color: var(--text-primary);
-  letter-spacing: -0.01em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.toggle-label::before {
-  content: '✏️';
-  font-size: 1.1rem;
-}
-
-.toggle-subtext {
-  font-size: 0.8rem;
-  color: var(--text-tertiary);
-  line-height: 1.3;
-}
-
-.edit-mode-badge {
-  padding: 6px 14px;
-  background: linear-gradient(135deg, var(--success) 0%, #10B981 100%);
-  color: white;
-  font-size: 0.8rem;
-  font-weight: 700;
-  border-radius: var(--radius-full);
-  animation: pulse 2s infinite;
-  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-@keyframes pulse {
-  0%, 100% { 
-    opacity: 1; 
-    transform: scale(1);
-  }
-  50% { 
-    opacity: 0.85; 
-    transform: scale(0.98);
-  }
-}
-
 
 .controls-actions {
   display: flex;
