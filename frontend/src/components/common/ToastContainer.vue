@@ -79,6 +79,10 @@ function dismiss(id) {
   color: white;
 }
 
+.toast--success .toast-message {
+  color: #065f46;
+}
+
 .toast--error {
   background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%);
   border-color: rgba(239, 68, 68, 0.4);
@@ -87,6 +91,10 @@ function dismiss(id) {
 .toast--error .toast-icon {
   background: #ef4444;
   color: white;
+}
+
+.toast--error .toast-message {
+  color: #991b1b;
 }
 
 .toast--warning {
@@ -99,6 +107,10 @@ function dismiss(id) {
   color: white;
 }
 
+.toast--warning .toast-message {
+  color: #92400e;
+}
+
 .toast--info {
   background: linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.05) 100%);
   border-color: rgba(59, 130, 246, 0.4);
@@ -107,6 +119,10 @@ function dismiss(id) {
 .toast--info .toast-icon {
   background: #3b82f6;
   color: white;
+}
+
+.toast--info .toast-message {
+  color: #1e40af;
 }
 
 .toast-icon {
@@ -128,10 +144,34 @@ function dismiss(id) {
 
 .toast-message {
   margin: 0;
-  color: var(--text, #e5e5e5);
+  color: var(--text-body, #1f2937);
   font-size: 14px;
   line-height: 1.5;
   word-wrap: break-word;
+  font-weight: 500;
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .toast--success .toast-message {
+    color: #86efac;
+  }
+  
+  .toast--error .toast-message {
+    color: #fca5a5;
+  }
+  
+  .toast--warning .toast-message {
+    color: #fcd34d;
+  }
+  
+  .toast--info .toast-message {
+    color: #93c5fd;
+  }
+  
+  .toast-message {
+    color: var(--text-body, #e5e5e5);
+  }
 }
 
 .toast-close {

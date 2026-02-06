@@ -81,6 +81,11 @@ def create_user(
     if db.query(User).filter(User.username == username).first():
         raise Forbidden("User already exists")
 
+    # Normalize role to lowercase
+    role = role.lower().strip()
+    if role not in ["user", "admin", "super_admin", "guest"]:
+        role = "user"
+
     # For token-first onboarding, create user with placeholder password hash
     # User will set password via reset token
     if password:
@@ -205,6 +210,10 @@ def update_user_role(db: Session, user_id: int, new_role: str, admin_username: s
     """Update user role"""
     user = get_user(db, user_id)
     old_role = user.role
+    # Normalize role to lowercase
+    new_role = new_role.lower().strip()
+    if new_role not in ["user", "admin", "super_admin", "guest"]:
+        raise ValueError(f"Invalid role: {new_role}")
     user.role = new_role
     
     write_audit_log(

@@ -164,6 +164,8 @@ const progress = ref({
 })
 const eligibleGroups = ref([])
 const pollInterval = ref(null)
+const pollAttempts = ref(0)  // Track polling attempts to prevent infinite loops
+const MAX_POLL_ATTEMPTS = 200  // ~5 minutes at 1.5s intervals
 
 const isIndexing = computed(() => progress.value.status === 'indexing')
 
@@ -228,7 +230,21 @@ async function startAutoIndex() {
 function startPolling() {
   if (pollInterval.value) return
   
+  pollAttempts.value = 0  // Reset attempt counter
+  
   pollInterval.value = setInterval(async () => {
+    pollAttempts.value++
+    
+    // Circuit breaker: stop if we've polled too many times without completion
+    if (pollAttempts.value > MAX_POLL_ATTEMPTS) {
+      console.warn(`Polling exceeded max attempts (${MAX_POLL_ATTEMPTS}), stopping`)
+      stopPolling()
+      progress.value.status = 'failed'
+      progress.value.error = 'Indexing timeout: operation took too long. Please try again.'
+      emit('error', progress.value.error)
+      return
+    }
+    
     try {
       const resp = await api.get(`/v2/ai/auto-index/progress/${props.sessionId}`)
       const data = resp.data
@@ -255,7 +271,7 @@ function startPolling() {
       }
     } catch (e) {
       // Continue polling; might just be a network hiccup
-      console.warn('Progress poll failed:', e)
+      console.warn(`Progress poll attempt ${pollAttempts.value} failed:`, e.message)
     }
   }, 1500)
 }

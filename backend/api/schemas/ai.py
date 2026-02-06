@@ -299,7 +299,8 @@ class RAGChatResponse(BaseModel):
     query_time_ms: float
     query_plan: Optional[Dict[str, Any]] = None
     chunks_retrieved: int = 0
-    
+    response_type: Optional[str] = None  # factual, analytical, comparison, trend, summary
+
     # Advanced RAG metadata
     query_transformation: Optional[QueryTransformationInfo] = None
     retrieval_metadata: Optional[RetrievalMetadata] = None

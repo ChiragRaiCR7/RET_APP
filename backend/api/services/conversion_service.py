@@ -297,7 +297,7 @@ def scan_zip_with_groups(
     else:
         raise ValueError(f"Unsupported file type: {filename}")
 
-    # Save metadata
+    # Save metadata including file-to-group mappings
     metadata = {
         "session_id": session_id,
         "user_id": user_id,
@@ -308,6 +308,7 @@ def scan_zip_with_groups(
         "total_size": total_size,
         "group_prefix_len": group_prefix_len,
         "max_depth": max_depth,
+        "xml_files": xml_files,  # Store file-to-group mappings for consistent conversion
     }
     save_session_metadata(session_id, metadata)
 
@@ -370,34 +371,62 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
     failed = 0
     converted_files = []
     errors = []
+
+    # Load file-to-group mappings from scan metadata
+    metadata = get_session_metadata(session_id)
+    xml_files_metadata = metadata.get("xml_files", [])
+    
+    # Build a mapping from abs_path to group for quick lookup
+    path_to_group = {f["abs_path"]: f["group"] for f in xml_files_metadata}
+    
+    if not path_to_group:
+        logger.warning(
+            f"No file-to-group mappings found in session metadata. "
+            f"This may be an old session or metadata is missing. "
+            f"Groups will be inferred from paths/filenames."
+        )
     
     xml_file_list = list(extract_dir.rglob("*.xml"))
     logger.info(f"Found {len(xml_file_list)} XML files in {extract_dir}")
+    logger.info(f"Loaded {len(path_to_group)} file-to-group mappings from scan metadata")
+
+    # Track used output names to prevent collisions
+    used_csv_names: Set[str] = set()
 
     for xml_file in xml_file_list:
         relative_path = str(xml_file.relative_to(extract_dir))
-        group = infer_group(relative_path, xml_file.name)
         
+        # Use stored group from scan metadata if available, otherwise infer
+        abs_path_str = str(xml_file)
+        if abs_path_str in path_to_group:
+            group = path_to_group[abs_path_str]
+            logger.debug(f"Using stored group for {xml_file.name}: {group}")
+        else:
+            group = infer_group(relative_path, xml_file.name)
+            logger.warning(f"Group not found in metadata for {xml_file.name}, inferred: {group}")
+
         logger.debug(f"Processing {xml_file.name}, group={group}")
 
         if groups and group not in groups:
-            logger.debug(f"Skipping {xml_file.name}, group {group} not in filter {groups}")
+            logger.info(f"Skipping {xml_file.name}: group '{group}' not in filter {groups}")
             continue
+        
+        logger.info(f"Converting {xml_file.name} (group: {group})...")
 
         try:
             with open(xml_file, "rb") as f:
                 xml_bytes = f.read()
-            
+
             logger.debug(f"Read {len(xml_bytes)} bytes from {xml_file.name}")
 
             rows, headers, tag_used = xml_to_rows(
-                xml_bytes, 
-                record_tag=None, 
-                auto_detect=True, 
-                path_sep=".", 
+                xml_bytes,
+                record_tag=None,
+                auto_detect=True,
+                path_sep=".",
                 include_root=False
             )
-            
+
             logger.info(f"Parsed {xml_file.name}: {len(rows)} rows, {len(headers)} headers, tag={tag_used}")
 
             if not rows:
@@ -406,8 +435,21 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
                 logger.warning("No records found in %s", xml_file)
                 continue
 
-            # Create CSV first (always needed)
-            csv_name = xml_file.stem + ".csv"
+            # Build unique CSV name preserving subdirectory context to prevent collisions
+            relative_parts = xml_file.relative_to(extract_dir).parts
+            if len(relative_parts) > 1:
+                csv_name = "__".join(relative_parts[:-1]) + "__" + xml_file.stem + ".csv"
+            else:
+                csv_name = xml_file.stem + ".csv"
+
+            # Handle any remaining collisions with a counter suffix
+            base_csv_name = csv_name
+            counter = 1
+            while csv_name in used_csv_names:
+                csv_name = base_csv_name.replace(".csv", f"_{counter}.csv")
+                counter += 1
+            used_csv_names.add(csv_name)
+
             csv_path = out_dir / csv_name
             with open(csv_path, "w", newline="", encoding="utf-8") as outf:
                 writer = csv.DictWriter(outf, fieldnames=headers)
@@ -420,7 +462,7 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
             if output_format == "xlsx":
                 try:
                     from api.services.xlsx_service import csv_to_xlsx_bytes
-                    xlsx_name = xml_file.stem + ".xlsx"
+                    xlsx_name = csv_name.replace(".csv", ".xlsx")
                     xlsx_path = out_dir / xlsx_name
                     
                     xlsx_bytes = csv_to_xlsx_bytes(str(csv_path))
@@ -466,7 +508,16 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
         "converted_files": converted_files,
         "errors": errors,
     }
-    logger.info(f"Conversion complete: {result['stats']}")
+    
+    # Log detailed conversion summary
+    skipped = len(xml_file_list) - success - failed
+    logger.info(
+        f"Conversion complete for session {session_id}: "
+        f"{len(xml_file_list)} total XML files, "
+        f"{success} converted, {failed} failed, {skipped} skipped (filtered)"
+    )
+    if groups:
+        logger.info(f"Group filter applied: {groups}")
     
     # Save conversion index to session
     _save_conversion_index(session_id, converted_files)

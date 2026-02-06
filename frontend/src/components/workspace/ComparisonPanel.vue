@@ -173,7 +173,12 @@
     <div v-if="results" class="results-section">
       <!-- Similarity Dashboard -->
       <div class="dashboard-card">
-        <h4 class="section-title">📊 Similarity Dashboard (Group+Filename matching)</h4>
+        <div class="dashboard-header">
+          <h4 class="section-title">📊 Similarity Dashboard</h4>
+          <button class="btn btn-sm btn-secondary" @click="downloadReport" title="Download comparison report as CSV">
+            📥 Download Report
+          </button>
+        </div>
         <div class="dashboard-metrics">
           <div class="metric-card large">
             <div class="metric-label">Overall (proxy)</div>
@@ -206,7 +211,7 @@
         </div>
       </details>
 
-      <details class="collapsible-section folder-tree-section">
+      <details class="collapsible-section folder-tree-section" open>
         <summary>📁 Folder structure (tree view)</summary>
         <div class="section-content">
           <p v-if="!results.folderChanges?.length && !results.changes?.length" class="no-changes">No folder structure changes detected.</p>
@@ -217,31 +222,69 @@
               <span class="legend-item"><span class="tree-icon file-modified">📝</span> Modified</span>
               <span class="legend-item"><span class="tree-icon file-added">➕</span> Added</span>
               <span class="legend-item"><span class="tree-icon file-removed">🗑️</span> Removed</span>
+              <span class="tree-controls">
+                <button class="btn btn-sm btn-secondary" @click.stop="expandAllFolders">Expand All</button>
+                <button class="btn btn-sm btn-secondary" @click.stop="collapseAllFolders">Collapse All</button>
+              </span>
             </div>
             <div class="tree-view">
-              <div v-for="node in buildFolderTree" :key="node.path" :class="['tree-node', `depth-${node.depth}`]" :style="{ paddingLeft: (node.depth * 20) + 'px' }">
-                <span v-if="node.isFolder" class="tree-icon folder">📁</span>
-                <span v-else-if="node.status === 'SAME'" class="tree-icon file-same">📄</span>
-                <span v-else-if="node.status === 'MODIFIED'" class="tree-icon file-modified">📝</span>
-                <span v-else-if="node.status === 'ADDED'" class="tree-icon file-added">➕</span>
-                <span v-else-if="node.status === 'REMOVED'" class="tree-icon file-removed">🗑️</span>
-                <span v-else class="tree-icon">📄</span>
-                <span class="tree-name" :class="{ 'folder-name': node.isFolder, ['status-' + (node.status || '').toLowerCase()]: !node.isFolder }">
-                  {{ node.name }}
-                </span>
-                <span v-if="node.status && !node.isFolder" class="tree-status-badge" :class="'badge-' + node.status.toLowerCase()">
-                  {{ node.status }}
-                </span>
-              </div>
+              <template v-for="node in buildFolderTree" :key="node.path">
+                <div v-if="node.isFolder" class="tree-node folder-node" @click="toggleFolder(node.name)">
+                  <span class="tree-chevron" :class="{ expanded: isFolderExpanded(node.name) }">&#9654;</span>
+                  <span class="tree-icon folder">📁</span>
+                  <span class="tree-name folder-name">{{ node.name }}</span>
+                  <span class="tree-folder-count">{{ buildFolderTree.filter(n => !n.isFolder && n.path.startsWith(node.name + '/')).length }} files</span>
+                </div>
+                <div v-else-if="!node.isFolder && isFolderExpanded(node.path.split('/')[0])"
+                  class="tree-node file-node"
+                  :style="{ paddingLeft: '32px' }"
+                >
+                  <span v-if="node.status === 'SAME'" class="tree-icon file-same">📄</span>
+                  <span v-else-if="node.status === 'MODIFIED'" class="tree-icon file-modified">📝</span>
+                  <span v-else-if="node.status === 'ADDED'" class="tree-icon file-added">➕</span>
+                  <span v-else-if="node.status === 'REMOVED'" class="tree-icon file-removed">🗑️</span>
+                  <span v-else class="tree-icon">📄</span>
+                  <span class="tree-name" :class="['status-' + (node.status || '').toLowerCase()]">
+                    {{ node.name }}
+                  </span>
+                  <span v-if="node.status" class="tree-status-badge" :class="'badge-' + node.status.toLowerCase()">
+                    {{ node.status }}
+                  </span>
+                </div>
+              </template>
             </div>
           </div>
         </div>
       </details>
 
-      <details class="collapsible-section">
-        <summary>📈 Group count deltas (OK only)</summary>
+      <details class="collapsible-section" open>
+        <summary>📈 Per-Group Summary</summary>
         <div class="section-content">
-          <p v-if="!results.groupDeltas?.length">No group count changes.</p>
+          <p v-if="!groupSummary.length">No group data available.</p>
+          <div v-else class="group-summary-table-wrapper">
+            <table class="data-table group-summary-table">
+              <thead>
+                <tr>
+                  <th>Group</th>
+                  <th>Total</th>
+                  <th>Same</th>
+                  <th>Modified</th>
+                  <th>Added</th>
+                  <th>Removed</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="g in groupSummary" :key="g.name">
+                  <td class="group-name-cell">{{ g.name }}</td>
+                  <td>{{ g.total }}</td>
+                  <td><span v-if="g.same" class="count-same">{{ g.same }}</span><span v-else class="count-zero">-</span></td>
+                  <td><span v-if="g.modified" class="count-modified">{{ g.modified }}</span><span v-else class="count-zero">-</span></td>
+                  <td><span v-if="g.added" class="count-added">{{ g.added }}</span><span v-else class="count-zero">-</span></td>
+                  <td><span v-if="g.removed" class="count-removed">{{ g.removed }}</span><span v-else class="count-zero">-</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </details>
 
@@ -349,6 +392,10 @@
             <span class="legend-item"><span class="dot red">●</span> Removed/Changed in A</span>
             <span class="legend-item"><span class="dot green">●</span> Added/Changed in B</span>
             <span class="legend-item"><span class="dot gray">○</span> Unchanged</span>
+            <label class="scroll-sync-toggle">
+              <input type="checkbox" v-model="scrollSyncEnabled" />
+              <span>Sync scroll</span>
+            </label>
           </div>
           
           <p v-if="drilldownData.truncated" class="truncation-warning">⚠️ Results truncated (too many changes to display)</p>
@@ -356,7 +403,7 @@
           <div class="delta-tables">
             <div class="delta-side side-a">
               <h5>🅰️ Side A — Original</h5>
-              <div class="data-table-wrapper">
+              <div class="data-table-wrapper" ref="scrollContainerA" @scroll="onScrollA">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
@@ -384,7 +431,7 @@
 
             <div class="delta-side side-b">
               <h5>🅱️ Side B — Modified</h5>
-              <div class="data-table-wrapper">
+              <div class="data-table-wrapper" ref="scrollContainerB" @scroll="onScrollB">
                 <table class="data-table delta-table">
                   <thead>
                     <tr>
@@ -505,7 +552,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, nextTick, onUnmounted } from 'vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -535,6 +582,8 @@ const cellModalData = ref({
   kind: ''
 })
 const changedColumns = ref(new Set())
+const expandedFolders = ref(new Set())
+const scrollSyncEnabled = ref(true)
 
 const canCompare = computed(() => sideA.file && sideB.file)
 
@@ -599,6 +648,98 @@ const buildFolderTree = computed(() => {
   return nodes
 })
 
+// Per-group summary stats
+const groupSummary = computed(() => {
+  if (!results.value?.changes) return []
+  const groups = new Map()
+  results.value.changes.forEach(c => {
+    const g = c.group || 'ROOT'
+    if (!groups.has(g)) groups.set(g, { name: g, same: 0, modified: 0, added: 0, removed: 0, total: 0 })
+    const entry = groups.get(g)
+    entry.total++
+    const s = (c.status || '').toUpperCase()
+    if (s === 'SAME') entry.same++
+    else if (s === 'MODIFIED') entry.modified++
+    else if (s === 'ADDED') entry.added++
+    else if (s === 'REMOVED') entry.removed++
+  })
+  return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name))
+})
+
+function toggleFolder(folder) {
+  const set = new Set(expandedFolders.value)
+  if (set.has(folder)) set.delete(folder)
+  else set.add(folder)
+  expandedFolders.value = set
+}
+
+function expandAllFolders() {
+  const set = new Set()
+  buildFolderTree.value.filter(n => n.isFolder).forEach(n => set.add(n.name))
+  expandedFolders.value = set
+}
+
+function collapseAllFolders() {
+  expandedFolders.value = new Set()
+}
+
+function isFolderExpanded(folder) {
+  return expandedFolders.value.has(folder)
+}
+
+// Scroll sync for drilldown tables
+const scrollContainerA = ref(null)
+const scrollContainerB = ref(null)
+
+function onScrollA(e) {
+  if (!scrollSyncEnabled.value || !scrollContainerB.value) return
+  scrollContainerB.value.scrollTop = e.target.scrollTop
+  scrollContainerB.value.scrollLeft = e.target.scrollLeft
+}
+
+function onScrollB(e) {
+  if (!scrollSyncEnabled.value || !scrollContainerA.value) return
+  scrollContainerA.value.scrollTop = e.target.scrollTop
+  scrollContainerA.value.scrollLeft = e.target.scrollLeft
+}
+
+// Download comparison report as CSV
+function downloadReport() {
+  if (!results.value?.changes) return
+  const headers = ['Status', 'Group', 'Filename', 'Similarity%', 'Rows_A', 'Rows_B', 'Cols_A', 'Cols_B', 'Message']
+  const rows = results.value.changes.map(c => [
+    c.status,
+    c.group || '',
+    c.filename || '',
+    c.similarity ?? '',
+    c.rows_a ?? '',
+    c.rows_b ?? '',
+    c.cols_a ?? '',
+    c.cols_b ?? '',
+    c.status === 'SAME' ? 'Content identical (SHA256 match)' : c.status === 'MODIFIED' ? 'Content differs (SHA mismatch)' : (c.message || '')
+  ])
+
+  const csvContent = [
+    `# Comparison Report - ${new Date().toISOString()}`,
+    `# Side A: ${sideA.file?.name || 'N/A'}`,
+    `# Side B: ${sideB.file?.name || 'N/A'}`,
+    `# Overall Similarity: ${results.value.similarity}%`,
+    `# Same: ${results.value.same} | Modified: ${results.value.modified} | Added: ${results.value.added} | Removed: ${results.value.removed}`,
+    '',
+    headers.join(','),
+    ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+  ].join('\n')
+
+  const blob = new Blob([csvContent], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `comparison-report-${new Date().toISOString().split('T')[0]}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  toast.success('Report downloaded')
+}
+
 function formatSize(bytes) {
   if (!bytes) return '0 KB'
   if (bytes < 1024) return bytes + ' B'
@@ -650,6 +791,9 @@ async function runComparison() {
     }
     emit('comparison-complete', results.value)
     toast.success('Comparison complete!')
+    // Auto-expand all folders in tree view
+    await nextTick()
+    expandAllFolders()
   } catch (e) {
     toast.error('Comparison failed: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -904,11 +1048,29 @@ async function loadDrilldown() {
 .delta-tables { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-lg); }
 .delta-side h5 { margin-bottom: var(--space-sm); }
 .delta-table { font-size: 0.85rem; }
-.row-modified { background: var(--warning-bg); }
-.row-added { background: var(--success-bg); }
-.row-removed { background: var(--error-bg); }
-.cell-old { background: #fecaca; border-left: 3px solid #ef4444; }
-.cell-new { background: #bbf7d0; border-left: 3px solid #22c55e; }
+.row-modified { border-left: 3px solid #f59e0b; }
+.row-added { border-left: 3px solid #22c55e; }
+.row-removed { border-left: 3px solid #ef4444; }
+.cell-old { border-left: 2px solid #ef4444; position: relative; }
+.cell-new { border-left: 2px solid #22c55e; position: relative; }
+.cell-old::before {
+  content: '●';
+  color: #ef4444;
+  font-size: 10px;
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.cell-new::before {
+  content: '●';
+  color: #22c55e;
+  font-size: 10px;
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+}
 .cell-indicator { font-size: 0.85rem; margin-right: 6px; font-weight: bold; }
 .indicator-changed { color: #ef4444; }
 .indicator-unchanged { color: #9ca3af; opacity: 0.5; }
@@ -942,6 +1104,32 @@ async function loadDrilldown() {
 .tree-status-badge.badge-same { background: #e5e7eb; color: #6b7280; }
 .no-changes { color: var(--text-tertiary); font-style: italic; }
 
+/* Folder tree expand/collapse */
+.tree-chevron { display: inline-block; font-size: 0.65rem; color: var(--text-tertiary); transition: transform 0.2s; margin-right: 4px; cursor: pointer; user-select: none; }
+.tree-chevron.expanded { transform: rotate(90deg); }
+.folder-node { cursor: pointer; font-weight: 600; }
+.folder-node:hover { background: var(--surface-active); }
+.file-node { border-left: 1px solid var(--border-light); margin-left: 8px; }
+.tree-folder-count { font-size: 0.75rem; color: var(--text-tertiary); margin-left: auto; }
+.tree-controls { margin-left: auto; display: flex; gap: var(--space-xs); }
+
+/* Dashboard header with download button */
+.dashboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-md); }
+
+/* Per-Group Summary Table */
+.group-summary-table-wrapper { overflow-x: auto; }
+.group-summary-table { width: 100%; }
+.group-name-cell { font-weight: 600; }
+.count-same { color: var(--success); font-weight: 600; }
+.count-modified { color: #d97706; font-weight: 600; }
+.count-added { color: #059669; font-weight: 600; }
+.count-removed { color: #dc2626; font-weight: 600; }
+.count-zero { color: var(--text-tertiary); }
+
+/* Scroll Sync Toggle */
+.scroll-sync-toggle { display: flex; align-items: center; gap: var(--space-xs); margin-left: auto; cursor: pointer; font-size: 0.85rem; }
+.scroll-sync-toggle input { accent-color: var(--brand-primary); }
+
 .delta-modified { color: #f59e0b; font-weight: 600; }
 .delta-added { color: #10b981; font-weight: 600; }
 .delta-removed { color: #ef4444; font-weight: 600; }
@@ -970,6 +1158,7 @@ async function loadDrilldown() {
 .drilldown-legend .dot.gray { color: #9ca3af; }
 
 .delta-side { overflow: hidden; }
+.delta-side .data-table-wrapper { max-height: 500px; overflow: auto; }
 .delta-side.side-a h5 { color: #dc2626; }
 .delta-side.side-b h5 { color: #16a34a; }
 

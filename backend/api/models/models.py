@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import enum
 from sqlalchemy import (
     String,
     Integer,
@@ -8,6 +9,8 @@ from sqlalchemy import (
     JSON,
     ForeignKey,
     Index,
+    Enum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import (
     Mapped,
@@ -19,6 +22,24 @@ from api.core.database import Base
 
 
 # =========================
+# ENUMS
+# =========================
+class UserRole(str, enum.Enum):
+    """User role enumeration."""
+    USER = "user"
+    ADMIN = "admin"
+    SUPER_ADMIN = "super_admin"
+    GUEST = "guest"
+
+
+class RequestStatus(str, enum.Enum):
+    """Status for approval requests."""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+# =========================
 # USERS
 # =========================
 class User(Base):
@@ -27,10 +48,15 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
-    role: Mapped[str] = mapped_column(String(32), default="user", nullable=False)
+    role: Mapped[str] = mapped_column(
+        String(32), default=UserRole.USER.value, nullable=False
+    )
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_locked: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)  # Soft delete
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
@@ -70,6 +96,7 @@ class LoginSession(Base):
 
     __table_args__ = (
         Index("ix_login_session_user", "user_id"),
+        Index("ix_login_session_expires", "expires_at"),
     )
 
 
@@ -82,13 +109,17 @@ class PasswordResetToken(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
-    token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     used: Mapped[bool] = mapped_column(Boolean, default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     user: Mapped["User"] = relationship(back_populates="reset_tokens")
+
+    __table_args__ = (
+        Index("ix_reset_token_expires", "expires_at"),
+    )
 
 
 # =========================
@@ -98,9 +129,12 @@ class PasswordResetRequest(Base):
     __tablename__ = "password_reset_requests"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(String(120), nullable=False)
+    username: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     reason: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default="pending")
+    status: Mapped[str] = mapped_column(
+        Enum(RequestStatus), default=RequestStatus.PENDING, nullable=False
+    )
+    action_by: Mapped[str | None] = mapped_column(String(120))  # Admin who took action
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -117,8 +151,18 @@ class UserLimit(Base):
 
     max_sessions: Mapped[int] = mapped_column(Integer, default=3)
     max_upload_mb: Mapped[int] = mapped_column(Integer, default=10000)
+    max_files: Mapped[int] = mapped_column(Integer, default=10000)
+    max_nested_depth: Mapped[int] = mapped_column(Integer, default=50)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_user_limits_user"),
+    )
 
 
 # =========================
@@ -128,11 +172,16 @@ class LimitIncreaseRequest(Base):
     __tablename__ = "limit_increase_requests"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
 
     requested_max_upload_mb: Mapped[int | None] = mapped_column(Integer)
+    requested_max_files: Mapped[int | None] = mapped_column(Integer)
+    requested_max_nested_depth: Mapped[int | None] = mapped_column(Integer)
     reason: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default="pending")
+    status: Mapped[str] = mapped_column(
+        Enum(RequestStatus), default=RequestStatus.PENDING, nullable=False
+    )
+    action_by: Mapped[str | None] = mapped_column(String(120))  # Admin who took action
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -157,6 +206,7 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_username", "username"),
         Index("ix_audit_area", "area"),
+        Index("ix_audit_corr_id", "corr_id"),
     )
 
 
@@ -178,6 +228,12 @@ class OpsLog(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    __table_args__ = (
+        Index("ix_ops_corr_id", "corr_id"),
+        Index("ix_ops_session_id", "session_id"),
+        Index("ix_ops_username", "username"),
+    )
+
 
 # =========================
 # ERROR EVENTS
@@ -195,3 +251,9 @@ class ErrorEvent(Base):
     corr_id: Mapped[str | None] = mapped_column(String(64))
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_error_corr_id", "corr_id"),
+        Index("ix_error_type", "error_type"),
+        Index("ix_error_session_id", "session_id"),
+    )

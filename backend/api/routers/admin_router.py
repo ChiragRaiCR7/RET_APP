@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from api.core.rbac import require_role
 from api.core.database import get_db
-from api.core.dependencies import get_current_user
+from api.core.dependencies import get_current_user, get_current_user_id
 from api.schemas.admin import (
     UserCreateRequest,
     UserUpdateRequest,
@@ -11,6 +11,7 @@ from api.schemas.admin import (
     AgentRequest,
     AgentResponse,
 )
+from api.schemas.common import MessageResponse
 from api.services.admin_service import (
     create_user,
     update_user,
@@ -131,7 +132,7 @@ def update_user_role_ep(
     )
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id}", response_model=MessageResponse)
 def delete_user_ep(
     user_id: int,
     db: Session = Depends(get_db),
@@ -140,7 +141,7 @@ def delete_user_ep(
     """Delete user and all associated data"""
     force_logout_user(db, user_id, admin_username=admin_user.username)
     delete_user(db, user_id, admin_username=admin_user.username)
-    return {"success": True}
+    return {"success": True, "message": "User deleted"}
 
 
 # ============================================================
@@ -189,14 +190,14 @@ def sessions_ep(
     return list_sessions(db)
 
 
-@router.post("/sessions/cleanup")
+@router.post("/sessions/cleanup", response_model=MessageResponse)
 def cleanup_sessions_ep(
     db: Session = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Clean up old sessions (older than 24 hours)"""
     deleted = cleanup_old_sessions(db, hours=24, admin_username=admin_user.username)
-    return {"deleted": deleted}
+    return {"success": True, "message": f"Cleaned up {deleted} old sessions"}
 
 
 # ============================================================

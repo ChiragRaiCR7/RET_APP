@@ -548,7 +548,7 @@ def infer_group(logical_path: str, filename: str, custom_prefixes: Optional[Set]
         if name_lower.startswith(prefix.lower()):
             return prefix
     
-    return "other"
+    return "EXTRAS"
 
 
 # ============================================================

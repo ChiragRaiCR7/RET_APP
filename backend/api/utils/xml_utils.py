@@ -13,6 +13,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Canonical group name constants
+ROOT_GROUP = "ROOT"             # XMLs at the container ZIP root level (no business ZIP parent)
+DEFAULT_FALLBACK_GROUP = "EXTRAS"  # XMLs where no alpha prefix can be determined
+
 try:
     from lxml import etree as LET
     LXML = True
@@ -41,8 +45,8 @@ def infer_group_from_filename(filename: str, custom_prefixes: Optional[Set[str]]
     token = base.split("_", 1)[0] if "_" in base else base
     alpha = extract_alpha_prefix(token)
     if custom_prefixes:
-        return alpha if alpha in custom_prefixes else "OTHER"
-    return alpha if alpha else "OTHER"
+        return alpha if alpha in custom_prefixes else DEFAULT_FALLBACK_GROUP
+    return alpha if alpha else DEFAULT_FALLBACK_GROUP
 
 def infer_group(logical_path: str, filename: str, custom_prefixes: Optional[Set[str]] = None) -> str:
     if logical_path and "/" in logical_path:

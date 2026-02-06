@@ -36,8 +36,9 @@ from api.services.storage_service import (
     get_session_metadata,
     save_session_metadata,
 )
-from api.core.dependencies import get_current_user
+from api.core.dependencies import get_current_user, get_current_user_id
 from api.core.config import settings
+from api.models.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ def save_ai_config(config: dict):
 
 @router.get("/config")
 def get_ai_config_endpoint(
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Get AI configuration including auto-indexed groups.
@@ -132,7 +133,7 @@ def save_ai_session(user_id: str, session_data: dict):
 
 @router.get("/session", response_model=AISessionState)
 def get_session(
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Get the current user's AI session.
@@ -161,7 +162,7 @@ def get_session(
 @router.post("/session", response_model=CreateSessionResponse)
 def create_session(
     req: CreateSessionRequest = None,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Create a new AI session for the current user.
@@ -195,7 +196,7 @@ def create_session(
 def update_session(
     session_id: str,
     req: UpdateSessionRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Update an AI session's instructions.
@@ -225,7 +226,7 @@ def update_session(
 @router.delete("/session/{session_id}")
 def delete_session(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Delete/clear an AI session.
@@ -252,7 +253,7 @@ def delete_session(
 def add_session_message(
     role: str = Form(...),
     content: str = Form(...),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Add a message to the current AI session.
@@ -297,7 +298,7 @@ async def scan_zip_file(
     session_id: str = Form(...),
     custom_prefixes: Optional[str] = Form(None),  # Comma-separated
     max_files: int = Form(10000),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Scan uploaded ZIP file and extract XML entries.
@@ -380,7 +381,7 @@ async def scan_zip_file(
 @router.get("/detected-groups/{session_id}")
 def get_detected_groups(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Get detected groups from last ZIP scan"""
     try:
@@ -410,7 +411,7 @@ def get_detected_groups(
 async def auto_index_groups(
     req: AutoIndexRequest,
     background_tasks: BackgroundTasks,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Auto-index specified groups using advanced RAG service.
@@ -485,7 +486,7 @@ async def auto_index_groups(
 
 @router.get("/auto-index-config")
 def get_auto_index_config(
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Get admin-configured auto-index groups"""
     config = load_ai_config()
@@ -495,7 +496,7 @@ def get_auto_index_config(
 @router.get("/session-groups/{session_id}")
 def get_session_groups(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Get available groups for a session from conversion index"""
     try:
@@ -542,7 +543,7 @@ async def index_session_files(
     session_id: str = Form(...),
     groups: Optional[str] = Form(None),  # Comma-separated group names
     files: Optional[List[UploadFile]] = File(None),  # Optional direct file uploads
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Index files for AI - supports two modes:
@@ -661,7 +662,7 @@ async def index_session_files(
 @router.post("/index")
 def index_groups(
     req: IndexRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Index selected groups from converted CSV files"""
     try:
@@ -721,7 +722,7 @@ def index_groups(
 @router.get("/indexed-groups/{session_id}")
 def get_indexed_groups(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Get status of indexed groups for a session"""
     try:
@@ -750,7 +751,7 @@ def get_indexed_groups(
 @router.post("/clear-memory/{session_id}")
 def clear_ai_memory(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Clear all AI indexing memory for a session"""
     try:
@@ -779,7 +780,7 @@ def clear_ai_memory(
 @router.post("/chat")
 def chat(
     req: ChatRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Chat with AI about indexed documents"""
     try:
@@ -855,7 +856,7 @@ def chat_message(
     message: str = Form(...),
     session_id: str = Form(...),
     instructions: Optional[str] = Form(None),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Chat endpoint that accepts message via form data.
@@ -916,7 +917,7 @@ def chat_message(
 def chat_simple(
     prompt: str = Form(...),
     session_id: str = Form(None),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Simplified chat endpoint that accepts prompt via form data.
@@ -974,7 +975,7 @@ def chat_simple(
 @router.post("/chat/advanced", response_model=ChatResponse)
 def advanced_chat(
     req: ChatRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Advanced RAG chat with hybrid retrieval, query planning, and citations.
@@ -1058,7 +1059,7 @@ async def compare_zip_files(
     left_filename: str = Form(...),
     right_filename: str = Form(...),
     selected_groups: Optional[str] = Form(None),  # Comma-separated
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Compare two ZIP files with detailed delta analysis.
@@ -1150,7 +1151,7 @@ async def compare_zip_files(
 @router.get("/rag-status/{session_id}", response_model=RAGStatus)
 def get_rag_status(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Get RAG system status for a session"""
     try:

@@ -2,15 +2,17 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Literal, Optional
 
-from api.core.dependencies import get_current_user
+from api.core.dependencies import get_current_user, get_current_user_id
 from api.core.database import get_db
+from api.schemas.conversion import ZipScanResponse
+from api.schemas.common import MessageResponse
 from api.services.conversion_service import scan_zip_with_groups, get_session_info
 from api.services.storage_service import cleanup_session
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
-@router.post("/scan")
+@router.post("/scan", response_model=ZipScanResponse)
 async def scan_files(
     file: UploadFile = File(...),
     group_mode: Literal["zip", "folder", "hybrid"] = Query("zip"),
@@ -20,7 +22,7 @@ async def scan_files(
     max_depth: int = Query(10, ge=0, le=50),
     max_files: int = Query(20000, ge=100, le=200000),
     max_unzipped_mb: int = Query(300, ge=1, le=50000),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -48,7 +50,7 @@ async def scan_files(
 
 
 @router.get("/session/{session_id}")
-async def get_session(session_id: str, current_user_id: str = Depends(get_current_user)):
+async def get_session(session_id: str, current_user_id: str = Depends(get_current_user_id)):
     """Get session information"""
     try:
         info = get_session_info(session_id, current_user_id)
@@ -57,11 +59,11 @@ async def get_session(session_id: str, current_user_id: str = Depends(get_curren
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.delete("/session/{session_id}")
-async def delete_session(session_id: str, current_user_id: str = Depends(get_current_user)):
+@router.delete("/session/{session_id}", response_model=MessageResponse)
+async def delete_session(session_id: str, current_user_id: str = Depends(get_current_user_id)):
     """Delete a session and clean up all associated data"""
     try:
         cleanup_session(session_id)
-        return {"success": True, "message": f"Session {session_id} deleted"}
+        return MessageResponse(success=True, message=f"Session {session_id} deleted")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to delete session: {str(e)}")

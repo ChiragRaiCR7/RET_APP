@@ -54,7 +54,7 @@ def issue_tokens(
         "user": {
             "id": user.id,
             "username": user.username,
-            "role": user.role,
+            "role": user.role.value.lower() if hasattr(user.role, 'value') else str(user.role).lower(),
             "is_active": user.is_active,
             "is_locked": user.is_locked,
             "created_at": user.created_at,

@@ -6,15 +6,6 @@ from fastapi.responses import JSONResponse
 from api.core.config import settings
 from api.core.logging_config import configure_logging
 from api.core.database import init_db
-from api.routers import auth_router
-from api.routers import conversion_router
-from api.routers.conversion_router import workflow_router
-from api.routers import comparison_router
-from api.routers import admin_router
-from api.routers import job_router
-from api.routers import files_router
-from api.routers import advanced_router
-from api.routers import rag_router  # AI router (v2)
 
 from api.middleware.correlation_id import CorrelationIdMiddleware
 from api.middleware.logging_middleware import LoggingMiddleware
@@ -31,7 +22,7 @@ except ImportError:
 
 def create_app() -> FastAPI:
     configure_logging()
-    
+
     # Initialize database
     try:
         init_db()
@@ -77,18 +68,28 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok", "app": settings.APP_NAME}
 
+    # Register routers
+    from api.routers import auth_router
+    from api.routers import conversion_router
+    from api.routers.conversion_router import workflow_router
+    from api.routers import comparison_router
+    from api.routers import admin_router
+    from api.routers import job_router
+    from api.routers import files_router
+    from api.routers import advanced_router
+    from api.routers import rag_router
+
+    app.include_router(auth_router.router)
+    app.include_router(conversion_router.router)
+    app.include_router(workflow_router)
+    app.include_router(comparison_router.router)
+    app.include_router(admin_router.router)
+    app.include_router(job_router.router)
+    app.include_router(files_router.router)
+    app.include_router(advanced_router.router)
+    app.include_router(rag_router.router)
+
     return app
 
 
 app = create_app()
-
-# Include all routers
-app.include_router(auth_router.router)
-app.include_router(conversion_router.router)
-app.include_router(workflow_router)
-app.include_router(comparison_router.router)
-app.include_router(admin_router.router)
-app.include_router(job_router.router)
-app.include_router(files_router.router)
-app.include_router(advanced_router.router)
-app.include_router(rag_router.router)  # AI router (v2)

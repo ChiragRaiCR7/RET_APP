@@ -28,10 +28,10 @@
       <div class="workflow-steps">
         <p><strong>Steps</strong></p>
         <ol>
-          <li>Upload one ZIP (scans nested ZIPs for XML files only).</li>
-          <li>Convert ALL extracted XML → CSV once (saved in session).</li>
-          <li>Download by group OR Download ALL (Preserve Structure).</li>
-          <li>(Optional) Enable <strong>Edit Mode</strong> to modify/add/remove CSVs (session-only) and download Modified ZIP.</li>
+          <li>Upload one ZIP (scans nested ZIPs for XML files only) - Max 10GB</li>
+          <li>Convert ALL extracted XML → CSV once (saved in session) - Parallel processing</li>
+          <li>Download by group OR Download ALL (Preserve Structure) - ZIP or individual files</li>
+          <li>(Optional) Enable <strong>Edit Mode</strong> to modify/add/remove CSVs (session-only) and download Modified ZIP</li>
         </ol>
       </div>
 
@@ -54,17 +54,30 @@
           </div>
           
           <div class="control-group">
-            <div class="edit-mode-toggle">
-              <label class="toggle-switch">
-                <input type="checkbox" v-model="workflow.editMode" />
-                <span class="toggle-slider" aria-hidden="true"></span>
-              </label>
-              <div class="toggle-labels">
-                <span class="toggle-label">✏️ Edit Mode</span>
-                <span class="toggle-subtext">Session-only edits</span>
+            <SwitchGroup>
+              <div class="edit-mode-toggle">
+                <Switch
+                  v-model="workflow.editMode"
+                  :class="[
+                    workflow.editMode ? 'toggle-active' : 'toggle-inactive',
+                    'toggle-switch'
+                  ]"
+                >
+                  <span
+                    :class="[
+                      workflow.editMode ? 'toggle-knob-on' : 'toggle-knob-off',
+                      'toggle-knob'
+                    ]"
+                    aria-hidden="true"
+                  />
+                </Switch>
+                <div class="toggle-labels">
+                  <SwitchLabel class="toggle-label">Edit Mode</SwitchLabel>
+                  <span class="toggle-subtext">Session-only edits, modify CSVs in-memory</span>
+                </div>
+                <span v-if="workflow.editMode" class="edit-mode-badge">Active</span>
               </div>
-              <span v-if="workflow.editMode" class="edit-mode-badge">Active</span>
-            </div>
+            </SwitchGroup>
           </div>
         </div>
 
@@ -81,7 +94,7 @@
         <div class="parser-option">
           <label class="checkbox-label">
             <input type="checkbox" v-model="workflow.fastParser" />
-            <span>🚀 Fast XML parser (lxml)</span>
+            <span>🚀 Fast XML parser (lxml) - Use high-performance parser for large files</span>
           </label>
         </div>
       </div>
@@ -108,6 +121,14 @@
         </div>
         
         <p class="upload-hint">Upload → Scan ZIP → Bulk Convert. Then preview/download here (rendered in Part 3).</p>
+
+        <!-- Embedding Status Indicator -->
+        <div v-if="embeddingStatus" class="embedding-status" :class="'status-' + embeddingStatus">
+          <span v-if="embeddingStatus === 'embedding'" class="spinner"></span>
+          <span v-if="embeddingStatus === 'embedding'">Embedding data for AI chat...</span>
+          <span v-else-if="embeddingStatus === 'done'">AI embedding complete - ready for chat</span>
+          <span v-else-if="embeddingStatus === 'error'">Embedding failed</span>
+        </div>
       </div>
 
       <!-- Files Indexed Dropdown -->
@@ -140,24 +161,49 @@
 
         <!-- Group Selection Dropdown -->
         <div class="group-selection-section">
-          <div class="form-group">
-            <label class="form-label">📂 Select Groups ({{ selectedGroups.length }} selected)</label>
-            <select
-              v-model="selectedGroups"
-              class="form-select group-multi-select"
-              multiple
-              size="6"
-            >
-              <option 
-                v-for="group in filteredGroups" 
-                :key="group.name" 
-                :value="group.name"
+          <Listbox v-model="selectedGroups" multiple>
+            <div class="listbox-wrapper">
+              <ListboxButton class="listbox-button">
+                <span class="listbox-label">{{ selectedGroups.length ? `${selectedGroups.length} group(s) selected` : 'Select groups...' }}</span>
+                <span class="listbox-chevron" aria-hidden="true">&#9662;</span>
+              </ListboxButton>
+              <transition
+                enter-active-class="listbox-enter-active"
+                enter-from-class="listbox-enter-from"
+                enter-to-class="listbox-enter-to"
+                leave-active-class="listbox-leave-active"
+                leave-from-class="listbox-leave-from"
+                leave-to-class="listbox-leave-to"
               >
-                {{ group.name }} ({{ group.files?.length || 0 }} files)
-              </option>
-            </select>
-            <p class="form-hint">Tip: Use Ctrl/⌘ + click to select multiple groups.</p>
-          </div>
+                <ListboxOptions class="listbox-options">
+                  <div class="listbox-search">
+                    <input
+                      v-model="groupSearch"
+                      type="text"
+                      class="form-input"
+                      placeholder="Search groups..."
+                      @click.stop
+                    />
+                  </div>
+                  <ListboxOption
+                    v-for="group in filteredGroups"
+                    :key="group.name"
+                    :value="group.name"
+                    v-slot="{ active, selected }"
+                    as="template"
+                  >
+                    <li :class="['listbox-option', { 'option-active': active, 'option-selected': selected }]">
+                      <span class="option-check" v-if="selected">&#10003;</span>
+                      <span class="option-check option-empty" v-else></span>
+                      <span class="option-label">{{ group.name }}</span>
+                      <span class="option-meta">{{ group.files?.length || group.file_count || 0 }} files</span>
+                    </li>
+                  </ListboxOption>
+                  <li v-if="filteredGroups.length === 0" class="listbox-empty">No groups match "{{ groupSearch }}"</li>
+                </ListboxOptions>
+              </transition>
+            </div>
+          </Listbox>
         </div>
 
         <div class="active-group-section">
@@ -242,7 +288,8 @@
         <h4 class="section-title">🤖 Quick AI Indexing</h4>
         <p class="section-desc">
           Index selected groups for AI-powered search and chat. 
-          This enables asking questions about your converted data.
+          This enables asking questions about your converted data using natural language.
+          AI will provide citations and source references.
         </p>
         
         <div class="ai-index-controls">
@@ -325,6 +372,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch } from 'vue'
+import { Switch, SwitchGroup, SwitchLabel, Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import ComparisonPanel from '@/components/workspace/ComparisonPanel.vue'
 import AIPanel from '@/components/workspace/AIPanel.vue'
@@ -353,6 +401,8 @@ const workflow = reactive({
 })
 
 const converting = ref(false)
+const embeddingStatus = ref(null) // null | 'embedding' | 'done' | 'error'
+const embeddingProgress = ref(null)
 const groupSearch = ref('')
 const selectedGroups = ref([])
 const activeGroup = ref('')
@@ -444,28 +494,57 @@ async function bulkConvert() {
     toast.warning('No session. Please scan ZIP file first.')
     return
   }
-  
+
   converting.value = true
   try {
     const formData = new FormData()
     formData.append('session_id', workflow.sessionId)
     formData.append('output_format', workflow.outputFormat)
+    formData.append('auto_embed', 'true')
     workflow.scannedGroups.forEach(g => formData.append('groups', g.name))
-    
+
     const res = await api.post('/conversion/convert', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
-    
+
     if (res.data.success) {
       workflow.converted = true
       toast.success(`Conversion complete! ${res.data.stats?.success || 0} files converted.`)
       await loadConvertedFiles()
+
+      if (res.data.embedding_status === 'started') {
+        toast.info('AI embedding started in background...')
+        pollEmbeddingStatus()
+      }
     }
   } catch (e) {
     toast.error('Conversion failed: ' + (e.response?.data?.detail || e.message))
   } finally {
     converting.value = false
   }
+}
+
+let embeddingPollTimer = null
+function pollEmbeddingStatus() {
+  embeddingStatus.value = 'embedding'
+  if (embeddingPollTimer) clearInterval(embeddingPollTimer)
+  embeddingPollTimer = setInterval(async () => {
+    try {
+      const res = await api.get(`/v2/ai/index/status/${workflow.sessionId}`)
+      embeddingProgress.value = res.data
+      const totalGroups = Object.keys(res.data.groups || {}).length
+      const indexedGroups = Object.values(res.data.groups || {}).filter(g => g.indexed > 0).length
+      if (totalGroups > 0 && indexedGroups >= totalGroups) {
+        embeddingStatus.value = 'done'
+        toast.success('AI embedding complete! You can now chat with your data.')
+        clearInterval(embeddingPollTimer)
+        embeddingPollTimer = null
+      }
+    } catch (e) {
+      // Status endpoint may not be ready yet, keep polling
+      console.debug('Embedding status poll:', e.message)
+    }
+  }, 3000)
 }
 
 async function loadConvertedFiles() {
@@ -670,34 +749,21 @@ async function startAIIndexing() {
     toast.error('No session or groups selected')
     return
   }
-  
+
   aiIndexing.value = true
-  
+
   try {
-    // Try v2 endpoint first
-    let res
-    try {
-      res = await api.post('/v2/ai/index/groups', {
-        session_id: workflow.sessionId,
-        groups: aiSelectedGroups.value
-      })
-    } catch (v2Error) {
-      // Fallback to legacy endpoint
-      const formData = new FormData()
-      formData.append('session_id', workflow.sessionId)
-      formData.append('groups', aiSelectedGroups.value.join(','))
-      
-      res = await api.post('/ai/index-session', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      })
-    }
-    
+    const res = await api.post('/v2/ai/index/groups', {
+      session_id: workflow.sessionId,
+      groups: aiSelectedGroups.value
+    })
+
     const indexed = res.data.indexed_groups || res.data.groups || aiSelectedGroups.value
     indexedGroups.value = [...new Set([...indexedGroups.value, ...indexed])]
-    
+
     const count = res.data.indexed_count || res.data.files_indexed || indexed.length
     toast.success(`${count} group(s) indexed successfully for AI!`)
-    
+
   } catch (e) {
     toast.error('AI indexing failed: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -819,87 +885,132 @@ function onFileRemoved(filename) {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-/* Edit Mode Toggle Switch */
+/* Edit Mode Toggle Switch — HeadlessUI Switch */
 .edit-mode-toggle {
   display: flex;
   align-items: center;
   gap: var(--space-md);
-  padding: var(--space-md);
-  background: var(--surface-secondary);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-light);
+  padding: var(--space-lg);
+  background: linear-gradient(135deg, var(--surface-secondary) 0%, var(--surface) 100%);
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--border-light);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.edit-mode-toggle:hover {
+  border-color: var(--brand-primary);
+  box-shadow: 0 4px 16px rgba(255, 192, 0, 0.15);
+  transform: translateY(-1px);
 }
 
 .toggle-switch {
   position: relative;
-  width: 48px;
-  height: 28px;
+  width: 56px;
+  height: 32px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
-.toggle-switch input {
-  appearance: none;
-  width: 48px;
-  height: 28px;
-  border-radius: 999px;
-  background: #e5e7eb;
-  border: 2px solid #d1d5db;
-  cursor: pointer;
-  transition: all 0.2s ease;
+.toggle-switch:focus-visible {
+  outline: 3px solid var(--brand-primary);
+  outline-offset: 3px;
 }
 
-.toggle-switch input:checked {
-  background: var(--brand-primary);
+.toggle-switch:active {
+  transform: scale(0.96);
+}
+
+.toggle-active {
+  background: linear-gradient(135deg, var(--brand-primary) 0%, #FFD700 100%);
   border-color: var(--brand-primary);
+  box-shadow: 0 4px 12px rgba(255, 192, 0, 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.3);
 }
 
-.toggle-slider {
-  position: absolute;
-  width: 20px;
-  height: 20px;
-  background: #fff;
+.toggle-inactive {
+  background: linear-gradient(135deg, #E5E7EB 0%, #D1D5DB 100%);
+  border-color: #D1D5DB;
+}
+
+.toggle-knob {
+  display: block;
+  width: 24px;
+  height: 24px;
+  background: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
   border-radius: 50%;
-  left: 4px;
-  transition: transform 0.2s ease;
-  pointer-events: none;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.5);
 }
 
-.toggle-switch input:checked + .toggle-slider {
-  transform: translateX(20px);
+.toggle-knob-on {
+  transform: translateX(24px);
+}
+
+.toggle-knob-off {
+  transform: translateX(3px);
+}
+
+.toggle-active .toggle-knob {
+  box-shadow: 0 3px 10px rgba(255, 192, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
 .toggle-labels {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  flex: 1;
 }
 
 .toggle-label {
-  font-weight: 600;
-  font-size: 0.95rem;
+  font-weight: 700;
+  font-size: 1rem;
   color: var(--text-primary);
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle-label::before {
+  content: '✏️';
+  font-size: 1.1rem;
 }
 
 .toggle-subtext {
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   color: var(--text-tertiary);
+  line-height: 1.3;
 }
 
 .edit-mode-badge {
-  padding: 2px 10px;
-  background: var(--success);
+  padding: 6px 14px;
+  background: linear-gradient(135deg, var(--success) 0%, #10B981 100%);
   color: white;
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: 0.8rem;
+  font-weight: 700;
   border-radius: var(--radius-full);
   animation: pulse 2s infinite;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  0%, 100% { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 0.85; 
+    transform: scale(0.98);
+  }
 }
 
 
@@ -940,6 +1051,31 @@ function onFileRemoved(filename) {
   color: var(--text-tertiary);
   font-size: 0.85rem;
   margin-top: var(--space-sm);
+}
+
+.embedding-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  margin-top: var(--space-sm);
+}
+.embedding-status.status-embedding {
+  background: var(--color-info-bg, #e8f4fd);
+  color: var(--color-info, #1976d2);
+  border: 1px solid var(--color-info, #1976d2);
+}
+.embedding-status.status-done {
+  background: var(--color-success-bg, #e8f5e9);
+  color: var(--color-success, #2e7d32);
+  border: 1px solid var(--color-success, #2e7d32);
+}
+.embedding-status.status-error {
+  background: var(--color-error-bg, #fce4ec);
+  color: var(--color-error, #c62828);
+  border: 1px solid var(--color-error, #c62828);
 }
 
 .files-section {
@@ -988,13 +1124,157 @@ function onFileRemoved(filename) {
   margin-bottom: var(--space-lg);
 }
 
-/* Group Selection Dropdown */
+/* Group Selection Dropdown — HeadlessUI Listbox */
 .group-selection-section {
   margin-bottom: var(--space-lg);
   padding: var(--space-md);
   background: var(--surface-secondary);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-light);
+}
+
+.listbox-wrapper {
+  position: relative;
+}
+
+.listbox-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--surface-base);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  transition: border-color 0.2s;
+}
+
+.listbox-button:hover {
+  border-color: var(--brand-primary);
+}
+
+.listbox-button:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+.listbox-label {
+  flex: 1;
+  text-align: left;
+}
+
+.listbox-chevron {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.listbox-options {
+  position: absolute;
+  z-index: 50;
+  width: 100%;
+  max-height: 280px;
+  overflow-y: auto;
+  margin-top: 4px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  list-style: none;
+  padding: 0;
+}
+
+.listbox-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--border-light);
+  position: sticky;
+  top: 0;
+  background: var(--surface-elevated);
+  z-index: 1;
+}
+
+.listbox-search .form-input {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+}
+
+.listbox-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background-color 0.15s;
+}
+
+.listbox-option.option-active {
+  background: var(--brand-subtle);
+}
+
+.listbox-option.option-selected {
+  font-weight: 600;
+}
+
+.option-check {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 2px solid var(--border-medium);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: white;
+}
+
+.option-selected .option-check {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+}
+
+.option-empty {
+  background: transparent;
+}
+
+.option-label {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.option-meta {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.listbox-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+}
+
+/* Listbox transitions */
+.listbox-enter-active,
+.listbox-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.listbox-enter-from,
+.listbox-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.listbox-enter-to,
+.listbox-leave-from {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .group-multi-select {

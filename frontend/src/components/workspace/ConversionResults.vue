@@ -617,12 +617,23 @@ defineExpose({
 
 .edit-mode-toggle {
   margin-left: auto;
+  padding: var(--space-sm) var(--space-md);
+  background: linear-gradient(135deg, var(--surface-secondary) 0%, var(--surface) 100%);
+  border-radius: var(--radius-lg);
+  border: 2px solid var(--border-light);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.edit-mode-toggle:hover {
+  border-color: var(--brand-primary);
+  box-shadow: 0 2px 12px rgba(255, 192, 0, 0.15);
+  transform: translateY(-1px);
 }
 
 .toggle-label {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-md);
   cursor: pointer;
   user-select: none;
 }
@@ -635,12 +646,14 @@ defineExpose({
 }
 
 .toggle-slider {
-  width: 44px;
-  height: 24px;
-  background: var(--surface-2);
-  border-radius: 12px;
+  width: 52px;
+  height: 28px;
+  background: linear-gradient(135deg, #E5E7EB 0%, #D1D5DB 100%);
+  border-radius: 14px;
   position: relative;
-  transition: background 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06);
+  border: 2px solid #D1D5DB;
 }
 
 .toggle-slider::before {
@@ -650,22 +663,29 @@ defineExpose({
   left: 2px;
   width: 20px;
   height: 20px;
-  background: white;
+  background: linear-gradient(180deg, #FFFFFF 0%, #F9FAFB 100%);
   border-radius: 50%;
-  transition: transform 0.2s;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25), 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.5);
 }
 
 .toggle-input:checked + .toggle-slider {
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand-primary) 0%, #FFD700 100%);
+  border-color: var(--brand-primary);
+  box-shadow: 0 4px 12px rgba(255, 192, 0, 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.3);
 }
 
 .toggle-input:checked + .toggle-slider::before {
-  transform: translateX(20px);
+  transform: translateX(24px);
+  box-shadow: 0 3px 10px rgba(255, 192, 0, 0.5), 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
 .toggle-text {
-  font-weight: 600;
-  font-size: 0.875rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
 }
 
 .selection-grid {

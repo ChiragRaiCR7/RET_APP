@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from typing import Optional
 
@@ -29,14 +29,22 @@ class UserInfo(BaseModel):
     is_locked: bool
     created_at: datetime
 
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, v):
+        if hasattr(v, 'value'):
+            return v.value.lower()
+        return str(v).lower() if v else v
+
     class Config:
         from_attributes = True
 
 class TokenResponse(BaseModel):
+    """Token response - refresh_token is delivered via HttpOnly cookie, not in body."""
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     user: UserInfo
+    # Note: refresh_token is set as HttpOnly cookie, not returned in response body
 
 class RefreshTokenResponse(BaseModel):
     access_token: str

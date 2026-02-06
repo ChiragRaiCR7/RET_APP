@@ -64,8 +64,15 @@ class BaseConfig(BaseSettings):
     # ======================
     JWT_SECRET_KEY: Optional[str] = None
     JWT_ALGORITHM: str = "HS256"
+    JWT_ISSUER: str = "ret-v4"
+    JWT_AUDIENCE: str = "ret-v4-api"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    REFRESH_TOKEN_EXPIRE_SECONDS: int = 7 * 24 * 60 * 60  # 7 days in seconds
+    
+    # Login security
+    MAX_LOGIN_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_MINUTES: int = 15
     
     # Security Headers
     ENABLE_SECURITY_HEADERS: bool = True
@@ -122,11 +129,46 @@ class BaseConfig(BaseSettings):
     # ======================
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 500  # Alias for middleware
+    RATE_LIMIT_EXEMPT_PATHS: List[str] = [
+        "/health",
+        "/api/auth/refresh",
+        "/api/auth/me",
+        "/docs",
+        "/openapi.json",
+    ]
+
+    # ======================
+    # Resource Limits
+    # ======================
+    MAX_UPLOAD_SIZE_MB: int = 10000
+    MAX_NESTED_ZIP_DEPTH: int = 50
+    MAX_TOTAL_FILES: int = 10000
+    MAX_TOTAL_MB: int = 10000
+    MAX_PER_FILE_MB: int = 1000
+    MAX_COMPRESSION_RATIO: int = 200  # Zip bomb protection
+    MAX_INLINE_CONVERSION_BYTES: int = 10 * 1024 * 1024  # 10MB
+    MAX_INLINE_CHANGES: int = 1000  # Max changes in inline response
+    MAX_XLSX_ROWS: int = 100000
+    MAX_XLSX_COLUMNS: int = 500
+
+    # ======================
+    # AI Limits
+    # ======================
+    AI_MAX_HISTORY: int = 50  # Max conversation history entries
+    AI_MAX_TOKENS: int = 4000
+    EMBED_BATCH_SIZE: int = 16
+    CHUNK_TARGET_CHARS: int = 10000
 
     @property
     def AZURE_OPENAI_CHAT_DEPLOYMENT(self) -> Optional[str]:
         """Return CHAT_MODEL as CHAT_DEPLOYMENT for backward compatibility."""
         return self.AZURE_OPENAI_CHAT_MODEL
+
+    @property
+    def AZURE_OPENAI_EMBED_DEPLOYMENT(self) -> Optional[str]:
+        """Return EMBED_MODEL as EMBED_DEPLOYMENT for backward compatibility."""
+        return self.AZURE_OPENAI_EMBED_MODEL
 
     @property
     def is_development(self) -> bool:

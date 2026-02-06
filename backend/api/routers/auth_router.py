@@ -15,6 +15,7 @@ from api.schemas.auth import (
     RefreshTokenResponse,
     UserInfo,
 )
+from api.schemas.common import MessageResponse
 from api.services.auth_service import (
     authenticate_user,
     issue_tokens,
@@ -40,20 +41,20 @@ def login(
     user = authenticate_user(db, req.username, req.password)
     tokens = issue_tokens(db, user, request)
     
-    # Set refresh token as HttpOnly cookie
+    # Set refresh token as HttpOnly cookie with proper security attributes
     response.set_cookie(
         key="refresh_token",
         value=tokens["refresh_token"],
         httponly=True,
-        secure=settings.ENV == "production",
+        secure=settings.is_production,
         samesite="lax",
-        max_age=7 * 24 * 60 * 60,  # 7 days
+        path="/api/auth/refresh",  # Restrict cookie to refresh endpoint
+        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
     )
     
-    # Remove refresh_token from response body (it's in cookie)
+    # Do NOT return refresh_token in response body (it's in HttpOnly cookie)
     tokens_response = TokenResponse(
         access_token=tokens["access_token"],
-        refresh_token=tokens["refresh_token"],
         token_type=tokens["token_type"],
         user=tokens["user"],
     )
@@ -62,20 +63,17 @@ def login(
 
 @router.get("/me", response_model=UserInfo)
 def get_me(
-    current_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    user = db.query(User).filter(User.id == int(current_user_id)).first()
-    if not user:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
-    return user
+    """Get current authenticated user info."""
+    return current_user
 
 
-@router.post("/logout")
+@router.post("/logout", response_model=MessageResponse)
 def logout(
     request: Request,
     response: Response,
-    current_user_id: str = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -91,14 +89,15 @@ def logout(
     from api.services.storage_service import cleanup_user_sessions
     from api.services.ai.session_manager import cleanup_session_ai
     
-    logger.info(f"User logout initiated: {current_user_id}")
+    user_id = str(current_user.id)
+    logger.info(f"User logout initiated: {current_user.username} (id={user_id})")
     
     try:
         # Revoke refresh token from database
         refresh_token = request.cookies.get("refresh_token")
         if refresh_token:
             revoke_refresh_token(db, refresh_token)
-            logger.debug(f"Revoked refresh token for user: {current_user_id}")
+            logger.debug(f"Revoked refresh token for user: {user_id}")
     except Exception as e:
         logger.error(f"Failed to revoke refresh token: {e}")
     
@@ -109,17 +108,17 @@ def logout(
         # but we call this first to properly shutdown AI resources
         from api.services.storage_service import get_user_sessions
         
-        user_sessions = get_user_sessions(current_user_id)
+        user_sessions = get_user_sessions(user_id)
         for session_info in user_sessions:
             session_id = session_info.get("session_id", "")
             if session_id:
                 try:
-                    cleanup_session_ai(session_id, current_user_id)
+                    cleanup_session_ai(session_id, user_id)
                     logger.debug(f"Cleaned up AI resources for session: {session_id}")
                 except Exception as e:
                     logger.warning(f"Failed to cleanup AI for session {session_id}: {e}")
         
-        logger.info(f"Cleaned up AI sessions for user: {current_user_id}")
+        logger.info(f"Cleaned up AI sessions for user: {user_id}")
     except Exception as e:
         logger.error(f"Failed to cleanup AI sessions: {e}")
     
@@ -129,26 +128,27 @@ def logout(
         # - Session directories with XML/CSV files
         # - Extracted content
         # - Remaining ChromaDB files
-        cleanup_user_sessions(current_user_id)
-        logger.info(f"Cleaned up all sessions for user: {current_user_id}")
+        cleanup_user_sessions(user_id)
+        logger.info(f"Cleaned up all sessions for user: {user_id}")
     except Exception as e:
         logger.error(f"Failed to cleanup sessions: {e}")
     
     try:
         # Clear cache entries for this user
         cache = get_session_cache()
-        cleared = clear_cache_pattern(f"user:{current_user_id}:")
-        logger.debug(f"Cleared {cleared} cache entries for user: {current_user_id}")
+        cleared = clear_cache_pattern(f"user:{user_id}:")
+        logger.debug(f"Cleared {cleared} cache entries for user: {user_id}")
     except Exception as e:
         logger.debug(f"Cache cleanup failed: {e}")
 
-    # Delete refresh token cookie
+    # Delete refresh token cookie with same attributes as set
     response.delete_cookie(
         key="refresh_token",
-        secure=settings.ENV == "production",
+        path="/api/auth/refresh",
+        secure=settings.is_production,
     )
 
-    logger.info(f"User logout completed: {current_user_id}")
+    logger.info(f"User logout completed: {current_user.username}")
     return {"success": True, "message": "Logged out successfully"}
 
 
@@ -171,9 +171,10 @@ def refresh(
             key="refresh_token",
             value=tokens["refresh_token"],
             httponly=True,
-            secure=settings.ENV == "production",
+            secure=settings.is_production,
             samesite="lax",
-            max_age=7 * 24 * 60 * 60,
+            path="/api/auth/refresh",
+            max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
         )
     
     return RefreshTokenResponse(
@@ -182,14 +183,14 @@ def refresh(
     )
 
 
-@router.post("/password-reset/request")
+@router.post("/password-reset/request", response_model=MessageResponse)
 def password_reset_request(req: PasswordResetRequest, db: Session = Depends(get_db)):
     request_password_reset(db, req.username, req.reason)
     # Always return success to avoid user enumeration
     return {"success": True, "message": "If account exists, reset email will be sent"}
 
 
-@router.post("/password-reset/confirm")
+@router.post("/password-reset/confirm", response_model=MessageResponse)
 def password_reset_confirm(req: PasswordResetConfirm, db: Session = Depends(get_db)):
     confirm_password_reset(db, req.token, req.new_password)
-    return {"success": True}
+    return {"success": True, "message": "Password reset successful"}
