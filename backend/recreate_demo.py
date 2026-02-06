@@ -16,7 +16,7 @@ if existing:
 demo = User(
     username="demo",
     password_hash=hash_password("demo123"),
-    role="user",
+    role="USER",
     is_active=True,
     is_locked=False,
 )

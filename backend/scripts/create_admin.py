@@ -11,10 +11,11 @@ def create_admin():
             print("[!] Admin user already exists")
             return
         
+        # Create super admin
         admin = User(
             username="admin",
             password_hash=hash_password("admin123"),
-            role="admin",
+            role="admin",  # lowercase as required by enum
             is_active=True,
             is_locked=False,
         )
@@ -24,7 +25,7 @@ def create_admin():
         demo = User(
             username="demo",
             password_hash=hash_password("demo123"),
-            role="user",
+            role="user",  # lowercase as required by enum
             is_active=True,
             is_locked=False,
         )

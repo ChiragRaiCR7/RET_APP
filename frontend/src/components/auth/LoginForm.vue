@@ -60,8 +60,8 @@ async function submit() {
   }
 }
 function demoLogin() {
-  form.username = 'demo'
-  form.password = 'demo123'
+  form.username = 'user1'
+  form.password = 'user123'
   submit()
 }
 </script>

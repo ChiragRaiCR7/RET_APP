@@ -1,7 +1,7 @@
 """
 Create demo users for RET-v4
-- Admin user
-- Normal user
+- 2 Admin users
+- 3 Normal users
 """
 
 from sqlalchemy.orm import Session
@@ -13,16 +13,37 @@ from api.core.security import hash_password
 
 DEMO_USERS = [
     {
-        "username": "admin",
+        "username": "admin1",
         "password": "admin123",
-        "role": "admin",
+        "role": "ADMIN",
         "is_active": True,
         "is_locked": False,
     },
     {
-        "username": "demo",
-        "password": "demo123",
-        "role": "user",
+        "username": "admin2",
+        "password": "admin234",
+        "role": "ADMIN",
+        "is_active": True,
+        "is_locked": False,
+    },
+    {
+        "username": "user1",
+        "password": "user123",
+        "role": "USER",
+        "is_active": True,
+        "is_locked": False,
+    },
+    {
+        "username": "user2",
+        "password": "user234",
+        "role": "USER",
+        "is_active": True,
+        "is_locked": False,
+    },
+    {
+        "username": "user3",
+        "password": "user345",
+        "role": "USER",
         "is_active": True,
         "is_locked": False,
     },

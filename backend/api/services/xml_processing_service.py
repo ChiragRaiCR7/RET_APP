@@ -100,22 +100,23 @@ def is_root_zip(filename: str) -> bool:
     return False
 
 
-def extract_module_prefix_from_zipname(zip_filename: str, prefix_len: Optional[int] = None) -> Optional[str]:
+def extract_group_from_zipname(zip_filename: str, prefix_len: Optional[int] = None) -> Optional[str]:
     """
-    Extract module prefix from a business ZIP filename.
+    Extract group name from ZIP filename or folder name.
+    Uses actual ZIP/folder name as group, removing extension and cleaning up.
     
     Examples:
-        AR_PAYMENT_TERM.zip → AR
-        ATK_KR_TOPIC.zip → ATK
-        CST_COST_BOOK.zip → CST
-        AP_AGING_PERIOD.zip → AP
+        AR_PAYMENT_TERM.zip → AR_PAYMENT_TERM
+        Manufacturing.zip → Manufacturing
+        1_book.zip → book (numbered prefixes use base name)
+        2_BATCH.zip → None (batch ZIPs don't become groups)
     
     Args:
-        zip_filename: ZIP filename like "AR_PAYMENT_TERM.zip"
-        prefix_len: Optional max length for prefix (2, 3, 4, etc.)
+        zip_filename: ZIP filename or folder name
+        prefix_len: Ignored (kept for backward compatibility)
     
     Returns:
-        Module prefix (uppercase) or None if not a valid business ZIP
+        Group name (uppercase) or None if not a valid business ZIP/folder
     """
     stem = Path(zip_filename).stem
     
@@ -127,37 +128,31 @@ def extract_module_prefix_from_zipname(zip_filename: str, prefix_len: Optional[i
     if is_root_zip(zip_filename):
         return None
     
-    # Extract prefix before first underscore
-    if "_" in stem:
-        prefix = stem.split("_", 1)[0]
-    else:
-        prefix = stem
+    # Handle numbered prefixes like "1_book" or "2_article" → use base name
+    # Check if stem starts with digit(s) followed by underscore or dash
+    import re
+    numbered_match = re.match(r'^(\d+)[_-](.+)$', stem)
+    if numbered_match:
+        # Use the part after the number separator
+        base_name = numbered_match.group(2)
+        return base_name.upper()
     
-    # Get alphabetic prefix
-    alpha = extract_alpha_prefix(prefix)
-    
-    if not alpha:
-        return None
-    
-    # Apply optional length limit
-    if prefix_len and len(alpha) > prefix_len:
-        alpha = alpha[:prefix_len]
-    
-    return alpha
+    # Return full stem as group name
+    return stem.upper()
 
 
 def infer_group_from_folder(folder_full: str, custom_prefixes: Optional[Set[str]] = None) -> str:
     """Infer group from folder path (legacy support)"""
     if not folder_full or "/" not in folder_full:
-        return "OTHER"
-    
+        return "EXTRAS"
+
     # Get first folder
     root_folder = folder_full.split("/")[0]
     alpha = extract_alpha_prefix(root_folder)
-    
+
     if custom_prefixes and alpha in custom_prefixes:
         return alpha
-    return alpha if alpha else "OTHER"
+    return alpha if alpha else "EXTRAS"
 
 
 def infer_group_from_filename(filename: str, custom_prefixes: Optional[Set[str]] = None) -> str:
@@ -165,19 +160,19 @@ def infer_group_from_filename(filename: str, custom_prefixes: Optional[Set[str]]
     base = Path(filename).stem
     token = base.split("_", 1)[0] if "_" in base else base
     alpha = extract_alpha_prefix(token)
-    
+
     if custom_prefixes and alpha in custom_prefixes:
         return alpha
-    return alpha if alpha else "OTHER"
+    return alpha if alpha else "EXTRAS"
 
 
 def infer_group(logical_path: str, filename: str, custom_prefixes: Optional[Set[str]] = None) -> str:
     """Infer group from path and filename (legacy fallback)"""
     # Try folder-based detection first
     group = infer_group_from_folder(logical_path, custom_prefixes)
-    if group != "OTHER":
+    if group != "EXTRAS":
         return group
-    
+
     # Fall back to filename-based
     return infer_group_from_filename(filename, custom_prefixes)
 
@@ -268,30 +263,33 @@ def scan_zip_for_xml(
     def _get_group_for_zip_chain(zip_chain: List[str]) -> str:
         """
         Find the module group from a chain of ZIP names.
-        
+
         The chain goes from root to current, e.g.:
         ["Manufacturing...zip", "businessObjectData", "AR_PAYMENT_TERM.zip"]
-        
-        We find the first valid business ZIP (not root, not batch) and extract its prefix.
+
+        We find the first valid business ZIP/folder (not root, not batch) and use its name as group.
+        If no business ZIP found, XML is at the container root level → "ROOT".
         """
         for zip_name in zip_chain:
-            # Skip folders (no .zip extension)
-            if not zip_name.lower().endswith(".zip"):
-                continue
-            
-            prefix = extract_module_prefix_from_zipname(zip_name, group_prefix_len)
-            if prefix:
-                return prefix
-        
-        # Fallback: try to infer from the last item in chain
-        if zip_chain:
-            last_item = zip_chain[-1]
-            stem = Path(last_item).stem
-            alpha = extract_alpha_prefix(stem.split("_", 1)[0] if "_" in stem else stem)
-            if alpha:
-                return alpha
-        
-        return "OTHER"
+            # Try to extract group from ZIP files
+            if zip_name.lower().endswith(".zip"):
+                group = extract_group_from_zipname(zip_name, group_prefix_len)
+                if group:
+                    return group
+            else:
+                # It's a folder - use folder name as group (unless it looks like a generic path)
+                folder_name = Path(zip_name).name
+                # Skip generic folder names like "businessObjectData", "data", "files", etc.
+                if folder_name.lower() not in ["businessobjectdata", "data", "files", "content", "extracted"]:
+                    # Handle numbered folders like "1_book" → "book"
+                    import re
+                    numbered_match = re.match(r'^(\d+)[_-](.+)$', folder_name)
+                    if numbered_match:
+                        return numbered_match.group(2).upper()
+                    return folder_name.upper()
+
+        # No business ZIP/folder found — XML is at root level
+        return "ROOT"
     
     def _recursive_scan(
         current_path: Path,
@@ -384,7 +382,7 @@ def scan_zip_for_xml(
                 
                 # Determine the group for this XML
                 # Use the current_group determined by the ZIP chain
-                group = current_group if current_group != "OTHER" else infer_group_from_filename(xml_file.name, custom_prefixes)
+                group = current_group if current_group != "EXTRAS" else infer_group_from_filename(xml_file.name, custom_prefixes)
                 
                 # Build folder path metadata
                 folder_path = ""
@@ -451,9 +449,9 @@ def scan_zip_for_xml(
         raise
     
     # Step 2: Recursively scan extracted content
-    # Start with root ZIP in chain, but group is "OTHER" until we find business ZIPs
+    # Root ZIPs get "ROOT" group; business ZIPs get their name as group
     root_chain = [root_zip_name]
-    initial_group = "OTHER" if is_root else extract_module_prefix_from_zipname(root_zip_name, group_prefix_len) or "OTHER"
+    initial_group = "ROOT" if is_root else extract_group_from_zipname(root_zip_name, group_prefix_len) or "ROOT"
     
     _recursive_scan(extract_dir, depth=1, zip_chain=root_chain, current_group=initial_group)
     

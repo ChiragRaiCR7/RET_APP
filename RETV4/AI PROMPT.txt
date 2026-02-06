@@ -23,12 +23,11 @@ The folder structure in the Comparison tab should be improved to provide a tree 
 🔍 Drilldown: Side-by-side deltas (only changes) this should displays two different files 1 from side A and another from side B with the changes marked in red and Green dots with the specific cells containing the dots that the user see f they select the same files from both the sides and red dots on the specific cell for the changes. All other columns are not vividly colour except the ones with the changes only.Like the image provided for the Oracle FSM. The dots if clicked opens a new window displaying the complete excel files in tabular format side by side of all the changes between both of them.
 
 
-The AI TAB has a AUTO index documents section which is not required and should be replaced with the list of groups section for Embedding Documents sections
 
-THIS ENTIRE PROJECT ISBEING BUILT FOR A REPLACEMENT OF ORACLE FSM but it only has a few implementations of it and doesn't require its complete overhaul look and feel. it works well with minor changes to the system inspired from it.	  
+THIS ENTIRE PROJECT IS BEING BUILT FOR A REPLACEMENT OF ORACLE FSM but it only has a few implementations of it and doesn't require its complete overhaul look and feel. it works well with minor changes to the system inspired from it.	  
 
 
-The backend code must be cleanded and repeated files should be removed completely and the code files are required to be rewritten if the functional changes are to be properly implemented specifically the AI changes because it is still not working at all despite so much efforts.
+The backend code must be cleaned and repeated files should be removed completely and the code files are required to be rewritten if the functional changes are to be properly implemented specifically the AI changes because it is still not working at all despite so much efforts.
 
 
 
@@ -1634,3 +1633,5 @@ def make_doc_id(session_id: str, file_path: Path, idx: int, content: str):
 MAX_HISTORY = getattr(settings, "AI_MAX_HISTORY", 50)
 self.conversation_history = self.conversation_history[-MAX_HISTORY:]
 
+
+The embedding to the vectorDB(ChromaDB)isn’t working at all and the XML files detected from the ZIP file uploaded by the user are to be embedded and indexed using the embedding model. Then this local ChromaDB should be connected to the chat model which helps the user ask questions from the document and analyse the details and find key summary findings also fix the working of the embedding and the chat agent so that the user can interact with the data they have provided.

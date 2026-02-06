@@ -1,88 +1,31 @@
 """
-Unified AI Service Module
+AI Services Package — UnifiedRAGService Architecture
 
-This module consolidates all AI services into a single factory pattern.
-Use AIServiceFactory.create() to get the appropriate AI service instance.
+Active modules (imported directly where needed):
+- api.services.ai.session_manager  — Per-session AI resource management
+- api.services.ai.auto_indexer     — Background auto-indexing after ZIP scans
+- api.services.ai.backends         — Azure OpenAI chat/embedding clients
+- api.services.ai.embedding_backend — Embedding service
+- api.services.ai.vector_store     — ChromaDB vector store
 
-Architecture:
-- AdvancedRAGEngine: LangGraph-powered Advanced RAG with:
-  - Query Transformation
-  - Query Routing (vector/lexical/summary/fusion)
-  - Fusion Retrieval
-  - Reranking & Postprocessing
-  - Citation-aware Generation
-- RAGEngine: Basic LangChain RAG with ChromaDB
-- AutoIndexer: Background auto-indexing after ZIP scans
-- SessionAIManager: Per-session AI resource management
+Deprecated modules moved to api/_deprecated/:
+- ai_lite.py, ai_factory.py, ai_langchain_strategy.py
+- ai_rag_engine.py, ai_advanced_rag_engine.py
 """
 
-from api.services.ai.base import BaseAIService, AIStrategy, IndexingStats, ChatResponse
-from api.services.ai.factory import AIServiceFactory
-from api.services.ai.lite import LiteAIStrategy
-from api.services.ai.langchain_strategy import LangChainAIStrategy
-from api.services.ai.advanced import AdvancedAIStrategy
-from api.services.ai.rag_engine import RAGEngine, RAGResponse, RetrievedChunk, QueryPlan
-from api.services.ai.auto_indexer import AutoIndexer, IndexingProgress, XMLRecordExtractor
+from api.services.ai.base import IndexingStats, ChatResponse
+from api.services.ai.auto_indexer import AutoIndexer, IndexingProgress
 from api.services.ai.session_manager import (
     SessionAIManager,
     get_session_ai_manager,
     cleanup_session_ai,
 )
 
-# Advanced RAG Engine imports
-try:
-    from api.services.ai.advanced_rag_engine import (
-        AdvancedRAGEngine,
-        RAGResponse as AdvancedRAGResponse,
-        RetrievedChunk as AdvancedRetrievedChunk,
-        TransformedQuery,
-        QueryIntent,
-        RetrievalStrategy,
-        RAGConfig,
-        create_advanced_rag_engine,
-    )
-    ADVANCED_RAG_AVAILABLE = True
-except ImportError:
-    ADVANCED_RAG_AVAILABLE = False
-    AdvancedRAGEngine = None
-    AdvancedRAGResponse = None
-    TransformedQuery = None
-    QueryIntent = None
-    RetrievalStrategy = None
-    RAGConfig = None
-    create_advanced_rag_engine = None
-
 __all__ = [
-    # Base classes
-    "BaseAIService",
-    "AIStrategy",
-    "AIServiceFactory",
     "IndexingStats",
     "ChatResponse",
-    # Strategies
-    "LiteAIStrategy",
-    "LangChainAIStrategy",
-    "AdvancedAIStrategy",
-    # Basic RAG components
-    "RAGEngine",
-    "RAGResponse",
-    "RetrievedChunk",
-    "QueryPlan",
-    # Advanced RAG components
-    "AdvancedRAGEngine",
-    "AdvancedRAGResponse",
-    "AdvancedRetrievedChunk",
-    "TransformedQuery",
-    "QueryIntent",
-    "RetrievalStrategy",
-    "RAGConfig",
-    "create_advanced_rag_engine",
-    "ADVANCED_RAG_AVAILABLE",
-    # Auto-indexing
     "AutoIndexer",
     "IndexingProgress",
-    "XMLRecordExtractor",
-    # Session management
     "SessionAIManager",
     "get_session_ai_manager",
     "cleanup_session_ai",

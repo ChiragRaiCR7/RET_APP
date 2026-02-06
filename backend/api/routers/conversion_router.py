@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query, Response
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query, Response, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from pathlib import Path
@@ -33,12 +33,60 @@ from api.services.conversion_service import (
 )
 from api.services.job_service import create_job
 from api.core.database import get_db
-from api.core.dependencies import get_current_user
+from api.core.dependencies import get_current_user, get_current_user_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/conversion", tags=["conversion"])
 workflow_router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+
+
+def _auto_embed_after_conversion(session_id: str, user_id: str, converted_files: list):
+    """Background task to embed converted CSVs into ChromaDB after conversion.
+    Only indexes groups configured in admin AI indexing config.
+    """
+    try:
+        from api.services.ai.session_manager import get_session_ai_manager
+        from api.services.admin_service import get_ai_indexing_config_data
+
+        manager = get_session_ai_manager(session_id, user_id)
+
+        if not manager.is_configured():
+            logger.info(f"Auto-embed skipped for session {session_id}: AI not configured")
+            return
+
+        # Check if auto-indexing is enabled in admin config
+        ai_config = get_ai_indexing_config_data()
+        if not ai_config.get("enable_auto_indexing", False):
+            logger.info(f"Auto-embed skipped for session {session_id}: Auto-indexing disabled in admin config")
+            return
+
+        # Get configured groups from admin config
+        configured_groups = ai_config.get("auto_indexed_groups", [])
+        if not configured_groups:
+            logger.info(f"Auto-embed skipped for session {session_id}: No groups configured for auto-indexing")
+            return
+
+        # Filter converted files to only include configured groups
+        groups_to_index = list(set(cf.get("group", "MISC") for cf in converted_files))
+        groups_to_index = [g for g in groups_to_index if g in configured_groups]
+        
+        if not groups_to_index:
+            logger.info(
+                f"Auto-embed skipped for session {session_id}: "
+                f"No converted groups match configured groups. "
+                f"Configured: {configured_groups}, Available: {[cf.get('group') for cf in converted_files]}"
+            )
+            return
+
+        logger.info(f"Auto-indexing groups for session {session_id}: {groups_to_index}")
+        stats = manager.index_groups(groups=groups_to_index)
+        logger.info(
+            f"Auto-embed complete for session {session_id}: "
+            f"{stats.indexed_files} files, {stats.indexed_chunks} chunks"
+        )
+    except Exception as e:
+        logger.error(f"Auto-embed failed for session {session_id}: {e}")
 
 
 @router.post("/scan", response_model=ZipScanResponse)
@@ -56,7 +104,7 @@ async def scan(
         300, ge=1, le=50000,
         description="Max total bytes copied during scan (MB)."
     ),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Scan a ZIP (recursively, including nested ZIPs) or XML file for content.
@@ -102,21 +150,37 @@ async def convert_async(
     session_id: str = Form(...),
     groups: Optional[List[str]] = Form(None),
     output_format: str = Form("csv"),
-    current_user_id: str = Depends(get_current_user),
+    auto_embed: bool = Form(False),
+    current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """
     Start conversion job.
     - session_id: Session ID (required)
     - groups: Optional list of groups to convert
     - output_format: Output format (csv or xlsx)
+    - auto_embed: If true, automatically embed converted CSVs into ChromaDB
     """
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id is required")
+    
+    logger.info(f"Conversion request: session={session_id}, groups={groups}, format={output_format}, auto_embed={auto_embed}")
 
     try:
         job = create_job(db, "conversion")
         result = convert_session(session_id, groups, output_format)
+
+        # Trigger auto-embedding if requested and conversion produced files
+        if auto_embed and result.get("stats", {}).get("success", 0) > 0:
+            background_tasks.add_task(
+                _auto_embed_after_conversion,
+                session_id=session_id,
+                user_id=current_user_id,
+                converted_files=result.get("converted_files", []),
+            )
+            result["embedding_status"] = "started"
+
         return {"success": True, "job_id": job.id, **result}
     except Exception as e:
         logger.exception("Conversion failed")
@@ -126,7 +190,7 @@ async def convert_async(
 @router.get("/download/{session_id}")
 def download(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Package converted CSVs into a zip and return it"""
     from api.services.storage_service import get_session_dir, get_session_metadata
@@ -181,7 +245,7 @@ def download(
 def get_converted_files(
     session_id: str,
     group: Optional[str] = Query(None, description="Filter by group name"),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     List all converted files for a session.
@@ -204,7 +268,7 @@ def preview_file(
     session_id: str,
     filename: str,
     max_rows: int = Query(100, ge=1, le=1000, description="Max rows to preview"),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Get preview data for a converted CSV file.
@@ -225,7 +289,7 @@ def preview_file(
 @router.get("/groups/{session_id}", response_model=GroupsListResponse)
 def get_groups(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Get list of groups for a session with file counts.
@@ -262,7 +326,7 @@ def download_custom(
     output_format: str = Form("csv"),
     groups: Optional[List[str]] = Form(None),
     preserve_structure: bool = Form(False),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Download converted files with custom options.
@@ -298,7 +362,7 @@ def download_single(
     session_id: str,
     filename: str,
     format: str = Query("csv", description="Output format: csv or xlsx"),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Download a single converted file.
@@ -334,7 +398,7 @@ async def workflow_scan(
     max_depth: int = Query(10, ge=0, le=50),
     max_files: int = Query(20000, ge=100, le=200000),
     max_unzipped_mb: int = Query(300, ge=1, le=50000),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     return await scan(
         file=file,
@@ -351,16 +415,18 @@ async def workflow_scan(
 async def workflow_convert(
     session_id: str = Form(...),
     groups: Optional[List[str]] = Form(None),
-    current_user_id: str = Depends(get_current_user),
+    output_format: str = Form("csv"),
+    current_user_id: str = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
+    logger.info(f"Workflow conversion request: session={session_id}, groups={groups}, format={output_format}")
     job = create_job(db, "conversion")
-    result = convert_session(session_id, groups)
+    result = convert_session(session_id, groups, output_format)
     return {"success": True, "job_id": job.id, **result}
 
 
 @workflow_router.get("/download/{session_id}")
-def workflow_download(session_id: str, current_user_id: str = Depends(get_current_user)):
+def workflow_download(session_id: str, current_user_id: str = Depends(get_current_user_id)):
     return download(session_id, current_user_id)
 
 
@@ -372,7 +438,7 @@ def workflow_download(session_id: str, current_user_id: str = Depends(get_curren
 def add_row_api(
     session_id: str,
     payload: AddRowRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     try:
         return add_row_to_file(session_id, current_user_id, payload.filename, payload.row)
@@ -389,7 +455,7 @@ def add_row_api(
 def add_file_api(
     session_id: str,
     payload: AddFileRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     try:
         return add_new_file(session_id, current_user_id, payload.filename, payload.group, payload.headers)
@@ -406,7 +472,7 @@ def add_file_api(
 def delete_file_api(
     session_id: str,
     filename: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     try:
         return delete_file(session_id, current_user_id, filename)
@@ -423,7 +489,7 @@ def delete_file_api(
 def update_cells_api(
     session_id: str,
     payload: UpdateCellsRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     try:
         return apply_cell_changes(session_id, current_user_id, payload.filename, [c.dict() for c in payload.changes])
@@ -440,7 +506,7 @@ def update_cells_api(
 def save_edits_api(
     session_id: str,
     payload: SaveEditsRequest,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Placeholder endpoint to align with frontend workflow.
@@ -459,7 +525,7 @@ def save_edits_api(
 @router.get("/download-modified/{session_id}")
 def download_modified(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Alias for download that simply packages the current output (including edits).
@@ -474,7 +540,7 @@ def update_cell(
     row_index: int = Form(...),
     column: str = Form(...),
     value: str = Form(...),
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Update a single cell in a converted CSV file.
@@ -522,7 +588,7 @@ def update_row(
     filename: str,
     row_index: int = Form(...),
     row_data: str = Form(...),  # JSON string of column:value pairs
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Update an entire row in a converted CSV file.
@@ -572,7 +638,7 @@ def add_row(
     session_id: str,
     filename: str,
     row_data: str = Form(...),  # JSON string of column:value pairs
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Add a new row to a converted CSV file.
@@ -617,7 +683,7 @@ def delete_row(
     session_id: str,
     filename: str,
     row_index: int,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Delete a row from a converted CSV file.
@@ -657,7 +723,7 @@ def delete_row(
 @router.post("/cleanup/{session_id}")
 def cleanup_session(
     session_id: str,
-    current_user_id: str = Depends(get_current_user),
+    current_user_id: str = Depends(get_current_user_id),
 ):
     """Clean up extracted and output files from a session"""
     from api.services.storage_service import get_session_dir, get_session_metadata

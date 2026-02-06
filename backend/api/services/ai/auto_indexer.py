@@ -1,17 +1,20 @@
 """
-Auto-Indexer Service
-Automatically indexes configured groups into ChromaDB after ZIP scanning
+Auto-Indexer Service.
+
+Automatically indexes configured groups into ChromaDB after ZIP scanning.
+Works with UnifiedRAGService from advanced_ai_service.
 """
 
 import logging
 import json
 import threading
-from typing import List, Dict, Any, Optional, Set, Callable
+from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
 from dataclasses import dataclass, field
-import time
 import xml.etree.ElementTree as ET
 from collections import Counter
+
+from api.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -238,23 +241,22 @@ class XMLRecordExtractor:
 class AutoIndexer:
     """
     Automatically indexes configured groups after ZIP scanning.
-    Runs in background thread to not block UI.
+
+    Runs in a background thread to not block the UI.
+    Uses UnifiedRAGService for indexing operations.
     """
-    
+
     ADMIN_PREFS_FILENAME = "admin_prefs.json"
-    
+
     def __init__(
         self,
         session_id: str,
-        runtime_root: Path,
-        rag_engine: Any,  # RAGEngine instance
+        session_dir: Path,
+        rag_service: Any,  # UnifiedRAGService instance
     ):
         self.session_id = session_id
-        self.runtime_root = Path(runtime_root)
-        self.rag_engine = rag_engine
-        
-        self.session_dir = self.runtime_root / "sessions" / session_id
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.session_dir = Path(session_dir)
+        self.rag_service = rag_service
         
         # State tracking
         self._progress = IndexingProgress()
@@ -269,8 +271,8 @@ class AutoIndexer:
         self._admin_config = self._load_admin_config()
     
     def _load_admin_config(self) -> Dict[str, Any]:
-        """Load admin preferences for auto-index groups"""
-        prefs_path = self.runtime_root / self.ADMIN_PREFS_FILENAME
+        """Load admin preferences for auto-index groups."""
+        prefs_path = Path(settings.RET_RUNTIME_ROOT) / self.ADMIN_PREFS_FILENAME
         
         if prefs_path.exists():
             try:
@@ -495,8 +497,8 @@ class AutoIndexer:
                             for r in records
                         ]
                         
-                        # Index into RAG engine
-                        stats = self.rag_engine.index_xml_records(
+                        # Index into RAG service
+                        stats = self.rag_service.index_xml_records(
                             xml_records=record_dicts,
                             group=group,
                             filename=filename,
@@ -540,12 +542,12 @@ class AutoIndexer:
 
 def get_auto_indexer(
     session_id: str,
-    runtime_root: Path,
-    rag_engine: Any,
+    session_dir: Path,
+    rag_service: Any,
 ) -> AutoIndexer:
-    """Factory function to create auto-indexer"""
+    """Factory function to create auto-indexer."""
     return AutoIndexer(
         session_id=session_id,
-        runtime_root=runtime_root,
-        rag_engine=rag_engine,
+        session_dir=session_dir,
+        rag_service=rag_service,
     )

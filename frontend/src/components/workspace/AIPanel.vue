@@ -51,17 +51,28 @@
             <div class="message-header">
               <span class="message-role">{{ msg.role === 'user' ? 'You' : 'RET AI' }}</span>
               <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
+              <span v-if="msg.responseType && msg.role === 'assistant'" class="response-type-badge">{{ msg.responseType }}</span>
             </div>
             <div class="message-text" v-html="formatMessage(msg.content)"></div>
-            
+
+            <!-- Chart rendering -->
+            <div v-if="msg.chartData" class="chart-container">
+              <component
+                :is="getChartComponent(msg.chartData.type)"
+                :data="msg.chartData"
+                :options="chartOptions"
+              />
+            </div>
+
             <!-- Sources (for AI responses) -->
             <div v-if="msg.role === 'assistant' && msg.sources?.length" class="message-sources">
               <details class="sources-details">
-                <summary>📚 Sources ({{ msg.sources.length }} documents)</summary>
+                <summary>Sources ({{ msg.sources.length }} documents)</summary>
                 <div class="sources-list">
-                  <div v-for="(src, sidx) in msg.sources" :key="sidx" class="source-item">
-                    <span class="source-icon">📄</span>
+                  <div v-for="(src, sidx) in msg.sources.slice(0, 10)" :key="sidx" class="source-item">
+                    <span class="source-icon">&#128196;</span>
                     <span class="source-name">{{ src.filename }}</span>
+                    <span v-if="src.group" class="source-group">{{ src.group }}</span>
                     <span class="source-score">{{ (src.score * 100).toFixed(1) }}%</span>
                   </div>
                 </div>
@@ -70,7 +81,7 @@
 
             <!-- Copy Button -->
             <button class="copy-btn" @click="copyMessage(msg.content)" title="Copy message">
-              📋
+              &#128203;
             </button>
           </div>
         </div>
@@ -188,7 +199,7 @@
                 <span class="group-info">
                   <span class="group-name">{{ group.name }}</span>
                   <span v-if="group.isAutoIndexed" class="auto-badge">Auto</span>
-                  <span v-if="group.isIndexed" class="indexed-badge">✅ Indexed</span>
+                  <span v-if="group.isIndexed" class="indexed-badge">✅ {{ group.chunkCount ? group.chunkCount + ' chunks' : 'Indexed' }}</span>
                   <span v-else class="not-indexed-badge">○ Not indexed</span>
                 </span>
               </label>
@@ -261,9 +272,24 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch, computed, markRaw } from 'vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
+import { Bar, Line, Pie } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  LineElement,
+  PointElement,
+  ArcElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend)
 
 const props = defineProps({
   sessionId: {
@@ -277,7 +303,7 @@ const props = defineProps({
 })
 
 const toast = useToastStore()
-const emit = defineEmits(['message-sent', 'files-indexed', 'groups-indexed'])
+const emit = defineEmits(['message-sent', 'groups-indexed'])
 
 const messages = ref([])
 const inputText = ref('')
@@ -287,7 +313,6 @@ const messagesContainer = ref(null)
 const inputField = ref(null)
 const lastRetrievalInfo = ref(null)
 const isDragging = ref(false)
-const pendingFiles = ref([])
 const indexing = ref(false)
 const showInstructionsModal = ref(false)
 const sessionInstructions = ref('')
@@ -297,14 +322,42 @@ const availableGroups = ref([])  // Groups available in the conversion session
 const selectedGroupsForIndex = ref([])  // Groups selected for indexing
 const loadingGroups = ref(false)  // Loading state for group fetching
 const indexedGroupsList = ref([])  // List of already indexed groups
+const groupChunkCounts = ref({})  // Chunk counts per group: { groupName: count }
 const autoIndexedGroups = ref(['DISSERTATION', 'BOOK'])  // Auto-indexed groups from config
+
+// Chart.js options
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: {
+    legend: { position: 'top' },
+  }
+}
+
+function getChartComponent(type) {
+  if (type === 'bar') return markRaw(Bar)
+  if (type === 'line') return markRaw(Line)
+  if (type === 'pie') return markRaw(Pie)
+  return markRaw(Bar) // default
+}
+
+function detectChartData(content) {
+  const chartMatch = content.match(/```chart-data\s*\n([\s\S]*?)```/)
+  if (chartMatch) {
+    try {
+      return JSON.parse(chartMatch[1])
+    } catch { return null }
+  }
+  return null
+}
 
 // Computed: Groups with their status
 const groupsWithStatus = computed(() => {
   return availableGroups.value.map(groupName => ({
     name: groupName,
     isIndexed: indexedGroupsList.value.includes(groupName),
-    isAutoIndexed: autoIndexedGroups.value.some(ag => 
+    chunkCount: groupChunkCounts.value[groupName] || 0,
+    isAutoIndexed: autoIndexedGroups.value.some(ag =>
       groupName.toUpperCase().includes(ag.toUpperCase())
     )
   }))
@@ -358,12 +411,42 @@ function formatTime(ts) {
 
 function formatMessage(text) {
   if (!text) return ''
-  // Simple markdown-like formatting
-  return text
+
+  // Remove chart-data blocks from display (they're rendered as components)
+  let formatted = text.replace(/```chart-data\s*\n[\s\S]*?```/g, '')
+
+  // Process code blocks first (to avoid interfering with table detection)
+  formatted = formatted.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
+
+  // Process markdown tables
+  formatted = formatted.replace(
+    /\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g,
+    (match, headerLine, bodyLines) => {
+      const headers = headerLine.split('|').map(h => h.trim()).filter(Boolean)
+      const rows = bodyLines.trim().split('\n').filter(Boolean).map(line =>
+        line.split('|').map(c => c.trim()).filter(Boolean)
+      )
+      let html = '<div class="chat-table-wrapper"><table class="chat-table"><thead><tr>'
+      headers.forEach(h => { html += `<th>${h}</th>` })
+      html += '</tr></thead><tbody>'
+      rows.forEach(row => {
+        html += '<tr>'
+        row.forEach(cell => { html += `<td>${cell}</td>` })
+        html += '</tr>'
+      })
+      html += '</tbody></table></div>'
+      return html
+    }
+  )
+
+  // Inline formatting
+  formatted = formatted
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`(.*?)`/g, '<code>$1</code>')
     .replace(/\n/g, '<br>')
+
+  return formatted
 }
 
 function truncateText(text, maxLen) {
@@ -434,34 +517,32 @@ async function sendMessage() {
       query = query.replace(/top_k=\d+/i, '').trim()
     }
     
-    // Try new RAG endpoint first, fallback to legacy
+    // Try new RAG endpoint
     let res
-    try {
-      res = await api.post('/v2/ai/chat', {
-        session_id: useSessionId,
-        question: query,
-        group_filter: groupFilter,
-        top_k: topK,
-        use_rag: true
-      })
-    } catch (v2Error) {
-      // Fallback to legacy endpoint
-      res = await api.post('/ai/chat', {
-        message: text,
-        session_id: useSessionId,
-        instructions: sessionInstructions.value
-      })
-    }
+    res = await api.post('/v2/ai/chat', {
+      session_id: useSessionId,
+      question: query,
+      group_filter: groupFilter,
+      top_k: topK,
+      use_rag: true
+    })
     
     const answer = res.data.answer || res.data.response
     const sources = res.data.sources || res.data.retrievals || []
-    
+    const responseType = res.data.response_type || 'factual'
+
+    // Detect chart data in the response
+    const chartData = detectChartData(answer)
+
     messages.value.push({
       role: 'assistant',
       content: answer,
       timestamp: new Date().toISOString(),
+      responseType: responseType,
+      chartData: chartData,
       sources: sources.map(s => ({
         filename: s.source || s.doc || s.file || 'unknown',
+        group: s.group || null,
         score: s.score || 0,
         snippet: s.snippet || s.content || ''
       }))
@@ -535,59 +616,6 @@ function copyMessage(content) {
   toast.success('Copied to clipboard')
 }
 
-function onDropFiles(e) {
-  isDragging.value = false
-  const files = Array.from(e.dataTransfer.files)
-  files.forEach(f => pendingFiles.value.push(f))
-}
-
-function onSelectFiles(e) {
-  const files = Array.from(e.target.files)
-  files.forEach(f => pendingFiles.value.push(f))
-  e.target.value = ''
-}
-
-function removePendingFile(idx) {
-  pendingFiles.value.splice(idx, 1)
-}
-
-async function indexFiles() {
-  // If no files uploaded, try to index from converted session files
-  if (!pendingFiles.value.length && !conversionSessionId.value) {
-    toast.error('No files to index. Please convert files first or upload CSV files.')
-    return
-  }
-  
-  indexing.value = true
-  
-  try {
-    const formData = new FormData()
-    
-    // Use conversion session ID for indexing
-    const useSessionId = conversionSessionId.value || aiSessionId.value
-    formData.append('session_id', useSessionId)
-    
-    // Append files if provided
-    if (pendingFiles.value.length) {
-      pendingFiles.value.forEach(f => formData.append('files', f))
-    }
-    
-    const res = await api.post('/ai/index-session', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    
-    const filesIndexed = res.data.files_indexed || pendingFiles.value.length
-    toast.success(`${filesIndexed} file(s) indexed successfully`)
-    emit('files-indexed', filesIndexed)
-    emit('groups-indexed', res.data.indexed_groups || [])
-    pendingFiles.value = []
-  } catch (e) {
-    toast.error('Indexing failed: ' + (e.response?.data?.detail || e.message))
-  } finally {
-    indexing.value = false
-  }
-}
-
 async function loadSessionGroups() {
   if (!conversionSessionId.value) {
     availableGroups.value = []
@@ -606,25 +634,31 @@ async function loadSessionGroups() {
       // Keep defaults
     }
     
-    // Try new v2 endpoint first
-    let res
-    try {
-      res = await api.get('/v2/ai/index/groups', {
-        params: { session_id: conversionSessionId.value }
-      })
-      availableGroups.value = (res.data.groups || []).map(g => 
-        typeof g === 'string' ? g : g.name
-      )
-      // Track which groups are already indexed
-      indexedGroupsList.value = (res.data.indexed_groups || []).map(g =>
-        typeof g === 'string' ? g : g.name
-      )
-    } catch (v2Error) {
-      // Fallback to legacy endpoint
-      res = await api.get(`/ai/session-groups/${conversionSessionId.value}`)
-      availableGroups.value = res.data.groups || []
-      indexedGroupsList.value = res.data.indexed_groups || []
+    // Load groups from v2 endpoint
+    const res = await api.get('/v2/ai/index/groups', {
+      params: { session_id: conversionSessionId.value }
+    })
+    availableGroups.value = (res.data.groups || []).map(g =>
+      typeof g === 'string' ? g : g.name
+    )
+    // Track which groups are already indexed
+    indexedGroupsList.value = (res.data.indexed_groups || []).map(g =>
+      typeof g === 'string' ? g : g.name
+    )
+    // Track chunk counts per group
+    const counts = {}
+    for (const g of (res.data.indexed_groups || [])) {
+      if (typeof g === 'object' && g.name) {
+        counts[g.name] = g.chunk_count || 0
+      }
     }
+    // Also check group_stats if available
+    if (res.data.group_stats) {
+      for (const [name, stats] of Object.entries(res.data.group_stats)) {
+        counts[name] = stats.chunk_count || stats.chunks || 0
+      }
+    }
+    groupChunkCounts.value = counts
     
     // Pre-select auto-indexed groups if not already indexed
     selectedGroupsForIndex.value = availableGroups.value.filter(g =>
@@ -650,26 +684,10 @@ async function indexConvertedFiles() {
   indexing.value = true
   
   try {
-    // Try new v2 endpoint first
-    let res
-    try {
-      res = await api.post('/v2/ai/index/groups', {
-        session_id: conversionSessionId.value,
-        groups: selectedGroupsForIndex.value
-      })
-    } catch (v2Error) {
-      // Fallback to legacy endpoint
-      const formData = new FormData()
-      formData.append('session_id', conversionSessionId.value)
-      
-      if (selectedGroupsForIndex.value.length > 0) {
-        formData.append('groups', selectedGroupsForIndex.value.join(','))
-      }
-      
-      res = await api.post('/ai/index-session', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      })
-    }
+    const res = await api.post('/v2/ai/index/groups', {
+      session_id: conversionSessionId.value,
+      groups: selectedGroupsForIndex.value
+    })
     
     const filesIndexed = res.data.files_indexed || res.data.indexed_count || 0
     if (filesIndexed > 0) {
@@ -679,7 +697,6 @@ async function indexConvertedFiles() {
       const newIndexedGroups = res.data.indexed_groups || res.data.groups || selectedGroupsForIndex.value
       indexedGroupsList.value = [...new Set([...indexedGroupsList.value, ...newIndexedGroups])]
       
-      emit('files-indexed', filesIndexed)
       emit('groups-indexed', newIndexedGroups)
       
       // Clear selection after successful indexing
@@ -727,6 +744,20 @@ async function indexConvertedFiles() {
 .message-time { font-size: 0.75rem; color: var(--text-tertiary); }
 .message-text { line-height: 1.6; word-break: break-word; }
 .message-text code { background: var(--surface-active); padding: 2px 6px; border-radius: var(--radius-sm); font-family: monospace; font-size: 0.9em; }
+
+.response-type-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: var(--radius-full); background: var(--brand-subtle); color: var(--brand-primary); font-weight: 600; text-transform: capitalize; margin-left: var(--space-sm); }
+
+.chat-table-wrapper { overflow-x: auto; margin: var(--space-md) 0; }
+.chat-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.chat-table th { background: var(--surface-elevated); font-weight: 600; padding: 8px 12px; border: 1px solid var(--border-light); text-align: left; }
+.chat-table td { padding: 6px 12px; border: 1px solid var(--border-light); }
+.chat-table tr:nth-child(even) { background: var(--surface-base); }
+
+.chart-container { margin: var(--space-md) 0; padding: var(--space-md); background: var(--surface-elevated); border-radius: var(--radius-md); border: 1px solid var(--border-light); max-height: 350px; }
+
+.code-block { background: var(--surface-active); padding: var(--space-md); border-radius: var(--radius-md); overflow-x: auto; margin: var(--space-sm) 0; font-size: 0.85rem; }
+
+.source-group { font-size: 0.75rem; padding: 1px 6px; background: var(--brand-subtle); color: var(--brand-primary); border-radius: var(--radius-full); font-weight: 500; }
 
 .message-sources { margin-top: var(--space-md); }
 .sources-details { background: var(--surface-elevated); border-radius: var(--radius-sm); }
