@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 from sqlalchemy.orm import Session
 
 from api.core.config import settings
@@ -44,9 +45,9 @@ def get_current_user(
         if token_type != "access":
             raise TokenInvalidError(detail="Invalid token type")
 
-    except jwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise TokenExpiredError()
-    except jwt.JWTClaimsError:
+    except JWTClaimsError:
         raise TokenInvalidError(detail="Invalid token claims")
     except JWTError:
         raise TokenInvalidError(detail="Could not validate credentials")

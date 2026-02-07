@@ -53,14 +53,13 @@
               <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
               <span v-if="msg.responseType && msg.role === 'assistant'" class="response-type-badge">{{ msg.responseType }}</span>
             </div>
-            <div class="message-text" v-html="formatMessage(msg.content)"></div>
-
-            <!-- Chart rendering -->
-            <div v-if="msg.chartData" class="chart-container">
-              <component
-                :is="getChartComponent(msg.chartData.type)"
-                :data="msg.chartData"
-                :options="chartOptions"
+            <div class="message-text">
+              <MessageRenderer
+                :content="msg.content"
+                :role="msg.role"
+                @render-chart="handleChartRender"
+                @render-table="handleTableRender"
+                @render-stats="handleStatsRender"
               />
             </div>
 
@@ -78,6 +77,21 @@
                 </div>
               </details>
             </div>
+
+            <!-- Static chart previews (matplotlib/seaborn) -->
+            <details v-if="msg.visualizations?.length" class="static-charts">
+              <summary>Static chart preview ({{ msg.visualizations.length }})</summary>
+              <div class="static-charts-grid">
+                <div v-for="(viz, vIdx) in msg.visualizations" :key="vIdx" class="static-chart-card">
+                  <img
+                    :src="`data:image/${viz.format};base64,${viz.data}`"
+                    :alt="viz.title || 'Chart'"
+                    class="static-chart-image"
+                  />
+                  <div v-if="viz.title" class="static-chart-title">{{ viz.title }}</div>
+                </div>
+              </div>
+            </details>
 
             <!-- Copy Button -->
             <button class="copy-btn" @click="copyMessage(msg.content)" title="Copy message">
@@ -125,46 +139,42 @@
       </div>
     </div>
 
-    <!-- RAG Retrieval Inspector (collapsible) -->
-    <details class="rag-inspector" v-if="lastRetrievalInfo">
-      <summary class="inspector-header">
+    <!-- RAG Retrieval Inspector (documents only) -->
+    <div class="rag-inspector" v-if="retrievals.length">
+      <div class="inspector-header">
         <span class="inspector-icon">🔍</span>
         <span>RAG Retrieval Inspector</span>
-        <span class="chunk-count">{{ lastRetrievalInfo.chunks?.length || 0 }} chunks retrieved</span>
-      </summary>
-      <div class="inspector-content">
-        <div class="inspector-metrics">
-          <div class="metric">
-            <span class="metric-label">Query Time</span>
-            <span class="metric-value">{{ lastRetrievalInfo.queryTime }}ms</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">Embedding Model</span>
-            <span class="metric-value">{{ lastRetrievalInfo.embeddingModel || 'default' }}</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">Top K</span>
-            <span class="metric-value">{{ lastRetrievalInfo.topK || 5 }}</span>
-          </div>
-        </div>
-        <div class="retrieved-chunks">
-          <h5>Retrieved Chunks</h5>
-          <div v-for="(chunk, idx) in lastRetrievalInfo.chunks" :key="idx" class="chunk-item">
-            <div class="chunk-header">
-              <span class="chunk-index">#{{ idx + 1 }}</span>
-              <span class="chunk-file">{{ chunk.filename }}</span>
-              <span class="chunk-score">{{ (chunk.score * 100).toFixed(1) }}%</span>
+        <span class="chunk-count">{{ retrievals.length }} document{{ retrievals.length !== 1 ? 's' : '' }} retrieved</span>
+        <button @click="inspectorExpanded = !inspectorExpanded" class="toggle-inspector-btn">
+          {{ inspectorExpanded ? '▼ Collapse' : '▶ Expand' }}
+        </button>
+      </div>
+      <div v-if="inspectorExpanded" class="inspector-content">
+        <div class="sources-grid">
+          <div v-for="(r, idx) in retrievals" :key="idx" class="source-card">
+            <div class="source-card-header">
+              <span class="source-index">#{{ idx + 1 }}</span>
+              <span class="source-filename">📄 {{ r.doc }}</span>
+              <span v-if="r.score !== null && r.score !== undefined" :class="['source-score', getScoreClass(r.score)]">
+                {{ (r.score * 100).toFixed(0) }}%
+              </span>
             </div>
-            <div class="chunk-text">{{ truncateText(chunk.content, 200) }}</div>
+            <div v-if="r.group" class="source-meta">
+              <span class="meta-label">Group:</span>
+              <span class="meta-value">{{ r.group }}</span>
+            </div>
+            <div v-if="r.snippet" class="source-snippet">
+              <p>{{ truncateText(r.snippet, 200) }}</p>
+            </div>
           </div>
         </div>
       </div>
-    </details>
+    </div>
 
     <!-- Group Embedding Status Section -->
     <div class="embedding-status-section">
       <h4 class="section-header">📊 Document Embedding Status</h4>
-      <p class="section-desc">Manage which groups are indexed for AI-powered search. Auto-indexed groups are highlighted.</p>
+      <p class="section-desc">Manage which groups are embedded for AI-powered search. Auto-embedded groups are highlighted.</p>
       
       <div v-if="conversionSessionId" class="embedding-content">
         <!-- Embedded Groups List -->
@@ -185,7 +195,7 @@
               class="group-status-item"
               :class="{ 
                 'indexed': group.isIndexed, 
-                'auto-indexed': group.isAutoIndexed,
+                'auto-embedded': group.isAutoEmbedded,
                 'selected': selectedGroupsForIndex.includes(group.name)
               }"
             >
@@ -198,7 +208,7 @@
                 />
                 <span class="group-info">
                   <span class="group-name">{{ group.name }}</span>
-                  <span v-if="group.isAutoIndexed" class="auto-badge">Auto</span>
+                  <span v-if="group.isAutoEmbedded" class="auto-badge">Auto</span>
                   <span v-if="group.isIndexed" class="indexed-badge">✅ {{ group.chunkCount ? group.chunkCount + ' chunks' : 'Indexed' }}</span>
                   <span v-else class="not-indexed-badge">○ Not indexed</span>
                 </span>
@@ -272,24 +282,13 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted, watch, computed, markRaw } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch, computed, h, render } from 'vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
-import { Bar, Line, Pie } from 'vue-chartjs'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  LineElement,
-  PointElement,
-  ArcElement,
-  Title,
-  Tooltip,
-  Legend
-} from 'chart.js'
-
-ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend)
+import MessageRenderer from './charts/MessageRenderer.vue'
+import ChartRenderer from './charts/ChartRenderer.vue'
+import DataTable from './charts/DataTable.vue'
+import StatsCardGrid from './charts/StatsCardGrid.vue'
 
 const props = defineProps({
   sessionId: {
@@ -311,8 +310,8 @@ const isTyping = ref(false)
 const chatContainer = ref(null)
 const messagesContainer = ref(null)
 const inputField = ref(null)
-const lastRetrievalInfo = ref(null)
-const isDragging = ref(false)
+const retrievals = ref([])
+const inspectorExpanded = ref(true)
 const indexing = ref(false)
 const showInstructionsModal = ref(false)
 const sessionInstructions = ref('')
@@ -323,33 +322,9 @@ const selectedGroupsForIndex = ref([])  // Groups selected for indexing
 const loadingGroups = ref(false)  // Loading state for group fetching
 const indexedGroupsList = ref([])  // List of already indexed groups
 const groupChunkCounts = ref({})  // Chunk counts per group: { groupName: count }
-const autoIndexedGroups = ref(['DISSERTATION', 'BOOK'])  // Auto-indexed groups from config
+const autoEmbeddedGroups = ref(['DISSERTATION', 'BOOK'])  // Auto-embedded groups from config
+let embedPollTimer = null
 
-// Chart.js options
-const chartOptions = {
-  responsive: true,
-  maintainAspectRatio: true,
-  plugins: {
-    legend: { position: 'top' },
-  }
-}
-
-function getChartComponent(type) {
-  if (type === 'bar') return markRaw(Bar)
-  if (type === 'line') return markRaw(Line)
-  if (type === 'pie') return markRaw(Pie)
-  return markRaw(Bar) // default
-}
-
-function detectChartData(content) {
-  const chartMatch = content.match(/```chart-data\s*\n([\s\S]*?)```/)
-  if (chartMatch) {
-    try {
-      return JSON.parse(chartMatch[1])
-    } catch { return null }
-  }
-  return null
-}
 
 // Computed: Groups with their status
 const groupsWithStatus = computed(() => {
@@ -357,7 +332,7 @@ const groupsWithStatus = computed(() => {
     name: groupName,
     isIndexed: indexedGroupsList.value.includes(groupName),
     chunkCount: groupChunkCounts.value[groupName] || 0,
-    isAutoIndexed: autoIndexedGroups.value.some(ag =>
+    isAutoEmbedded: autoEmbeddedGroups.value.some(ag =>
       groupName.toUpperCase().includes(ag.toUpperCase())
     )
   }))
@@ -370,7 +345,7 @@ function selectAllGroups() {
 
 function selectAutoGroups() {
   selectedGroupsForIndex.value = availableGroups.value.filter(g =>
-    autoIndexedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase()))
+    autoEmbeddedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase()))
   )
 }
 
@@ -403,63 +378,71 @@ onMounted(async () => {
   }
 })
 
+onUnmounted(() => {
+  if (embedPollTimer) {
+    clearInterval(embedPollTimer)
+    embedPollTimer = null
+  }
+})
+
 function formatTime(ts) {
   if (!ts) return ''
   const date = new Date(ts)
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatMessage(text) {
+function normalizeVisualizationBlocks(text) {
   if (!text) return ''
-
-  // Remove chart-data blocks from display (they're rendered as components)
-  let formatted = text.replace(/```chart-data\s*\n[\s\S]*?```/g, '')
-
-  // Process code blocks first (to avoid interfering with table detection)
-  formatted = formatted.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
-
-  // Process markdown tables
-  formatted = formatted.replace(
-    /\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g,
-    (match, headerLine, bodyLines) => {
-      const headers = headerLine.split('|').map(h => h.trim()).filter(Boolean)
-      const rows = bodyLines.trim().split('\n').filter(Boolean).map(line =>
-        line.split('|').map(c => c.trim()).filter(Boolean)
-      )
-      let html = '<div class="chat-table-wrapper"><table class="chat-table"><thead><tr>'
-      headers.forEach(h => { html += `<th>${h}</th>` })
-      html += '</tr></thead><tbody>'
-      rows.forEach(row => {
-        html += '<tr>'
-        row.forEach(cell => { html += `<td>${cell}</td>` })
-        html += '</tr>'
-      })
-      html += '</tbody></table></div>'
-      return html
-    }
-  )
-
-  // Inline formatting
-  formatted = formatted
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/`(.*?)`/g, '<code>$1</code>')
-    .replace(/\n/g, '<br>')
-
-  return formatted
+  return text.replace(/```chart-data\s*\n([\s\S]*?)```/g, (match, jsonBlock) => {
+    return `\n\n\`\`\`chart\n${jsonBlock}\n\`\`\`\n`
+  })
 }
+
+async function renderIntoContainer(id, component, props) {
+  await nextTick()
+  const el = document.getElementById(id)
+  if (!el) return
+  render(h(component, props), el)
+}
+
+function handleChartRender({ id, config }) {
+  if (!config || !config.type || !config.data) return
+  renderIntoContainer(id, ChartRenderer, { chartConfig: config })
+}
+
+function handleTableRender({ id, config }) {
+  if (!config || !Array.isArray(config.data)) return
+  renderIntoContainer(id, DataTable, {
+    data: config.data,
+    columns: config.columns || [],
+    title: config.title || null,
+    sortable: config.sortable !== false,
+    exportable: config.exportable !== false,
+    showSummary: config.showSummary === true,
+    summary: config.summary || null,
+    maxRows: config.maxRows || 10,
+    tableClass: config.tableClass || ''
+  })
+}
+
+function handleStatsRender({ id, config }) {
+  if (!config || !Array.isArray(config.stats)) return
+  renderIntoContainer(id, StatsCardGrid, { stats: config.stats })
+}
+
 
 function truncateText(text, maxLen) {
   if (!text) return ''
   return text.length > maxLen ? text.substring(0, maxLen) + '...' : text
 }
 
-function formatSize(bytes) {
-  if (!bytes) return '0 KB'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+function getScoreClass(score) {
+  if (score == null) return ''
+  if (score >= 0.8) return 'score-high'
+  if (score >= 0.5) return 'score-medium'
+  return 'score-low'
 }
+
 
 function autoResize() {
   const el = inputField.value
@@ -527,19 +510,16 @@ async function sendMessage() {
       use_rag: true
     })
     
-    const answer = res.data.answer || res.data.response
+    const answer = normalizeVisualizationBlocks(res.data.answer || res.data.response || '')
     const sources = res.data.sources || res.data.retrievals || []
     const responseType = res.data.response_type || 'factual'
-
-    // Detect chart data in the response
-    const chartData = detectChartData(answer)
 
     messages.value.push({
       role: 'assistant',
       content: answer,
       timestamp: new Date().toISOString(),
       responseType: responseType,
-      chartData: chartData,
+      visualizations: res.data.visualizations || [],
       sources: sources.map(s => ({
         filename: s.source || s.doc || s.file || 'unknown',
         group: s.group || null,
@@ -548,17 +528,13 @@ async function sendMessage() {
       }))
     })
     
-    // Store retrieval info for inspector
-    lastRetrievalInfo.value = {
-      chunks: sources.map(s => ({
-        filename: s.source || s.doc || s.file,
-        score: s.score || 0,
-        content: s.snippet || s.content || ''
-      })),
-      queryTime: res.data.query_time_ms || 0,
-      embeddingModel: res.data.embedding_model || 'text-embedding-3-small',
-      topK: res.data.top_k || topK
-    }
+    // Store document-only retrievals for inspector
+    retrievals.value = sources.map(s => ({
+      doc: s.source || s.doc || s.file || 'unknown',
+      group: s.group || null,
+      score: s.score,
+      snippet: s.snippet || s.content || ''
+    }))
     
     emit('message-sent', { text, response: res.data })
   } catch (e) {
@@ -579,7 +555,7 @@ async function clearSessionMemory() {
   try {
     await api.delete(`/ai/session/${aiSessionId.value}`)
     messages.value = []
-    lastRetrievalInfo.value = null
+    retrievals.value = []
     toast.success('Session memory cleared')
   } catch (e) {
     toast.error('Failed to clear memory: ' + (e.response?.data?.detail || e.message))
@@ -626,16 +602,16 @@ async function loadSessionGroups() {
   
   loadingGroups.value = true
   try {
-    // Load auto-indexed groups config
+    // Load auto-embedded groups config
     try {
       const configRes = await api.get('/v2/ai/config')
-      autoIndexedGroups.value = configRes.data.auto_indexed_groups || ['DISSERTATION', 'BOOK']
+      autoEmbeddedGroups.value = configRes.data.auto_embedded_groups || ['DISSERTATION', 'BOOK']
     } catch {
       // Keep defaults
     }
     
     // Load groups from v2 endpoint
-    const res = await api.get('/v2/ai/index/groups', {
+    const res = await api.get('/v2/ai/embedding/groups', {
       params: { session_id: conversionSessionId.value }
     })
     availableGroups.value = (res.data.groups || []).map(g =>
@@ -660,9 +636,9 @@ async function loadSessionGroups() {
     }
     groupChunkCounts.value = counts
     
-    // Pre-select auto-indexed groups if not already indexed
+    // Pre-select auto-embedded groups if not already indexed
     selectedGroupsForIndex.value = availableGroups.value.filter(g =>
-      autoIndexedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase())) &&
+      autoEmbeddedGroups.value.some(ag => g.toUpperCase().includes(ag.toUpperCase())) &&
       !indexedGroupsList.value.includes(g)
     )
   } catch (e) {
@@ -684,31 +660,62 @@ async function indexConvertedFiles() {
   indexing.value = true
   
   try {
-    const res = await api.post('/v2/ai/index/groups', {
+    const res = await api.post('/v2/ai/embedding/groups', {
       session_id: conversionSessionId.value,
-      groups: selectedGroupsForIndex.value
+      groups: selectedGroupsForIndex.value,
+      background: true
     })
     
-    const filesIndexed = res.data.files_indexed || res.data.indexed_count || 0
-    if (filesIndexed > 0) {
-      toast.success(`${filesIndexed} converted file(s) indexed successfully!`)
-      
-      // Update indexed groups list
-      const newIndexedGroups = res.data.indexed_groups || res.data.groups || selectedGroupsForIndex.value
-      indexedGroupsList.value = [...new Set([...indexedGroupsList.value, ...newIndexedGroups])]
-      
-      emit('groups-indexed', newIndexedGroups)
-      
-      // Clear selection after successful indexing
-      selectedGroupsForIndex.value = []
+    if (res.data.status === 'queued' && res.data.task_id) {
+      toast.info('Embedding started in the background. This may take a few minutes...')
+      startEmbeddingTaskPoll(res.data.task_id)
     } else {
-      toast.warning('No files found to index. Have you converted files yet?')
+      // Fallback to synchronous response handling
+      const filesIndexed = res.data.files_indexed || res.data.indexed_count || 0
+      if (filesIndexed > 0) {
+        toast.success(`${filesIndexed} converted file(s) indexed successfully!`)
+        const newIndexedGroups = res.data.indexed_groups || res.data.groups || selectedGroupsForIndex.value
+        indexedGroupsList.value = [...new Set([...indexedGroupsList.value, ...newIndexedGroups])]
+        emit('groups-indexed', newIndexedGroups)
+        selectedGroupsForIndex.value = []
+      } else {
+        toast.warning('No files found to index. Have you converted files yet?')
+      }
+      indexing.value = false
     }
   } catch (e) {
     toast.error('Indexing failed: ' + (e.response?.data?.detail || e.message))
-  } finally {
     indexing.value = false
   }
+}
+
+function startEmbeddingTaskPoll(taskId) {
+  if (embedPollTimer) clearInterval(embedPollTimer)
+  embedPollTimer = setInterval(async () => {
+    try {
+      const res = await api.get(`/v2/ai/embedding/tasks/${taskId}`)
+      const status = res.data.status
+
+      if (status === 'completed') {
+        clearInterval(embedPollTimer)
+        embedPollTimer = null
+        indexing.value = false
+
+        await loadSessionGroups()
+        const completedGroups = res.data.groups || selectedGroupsForIndex.value
+        emit('groups-indexed', completedGroups)
+        selectedGroupsForIndex.value = []
+        toast.success('Embedding complete! Your groups are ready for AI chat.')
+      } else if (status === 'failed' || status === 'cancelled') {
+        clearInterval(embedPollTimer)
+        embedPollTimer = null
+        indexing.value = false
+        toast.error(`Embedding ${status}: ${res.data.error || 'Unknown error'}`)
+      }
+    } catch (e) {
+      console.debug('Embedding task poll error:', e.message)
+    }
+  }, 2500)
 }
 </script>
 
@@ -766,6 +773,13 @@ async function indexConvertedFiles() {
 .source-item { display: flex; align-items: center; gap: var(--space-sm); font-size: 0.8rem; padding: var(--space-xs); border-radius: var(--radius-sm); background: var(--surface-base); }
 .source-score { color: var(--brand-primary); font-weight: 600; margin-left: auto; }
 
+.static-charts { margin-top: var(--space-md); background: var(--surface-elevated); border-radius: var(--radius-sm); }
+.static-charts summary { padding: var(--space-sm); cursor: pointer; font-size: 0.85rem; font-weight: 600; }
+.static-charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-sm); padding: var(--space-sm); }
+.static-chart-card { background: var(--surface-base); border-radius: var(--radius-sm); border: 1px solid var(--border-light); padding: var(--space-sm); display: flex; flex-direction: column; gap: var(--space-xs); }
+.static-chart-image { width: 100%; height: auto; border-radius: var(--radius-sm); }
+.static-chart-title { font-size: 0.8rem; color: var(--text-secondary); text-align: center; }
+
 .copy-btn { position: absolute; top: var(--space-xs); right: var(--space-xs); background: transparent; border: none; cursor: pointer; opacity: 0; transition: opacity 0.2s; font-size: 0.85rem; }
 .message-content:hover .copy-btn { opacity: 1; }
 
@@ -786,24 +800,27 @@ async function indexConvertedFiles() {
 @keyframes spin { to { transform: rotate(360deg); } }
 .input-hints { display: flex; justify-content: space-between; margin-top: var(--space-xs); font-size: 0.75rem; color: var(--text-tertiary); }
 
-.rag-inspector { margin: var(--space-lg); background: var(--surface-base); border-radius: var(--radius-md); border: 1px solid var(--border-light); }
-.inspector-header { padding: var(--space-md); display: flex; align-items: center; gap: var(--space-sm); cursor: pointer; font-weight: 600; }
+.rag-inspector { margin: var(--space-lg); background: var(--surface-base); border-radius: var(--radius-md); border: 1px solid var(--border-light); overflow: hidden; }
+.inspector-header { padding: var(--space-md); display: flex; align-items: center; gap: var(--space-sm); font-weight: 600; background: var(--surface-elevated); border-bottom: 1px solid var(--border-light); }
 .inspector-icon { font-size: 1.25rem; }
 .chunk-count { margin-left: auto; font-size: 0.85rem; color: var(--text-tertiary); }
-.inspector-content { padding: 0 var(--space-md) var(--space-md); }
-.inspector-metrics { display: flex; gap: var(--space-lg); margin-bottom: var(--space-md); }
-.inspector-metrics .metric { display: flex; flex-direction: column; }
-.inspector-metrics .metric-label { font-size: 0.75rem; color: var(--text-tertiary); }
-.inspector-metrics .metric-value { font-weight: 600; }
-.retrieved-chunks h5 { margin-bottom: var(--space-sm); }
-.chunk-item { background: var(--surface-elevated); border-radius: var(--radius-sm); padding: var(--space-sm); margin-bottom: var(--space-sm); }
-.chunk-header { display: flex; align-items: center; gap: var(--space-sm); margin-bottom: var(--space-xs); }
-.chunk-index { font-weight: 700; color: var(--brand-primary); }
-.chunk-file { font-size: 0.85rem; }
-.chunk-score { margin-left: auto; font-weight: 600; color: var(--brand-primary); }
-.chunk-text { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; }
+.toggle-inspector-btn { margin-left: var(--space-sm); background: transparent; border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 4px 8px; font-size: 0.75rem; cursor: pointer; color: var(--text-secondary); }
+.toggle-inspector-btn:hover { border-color: var(--brand-primary); color: var(--brand-primary); }
+.inspector-content { padding: var(--space-md); }
+.sources-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-md); }
+.source-card { background: var(--surface-elevated); border-radius: var(--radius-sm); padding: var(--space-sm); border: 1px solid var(--border-light); display: flex; flex-direction: column; gap: var(--space-xs); }
+.source-card-header { display: flex; align-items: center; gap: var(--space-sm); }
+.source-index { font-weight: 700; color: var(--brand-primary); }
+.source-filename { font-size: 0.85rem; font-weight: 600; flex: 1; }
+.source-score { font-size: 0.75rem; padding: 2px 6px; border-radius: var(--radius-sm); }
+.source-meta { font-size: 0.75rem; color: var(--text-tertiary); }
+.meta-label { font-weight: 600; margin-right: 4px; }
+.source-snippet { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+.score-high { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+.score-medium { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.score-low { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
 
-.auto-index-section { margin: var(--space-lg); padding: var(--space-lg); background: var(--surface-base); border-radius: var(--radius-md); border: 1px solid var(--border-light); }
+.auto-embed-section { margin: var(--space-lg); padding: var(--space-lg); background: var(--surface-base); border-radius: var(--radius-md); border: 1px solid var(--border-light); }
 .section-header { margin-bottom: var(--space-xs); }
 .section-desc { font-size: 0.85rem; color: var(--text-tertiary); margin-bottom: var(--space-md); }
 
@@ -851,7 +868,7 @@ async function indexConvertedFiles() {
 .group-status-item:hover { background: var(--surface-hover); }
 .group-status-item.selected { background: var(--brand-subtle); border-color: var(--brand-primary); }
 .group-status-item.indexed { border-left: 3px solid var(--success); }
-.group-status-item.auto-indexed { border-left: 3px solid var(--brand-primary); }
+.group-status-item.auto-embedded { border-left: 3px solid var(--brand-primary); }
 .group-checkbox-label { display: flex; align-items: center; gap: var(--space-sm); cursor: pointer; width: 100%; }
 .group-checkbox-label input { width: 18px; height: 18px; accent-color: var(--brand-primary); }
 .group-info { display: flex; align-items: center; gap: var(--space-sm); flex: 1; }

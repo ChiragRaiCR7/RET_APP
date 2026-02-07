@@ -33,7 +33,7 @@ from api.services.admin_service import (
     get_user_by_username,
 )
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 # ============================================================

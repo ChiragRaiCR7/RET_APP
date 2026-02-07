@@ -1,105 +1,67 @@
 """
-Azure OpenAI Integration for RET App
+Azure OpenAI Integration — Retry Utility
+
+Provides exponential-backoff retry for transient Azure OpenAI errors
+(429 rate-limit, 5xx server errors, timeouts).
+
+Used by UnifiedRAGService's EmbeddingService and ChatService.
 """
+
 import logging
-from typing import List, Optional
+import time
+from typing import Optional
 
 try:
-    from openai import AzureOpenAI
+    from openai import APIError, RateLimitError, APITimeoutError
     OPENAI_AVAILABLE = True
 except ImportError:
-    AzureOpenAI = None
+    APIError = Exception  # type: ignore[assignment, misc]
+    RateLimitError = Exception  # type: ignore[assignment, misc]
+    APITimeoutError = Exception  # type: ignore[assignment, misc]
     OPENAI_AVAILABLE = False
-
-from api.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Retry helper
+# ---------------------------------------------------------------------------
+_RETRYABLE = (RateLimitError, APITimeoutError)
+_MAX_RETRIES = 4
+_BASE_DELAY = 1.0  # seconds
 
-class AzureOpenAIClient:
-    """Wrapper for Azure OpenAI API with graceful degradation"""
-    
-    def __init__(self):
-        self.client = None
-        self.available = False
-        
-        if not OPENAI_AVAILABLE:
-            logger.warning("OpenAI package not installed. AI features will be limited.")
-            return
-        
-        # Check configuration
-        if not all([
-            settings.AZURE_OPENAI_API_KEY, 
-            settings.AZURE_OPENAI_ENDPOINT, 
-            settings.AZURE_OPENAI_API_VERSION
-        ]):
+
+def _retry_with_backoff(fn, *, max_retries: int = _MAX_RETRIES, base_delay: float = _BASE_DELAY):
+    """
+    Execute *fn()* with exponential backoff on transient OpenAI errors.
+
+    Retries on 429 (rate-limit) and timeout errors. Re-raises all others.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except _RETRYABLE as exc:
+            last_exc = exc
+            if attempt == max_retries:
+                break
+            delay = base_delay * (2 ** attempt)
             logger.warning(
-                "Azure OpenAI configuration incomplete. "
-                "Set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_API_VERSION."
+                "Azure OpenAI transient error (attempt %d/%d): %s — retrying in %.1fs",
+                attempt + 1, max_retries, exc, delay,
             )
-            return
-        
-        try:
-            self.client = AzureOpenAI(
-                api_key=settings.AZURE_OPENAI_API_KEY,
-                api_version=settings.AZURE_OPENAI_API_VERSION,
-                azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT)
-            )
-            self.available = True
-            logger.info("Azure OpenAI client initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Azure OpenAI client: {e}")
-
-    def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for a list of texts"""
-        if not self.client or not self.available:
-            raise RuntimeError("Azure OpenAI client not available")
-        
-        if not settings.AZURE_OPENAI_EMBED_MODEL:
-            raise ValueError("AZURE_OPENAI_EMBED_MODEL not configured")
-        
-        try:
-            # Process in batches to avoid token limits
-            batch_size = 16
-            all_embeddings = []
-            
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i+batch_size]
-                resp = self.client.embeddings.create(
-                    model=settings.AZURE_OPENAI_EMBED_MODEL,
-                    input=batch,
+            time.sleep(delay)
+        except APIError as exc:
+            # Retry on 5xx server errors
+            if getattr(exc, "status_code", 0) >= 500:  # type: ignore[attr-defined]
+                last_exc = exc
+                if attempt == max_retries:
+                    break
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "Azure OpenAI server error %s (attempt %d/%d) — retrying in %.1fs",
+                    exc.status_code, attempt + 1, max_retries, delay,
                 )
-                all_embeddings.extend([d.embedding for d in resp.data])
-            
-            return all_embeddings
-        except Exception as e:
-            logger.error(f"Embedding failed: {e}")
-            raise
-
-    def chat(self, system: str, user: str) -> Optional[str]:
-        """Get chat completion response"""
-        if not self.client or not self.available:
-            raise RuntimeError("Azure OpenAI client not available")
-        
-        deployment = settings.AZURE_OPENAI_CHAT_DEPLOYMENT or settings.AZURE_OPENAI_CHAT_MODEL
-        if not deployment:
-            raise ValueError("AZURE_OPENAI_CHAT_MODEL/CHAT_DEPLOYMENT not configured")
-        
-        try:
-            resp = self.client.chat.completions.create(
-                model=deployment,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=settings.RET_AI_TEMPERATURE or 0.7,
-                max_tokens=4000,
-            )
-            return resp.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Chat completion failed: {e}")
-            raise
-    
-    def is_available(self) -> bool:
-        """Check if Azure OpenAI is available"""
-        return self.available and self.client is not None
+                time.sleep(delay)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]

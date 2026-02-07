@@ -9,7 +9,7 @@ from api.schemas.common import MessageResponse
 from api.services.conversion_service import scan_zip_with_groups, get_session_info
 from api.services.storage_service import cleanup_session
 
-router = APIRouter(prefix="/api/files", tags=["files"])
+router = APIRouter(prefix="/files", tags=["files"])
 
 
 @router.post("/scan", response_model=ZipScanResponse)

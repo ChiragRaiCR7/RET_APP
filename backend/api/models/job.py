@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 import enum
-from sqlalchemy import Column, Integer, String, DateTime, JSON, ForeignKey, Enum, Index
+from typing import Optional
+from sqlalchemy import Integer, String, DateTime, JSON, ForeignKey, Enum, Index
+from sqlalchemy.orm import Mapped, mapped_column
 from api.core.database import Base
 
 
@@ -25,21 +27,21 @@ class JobType(str, enum.Enum):
 class Job(Base):
     __tablename__ = "jobs"
 
-    id = Column(Integer, primary_key=True)
-    job_type = Column(Enum(JobType), nullable=False)
-    status = Column(Enum(JobStatus), default=JobStatus.PENDING, nullable=False)
-    progress = Column(Integer, default=0)  # 0–100
-    result = Column(JSON)
-    error = Column(String(2048))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_type: Mapped[JobType] = mapped_column(Enum(JobType), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), default=JobStatus.PENDING, nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, default=0)  # 0–100
+    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
 
     # Owner tracking
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    session_id = Column(String(128), nullable=True)
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    session_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    started_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    updated_at = Column(
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime, 
         default=lambda: datetime.now(timezone.utc), 
         onupdate=lambda: datetime.now(timezone.utc)

@@ -21,7 +21,7 @@ from api.schemas.advanced import (
     XLSXConversionResponse,
 )
 
-router = APIRouter(prefix="/api/advanced", tags=["Advanced Features"])
+router = APIRouter(prefix="/advanced", tags=["Advanced Features"])
 logger = logging.getLogger(__name__)
 
 

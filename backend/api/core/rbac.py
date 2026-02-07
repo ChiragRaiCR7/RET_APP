@@ -45,7 +45,7 @@ def require_role(*required_roles: Union[str, UserRole]):
     return checker
 
 
-def require_admin() -> User:
+def require_admin():
     """
     Shortcut dependency for admin-only endpoints.
     

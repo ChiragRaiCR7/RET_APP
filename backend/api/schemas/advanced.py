@@ -80,17 +80,17 @@ class SourceDocument(BaseModel):
     chunk_index: Optional[int] = Field(None, description="Chunk index in document")
 
 
-class RAGIndexRequest(BaseModel):
-    """Request to index documents."""
+class RAGEmbeddingRequest(BaseModel):
+    """Request to embed documents."""
     session_id: str = Field(..., description="Session ID")
     groups: Optional[List[str]] = Field(None, description="Optional group filter")
 
 
-class RAGIndexResponse(BaseModel):
-    """Response from document indexing."""
+class RAGEmbeddingResponse(BaseModel):
+    """Response from document embedding."""
     status: str = Field(..., description="success, partial, or error")
-    indexed_files: int = Field(..., description="Number of files indexed")
-    indexed_docs: int = Field(..., description="Number of documents indexed")
+    indexed_files: int = Field(..., description="Number of files embedded")
+    indexed_docs: int = Field(..., description="Number of documents embedded")
     indexed_chunks: int = Field(..., description="Number of chunks created")
     errors: List[str] = Field(default_factory=list, description="Any errors")
     message: str = Field(..., description="Status message")

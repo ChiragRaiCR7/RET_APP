@@ -387,7 +387,7 @@ def list_ops_logs(db: Session, limit: int = 200):
 def get_ai_indexing_config_data() -> dict:
     """Get AI indexing configuration"""
     defaults = {
-        "auto_indexed_groups": [],
+        "auto_embedded_groups": [],
         "default_collection": "documents",
         "chunk_size": 10000,
         "retrieval_top_k": 16,
@@ -395,7 +395,7 @@ def get_ai_indexing_config_data() -> dict:
         "hybrid_beta": 0.30,
         "max_zip_size_mb": 10000,
         "max_nested_depth": 50,
-        "enable_auto_indexing": False,
+        "enable_auto_embedding": False,
     }
     
     if AI_CONFIG_FILE.exists():

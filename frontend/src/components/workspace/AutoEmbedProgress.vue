@@ -1,10 +1,10 @@
 <template>
-  <div class="auto-index-container">
+  <div class="auto-embed-container">
     <!-- Progress Card -->
     <div 
       class="progress-card"
       :class="{ 
-        'is-active': isIndexing,
+        'is-active': isEmbedding,
         'is-complete': progress.status === 'completed',
         'has-error': progress.status === 'failed'
       }"
@@ -12,34 +12,34 @@
       <!-- Header -->
       <div class="card-header">
         <div class="header-icon">
-          <span v-if="isIndexing" class="icon-spinning">⚙️</span>
+          <span v-if="isEmbedding" class="icon-spinning">⚙️</span>
           <span v-else-if="progress.status === 'completed'">✅</span>
           <span v-else-if="progress.status === 'failed'">❌</span>
           <span v-else>📑</span>
         </div>
         <div class="header-info">
-          <h3 class="card-title">Auto-Index Progress</h3>
+          <h3 class="card-title">Auto-Embed Progress</h3>
           <span class="status-badge" :class="progress.status">
             {{ statusLabel }}
           </span>
         </div>
         <button 
-          v-if="isIndexing" 
+          v-if="isEmbedding" 
           class="cancel-btn"
-          @click="cancelIndexing"
-          title="Cancel Indexing"
+          @click="cancelEmbedding"
+          title="Cancel Embedding"
         >
           ✕
         </button>
       </div>
 
       <!-- Progress Bar -->
-      <div class="progress-section" v-if="isIndexing || progress.processed > 0">
+      <div class="progress-section" v-if="isEmbedding || progress.processed > 0">
         <div class="progress-bar-container">
           <div 
             class="progress-bar-fill"
             :style="{ width: progressPercent + '%' }"
-            :class="{ 'animated': isIndexing }"
+            :class="{ 'animated': isEmbedding }"
           ></div>
         </div>
         <div class="progress-stats">
@@ -52,12 +52,12 @@
       </div>
 
       <!-- Current File -->
-      <div class="current-file" v-if="progress.currentFile && isIndexing">
+      <div class="current-file" v-if="progress.currentFile && isEmbedding">
         <span class="file-label">Processing:</span>
         <span class="file-name">{{ truncateFile(progress.currentFile, 40) }}</span>
       </div>
 
-      <!-- Groups Being Indexed -->
+      <!-- Groups Being Embedded -->
       <div class="groups-section" v-if="progress.groups?.length">
         <span class="groups-label">Groups:</span>
         <div class="groups-list">
@@ -68,7 +68,7 @@
             :class="{ 'processed': idx < progress.currentGroupIndex }"
           >
             {{ group }}
-            <span v-if="idx === progress.currentGroupIndex && isIndexing" class="chip-indicator"></span>
+            <span v-if="idx === progress.currentGroupIndex && isEmbedding" class="chip-indicator"></span>
           </span>
         </div>
       </div>
@@ -100,21 +100,21 @@
       </div>
 
       <!-- Actions -->
-      <div class="card-actions" v-if="!isIndexing && progress.status === 'completed'">
+      <div class="card-actions" v-if="!isEmbedding && progress.status === 'completed'">
         <button class="action-btn success" @click="$emit('open-chat')">
           💬 Open Chat
         </button>
-        <button class="action-btn secondary" @click="$emit('re-index')">
-          🔄 Re-Index
+        <button class="action-btn secondary" @click="$emit('re-embed')">
+          🔄 Re-Embed
         </button>
       </div>
     </div>
 
-    <!-- Eligible Groups Preview (before indexing) -->
-    <div class="eligible-groups" v-if="!isIndexing && eligibleGroups.length && progress.status !== 'completed'">
-      <h4>Eligible Groups for Auto-Index</h4>
+    <!-- Eligible Groups Preview (before embedding) -->
+    <div class="eligible-groups" v-if="!isEmbedding && eligibleGroups.length && progress.status !== 'completed'">
+      <h4>Eligible Groups for Auto-Embed</h4>
       <p class="eligible-hint">
-        These groups match your admin configuration and will be indexed automatically.
+        These groups match your admin configuration and will be embedded automatically.
       </p>
       <div class="eligible-list">
         <div 
@@ -126,15 +126,15 @@
           <span class="eligible-count">{{ group.fileCount }} files</span>
         </div>
       </div>
-      <button class="start-btn" @click="startAutoIndex">
-        🚀 Start Auto-Index
+      <button class="start-btn" @click="startAutoEmbed">
+        🚀 Start Auto-Embed
       </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import api from '@/utils/api'
 
 const props = defineProps({
@@ -148,11 +148,11 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['progress-update', 'complete', 'error', 'open-chat', 're-index'])
+const emit = defineEmits(['progress-update', 'complete', 'error', 'open-chat', 're-embed'])
 
 // State
 const progress = ref({
-  status: 'idle', // idle, indexing, completed, failed
+  status: 'idle', // idle, embedding, completed, failed
   processed: 0,
   total: 0,
   currentFile: null,
@@ -167,7 +167,7 @@ const pollInterval = ref(null)
 const pollAttempts = ref(0)  // Track polling attempts to prevent infinite loops
 const MAX_POLL_ATTEMPTS = 200  // ~5 minutes at 1.5s intervals
 
-const isIndexing = computed(() => progress.value.status === 'indexing')
+const isEmbedding = computed(() => progress.value.status === 'embedding')
 
 const progressPercent = computed(() => {
   if (!progress.value.total) return 0
@@ -177,7 +177,7 @@ const progressPercent = computed(() => {
 const statusLabel = computed(() => {
   switch (progress.value.status) {
     case 'idle': return 'Ready'
-    case 'indexing': return 'Indexing...'
+    case 'embedding': return 'Embedding...'
     case 'completed': return 'Complete'
     case 'failed': return 'Failed'
     default: return 'Unknown'
@@ -187,7 +187,7 @@ const statusLabel = computed(() => {
 // Load eligible groups
 async function loadEligibleGroups() {
   try {
-    const resp = await api.get(`/v2/ai/index/groups`, {
+    const resp = await api.get(`/v2/ai/embedding/groups`, {
       params: { session_id: props.sessionId, eligible_only: true }
     })
     eligibleGroups.value = resp.data.groups || []
@@ -196,11 +196,11 @@ async function loadEligibleGroups() {
   }
 }
 
-// Start auto-indexing
-async function startAutoIndex() {
+// Start auto-embedding
+async function startAutoEmbed() {
   try {
     progress.value = {
-      status: 'indexing',
+      status: 'embedding',
       processed: 0,
       total: 0,
       currentFile: null,
@@ -211,7 +211,7 @@ async function startAutoIndex() {
       duration: null
     }
     
-    const resp = await api.post('/v2/ai/auto-index/start', {
+    const resp = await api.post('/v2/ai/auto-embed/start', {
       session_id: props.sessionId
     })
     
@@ -240,17 +240,17 @@ function startPolling() {
       console.warn(`Polling exceeded max attempts (${MAX_POLL_ATTEMPTS}), stopping`)
       stopPolling()
       progress.value.status = 'failed'
-      progress.value.error = 'Indexing timeout: operation took too long. Please try again.'
+      progress.value.error = 'Embedding timeout: operation took too long. Please try again.'
       emit('error', progress.value.error)
       return
     }
     
     try {
-      const resp = await api.get(`/v2/ai/auto-index/progress/${props.sessionId}`)
+      const resp = await api.get(`/v2/ai/auto-embed/progress/${props.sessionId}`)
       const data = resp.data
       
       progress.value = {
-        status: data.status || 'indexing',
+        status: data.status || 'embedding',
         processed: data.processed || 0,
         total: data.total || 0,
         currentFile: data.current_file,
@@ -283,9 +283,9 @@ function stopPolling() {
   }
 }
 
-async function cancelIndexing() {
+async function cancelEmbedding() {
   try {
-    await api.post(`/v2/ai/auto-index/cancel/${props.sessionId}`)
+    await api.post(`/v2/ai/auto-embed/stop/${props.sessionId}`)
     stopPolling()
     progress.value.status = 'idle'
   } catch (e) {
@@ -315,13 +315,13 @@ function formatDuration(ms) {
   return `${minutes}m ${secs}s`
 }
 
-// Check for existing indexing progress on mount
+// Check for existing embedding progress on mount
 async function checkExistingProgress() {
   try {
-    const resp = await api.get(`/v2/ai/auto-index/progress/${props.sessionId}`)
-    if (resp.data?.status === 'indexing') {
+    const resp = await api.get(`/v2/ai/auto-embed/progress/${props.sessionId}`)
+    if (resp.data?.status === 'embedding') {
       progress.value = {
-        status: 'indexing',
+        status: 'embedding',
         processed: resp.data.processed || 0,
         total: resp.data.total || 0,
         currentFile: resp.data.current_file,
@@ -353,7 +353,7 @@ watch(() => props.sessionId, async (newId) => {
     await checkExistingProgress()
     
     if (props.autoStart && eligibleGroups.value.length && progress.value.status === 'idle') {
-      await startAutoIndex()
+      await startAutoEmbed()
     }
   }
 }, { immediate: true })
@@ -364,7 +364,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.auto-index-container {
+.auto-embed-container {
   display: flex;
   flex-direction: column;
   gap: var(--space-md, 16px);
@@ -436,7 +436,7 @@ onUnmounted(() => {
   color: var(--text-muted, #6b7280);
 }
 
-.status-badge.indexing {
+.status-badge.embedding {
   background: var(--primary-subtle, #4f46e520);
   color: var(--primary, #4f46e5);
 }

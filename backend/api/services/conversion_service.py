@@ -6,6 +6,7 @@ import json
 import hashlib
 import time
 import re
+import os
 from pathlib import Path
 from typing import List, Dict, Optional, Set, Any, Tuple, Literal
 from collections import defaultdict
@@ -24,6 +25,7 @@ from api.services.xml_processing_service import (
     infer_group,
 )
 from api.services.xlsx_service import get_xlsx_bytes_from_csv
+from api.services.parallel_converter import convert_parallel, estimate_conversion_time
 
 # ---------------------------------------------------------------------------
 # Helpers for edit/save operations
@@ -341,11 +343,15 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
     Convert all XML files present in session's extracted folder into CSVs or XLSX files.
     Result files are placed in session/output/.
     
+    Uses parallel processing with multiprocessing for high performance.
+    Automatically uses streaming for files larger than 100MB.
+    
     Args:
         session_id: Session ID
         groups: Optional list of groups to convert
         output_format: Output format ('csv' or 'xlsx')
     """
+    conversion_start = time.time()
     sess_dir = get_session_dir(session_id)
     extract_dir = sess_dir / "extracted"
     out_dir = sess_dir / "output"
@@ -355,22 +361,21 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
     if output_format not in ["csv", "xlsx"]:
         output_format = "csv"
     
-    logger.info(f"Converting session {session_id}, groups filter: {groups}, format: {output_format}")
-    logger.info(f"Extract dir: {extract_dir}, exists: {extract_dir.exists()}")
+    logger.info("========== Starting Parallel Conversion ==========")
+    logger.info(f"  Session: {session_id}")
+    logger.info(f"  Groups filter: {groups or 'ALL'}")
+    logger.info(f"  Output format: {output_format}")
+    logger.info(f"  Extract dir: {extract_dir}")
+    logger.info(f"  Output dir: {out_dir}")
 
     if not extract_dir.exists():
-        logger.error(f"Extract directory does not exist: {extract_dir}")
+        logger.error(f"  ✗ Extract directory does not exist: {extract_dir}")
         return {
             "session_id": session_id,
             "stats": {"total_files": 0, "success": 0, "failed": 0},
             "converted_files": [],
             "errors": [{"file": "N/A", "error": "No extracted files found. Please scan a file first."}],
         }
-
-    success = 0
-    failed = 0
-    converted_files = []
-    errors = []
 
     # Load file-to-group mappings from scan metadata
     metadata = get_session_metadata(session_id)
@@ -386,141 +391,80 @@ def convert_session(session_id: str, groups: Optional[List[str]] = None, output_
             f"Groups will be inferred from paths/filenames."
         )
     
+    # Get all XML files
     xml_file_list = list(extract_dir.rglob("*.xml"))
-    logger.info(f"Found {len(xml_file_list)} XML files in {extract_dir}")
-    logger.info(f"Loaded {len(path_to_group)} file-to-group mappings from scan metadata")
-
-    # Track used output names to prevent collisions
-    used_csv_names: Set[str] = set()
-
-    for xml_file in xml_file_list:
-        relative_path = str(xml_file.relative_to(extract_dir))
-        
-        # Use stored group from scan metadata if available, otherwise infer
-        abs_path_str = str(xml_file)
-        if abs_path_str in path_to_group:
-            group = path_to_group[abs_path_str]
-            logger.debug(f"Using stored group for {xml_file.name}: {group}")
-        else:
-            group = infer_group(relative_path, xml_file.name)
-            logger.warning(f"Group not found in metadata for {xml_file.name}, inferred: {group}")
-
-        logger.debug(f"Processing {xml_file.name}, group={group}")
-
-        if groups and group not in groups:
-            logger.info(f"Skipping {xml_file.name}: group '{group}' not in filter {groups}")
-            continue
-        
-        logger.info(f"Converting {xml_file.name} (group: {group})...")
-
-        try:
-            with open(xml_file, "rb") as f:
-                xml_bytes = f.read()
-
-            logger.debug(f"Read {len(xml_bytes)} bytes from {xml_file.name}")
-
-            rows, headers, tag_used = xml_to_rows(
-                xml_bytes,
-                record_tag=None,
-                auto_detect=True,
-                path_sep=".",
-                include_root=False
-            )
-
-            logger.info(f"Parsed {xml_file.name}: {len(rows)} rows, {len(headers)} headers, tag={tag_used}")
-
-            if not rows:
-                failed += 1
-                errors.append({"file": xml_file.name, "error": "No records found"})
-                logger.warning("No records found in %s", xml_file)
-                continue
-
-            # Build unique CSV name preserving subdirectory context to prevent collisions
-            relative_parts = xml_file.relative_to(extract_dir).parts
-            if len(relative_parts) > 1:
-                csv_name = "__".join(relative_parts[:-1]) + "__" + xml_file.stem + ".csv"
-            else:
-                csv_name = xml_file.stem + ".csv"
-
-            # Handle any remaining collisions with a counter suffix
-            base_csv_name = csv_name
-            counter = 1
-            while csv_name in used_csv_names:
-                csv_name = base_csv_name.replace(".csv", f"_{counter}.csv")
-                counter += 1
-            used_csv_names.add(csv_name)
-
-            csv_path = out_dir / csv_name
-            with open(csv_path, "w", newline="", encoding="utf-8") as outf:
-                writer = csv.DictWriter(outf, fieldnames=headers)
-                writer.writeheader()
-                for r in rows:
-                    row_data = {h: r.get(h, "") for h in headers}
-                    writer.writerow(row_data)
-            
-            # If XLSX format requested, convert CSV to XLSX
-            if output_format == "xlsx":
-                try:
-                    from api.services.xlsx_service import csv_to_xlsx_bytes
-                    xlsx_name = csv_name.replace(".csv", ".xlsx")
-                    xlsx_path = out_dir / xlsx_name
-                    
-                    xlsx_bytes = csv_to_xlsx_bytes(str(csv_path))
-                    with open(xlsx_path, "wb") as f:
-                        f.write(xlsx_bytes)
-                    
-                    converted_files.append({
-                        "filename": xlsx_name, 
-                        "group": group, 
-                        "rows": len(rows), 
-                        "columns": len(headers),
-                        "format": "xlsx"
-                    })
-                    logger.info("Converted %s -> %s (XLSX, %d rows, %d cols)", xml_file.name, xlsx_name, len(rows), len(headers))
-                except Exception as xlsx_err:
-                    logger.warning(f"XLSX conversion failed for {xml_file.name}, keeping CSV: {xlsx_err}")
-                    converted_files.append({
-                        "filename": csv_name, 
-                        "group": group, 
-                        "rows": len(rows), 
-                        "columns": len(headers),
-                        "format": "csv"
-                    })
-            else:
-                converted_files.append({
-                    "filename": csv_name, 
-                    "group": group, 
-                    "rows": len(rows), 
-                    "columns": len(headers),
-                    "format": "csv"
-                })
-                logger.info("Converted %s -> %s (%d rows, %d cols)", xml_file.name, csv_name, len(rows), len(headers))
-            
-            success += 1
-        except Exception as e:
-            failed += 1
-            errors.append({"file": xml_file.name, "error": str(e)})
-            logger.exception("Failed to convert %s", xml_file.name)
-
+    total_files = len(xml_file_list)
+    
+    logger.info(f"  Found {total_files} XML files in extraction directory")
+    logger.info(f"  Loaded {len(path_to_group)} file-to-group mappings from scan metadata")
+    
+    if total_files == 0:
+        logger.warning("  No XML files found to convert")
+        return {
+            "session_id": session_id,
+            "stats": {"total_files": 0, "success": 0, "failed": 0},
+            "converted_files": [],
+            "errors": [],
+        }
+    
+    # Calculate average file size for estimation
+    total_size = sum(f.stat().st_size for f in xml_file_list)
+    avg_size_mb = (total_size / total_files / (1024 * 1024)) if total_files > 0 else 1.0
+    
+    # Estimate conversion time
+    estimated_time = estimate_conversion_time(total_files, avg_size_mb)
+    logger.info(f"  Average file size: {avg_size_mb:.2f} MB")
+    logger.info(f"  Estimated conversion time: {estimated_time:.1f}s")
+    
+    # Calculate optimal worker count based on file count and size
+    # For large files, use fewer workers to avoid memory issues
+    if avg_size_mb > 50:
+        num_workers = min(16, os.cpu_count() or 4)
+    elif total_files > 10000:
+        num_workers = 32
+    else:
+        num_workers = min(24, os.cpu_count() * 2 or 8)
+    
+    logger.info(f"  Using {num_workers} parallel workers")
+    
+    # Use the new parallel converter
+    stats, converted_files, errors = convert_parallel(
+        session_id=session_id,
+        extract_dir=extract_dir,
+        output_dir=out_dir,
+        xml_files=xml_file_list,
+        path_to_group=path_to_group,
+        groups_filter=groups,
+        output_format=output_format,
+        num_workers=num_workers,
+        progress_callback=None  # Can add callback for real-time progress updates
+    )
+    
     result = {
         "session_id": session_id,
-        "stats": {"total_files": success + failed, "success": success, "failed": failed},
+        "stats": {
+            "total_files": stats.total_files,
+            "success": stats.success,
+            "failed": stats.failed,
+            "skipped": stats.skipped,
+            "total_rows": stats.total_rows,
+            "duration": stats.total_duration,
+            "avg_time_per_file": stats.average_time_per_file
+        },
         "converted_files": converted_files,
         "errors": errors,
     }
     
-    # Log detailed conversion summary
-    skipped = len(xml_file_list) - success - failed
-    logger.info(
-        f"Conversion complete for session {session_id}: "
-        f"{len(xml_file_list)} total XML files, "
-        f"{success} converted, {failed} failed, {skipped} skipped (filtered)"
-    )
-    if groups:
-        logger.info(f"Group filter applied: {groups}")
+    # Log per-group statistics
+    if stats.group_stats:
+        logger.info(f"  Conversion by group:")
+        for grp, count in sorted(stats.group_stats.items()):
+            logger.info(f"    {grp}: {count} files")
     
     # Save conversion index to session
     _save_conversion_index(session_id, converted_files)
+    
+    logger.info("========== Parallel Conversion Complete ==========")
     
     return result
 

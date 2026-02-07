@@ -24,7 +24,7 @@ from api.core.dependencies import get_current_user, get_current_user_id
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/comparison", tags=["comparison"])
+router = APIRouter(prefix="/comparison", tags=["comparison"])
 
 
 @router.post("/run")

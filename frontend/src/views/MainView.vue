@@ -275,7 +275,7 @@
               v-for="group in conversionData.groups" 
               :key="group.name"
               class="checkbox-label ai-group-item"
-              :class="{ 'indexed': indexedGroups.includes(group.name), 'auto-indexed': isAutoIndexedGroup(group.name) }"
+              :class="{ 'indexed': indexedGroups.includes(group.name), 'auto-embedded': isAutoEmbeddedGroup(group.name) }"
             >
               <input 
                 type="checkbox" 
@@ -285,7 +285,7 @@
               />
               <span class="group-name">{{ group.name }}</span>
               <span class="group-meta">{{ group.file_count || 0 }} files</span>
-              <span v-if="isAutoIndexedGroup(group.name)" class="auto-badge">Auto</span>
+              <span v-if="isAutoEmbeddedGroup(group.name)" class="auto-badge">Auto</span>
               <span v-if="indexedGroups.includes(group.name)" class="indexed-badge">✅ Indexed</span>
             </label>
           </div>
@@ -348,7 +348,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import ComparisonPanel from '@/components/workspace/ComparisonPanel.vue'
@@ -400,7 +400,8 @@ const conversionData = reactive({
 const aiSelectedGroups = ref([])
 const indexedGroups = ref([])
 const aiIndexing = ref(false)
-const autoIndexedGroups = ref([])
+const autoEmbeddedGroups = ref([])
+let aiEmbedPollTimer = null
 
 // Computed
 const filteredGroups = computed(() => {
@@ -508,7 +509,7 @@ function pollEmbeddingStatus() {
   if (embeddingPollTimer) clearInterval(embeddingPollTimer)
   embeddingPollTimer = setInterval(async () => {
     try {
-      const res = await api.get(`/v2/ai/index/status/${workflow.sessionId}`)
+      const res = await api.get(`/v2/ai/embedding/status/${workflow.sessionId}`)
       embeddingProgress.value = res.data
       const totalGroups = Object.keys(res.data.groups || {}).length
       const indexedGroups = Object.values(res.data.groups || {}).filter(g => g.indexed > 0).length
@@ -533,7 +534,7 @@ async function loadConvertedFiles() {
     conversionData.groups = res.data.groups || []
     conversionData.files = res.data.files || []
     conversionData.totalFiles = res.data.total_files || 0
-    await loadAutoIndexConfig()
+    await loadAutoEmbedConfig()
     
     if (conversionData.groups.length > 0) {
       activeGroup.value = conversionData.groups[0].name
@@ -719,7 +720,7 @@ function clearAIGroups() {
 function selectAutoAIGroups() {
   aiSelectedGroups.value = conversionData.groups
     .map(g => g.name)
-    .filter(name => isAutoIndexedGroup(name) && !indexedGroups.value.includes(name))
+    .filter(name => isAutoEmbeddedGroup(name) && !indexedGroups.value.includes(name))
 }
 
 async function startAIIndexing() {
@@ -731,22 +732,54 @@ async function startAIIndexing() {
   aiIndexing.value = true
 
   try {
-    const res = await api.post('/v2/ai/index/groups', {
+    const res = await api.post('/v2/ai/embedding/groups', {
       session_id: workflow.sessionId,
-      groups: aiSelectedGroups.value
+      groups: aiSelectedGroups.value,
+      background: true
     })
 
-    const indexed = res.data.indexed_groups || res.data.groups || aiSelectedGroups.value
-    indexedGroups.value = [...new Set([...indexedGroups.value, ...indexed])]
+    if (res.data.status === 'queued' && res.data.task_id) {
+      toast.info('AI indexing queued. Running in the background...')
+      startAIEmbedPoll(res.data.task_id)
+    } else {
+      const indexed = res.data.indexed_groups || res.data.groups || aiSelectedGroups.value
+      indexedGroups.value = [...new Set([...indexedGroups.value, ...indexed])]
 
-    const count = res.data.indexed_count || res.data.files_indexed || indexed.length
-    toast.success(`${count} group(s) indexed successfully for AI!`)
-
+      const count = res.data.indexed_count || res.data.files_indexed || indexed.length
+      toast.success(`${count} group(s) indexed successfully for AI!`)
+      aiIndexing.value = false
+    }
   } catch (e) {
     toast.error('AI indexing failed: ' + (e.response?.data?.detail || e.message))
-  } finally {
     aiIndexing.value = false
   }
+}
+
+function startAIEmbedPoll(taskId) {
+  if (aiEmbedPollTimer) clearInterval(aiEmbedPollTimer)
+  aiEmbedPollTimer = setInterval(async () => {
+    try {
+      const res = await api.get(`/v2/ai/embedding/tasks/${taskId}`)
+      const status = res.data.status
+
+      if (status === 'completed') {
+        clearInterval(aiEmbedPollTimer)
+        aiEmbedPollTimer = null
+        aiIndexing.value = false
+
+        const completedGroups = res.data.groups || aiSelectedGroups.value
+        indexedGroups.value = [...new Set([...indexedGroups.value, ...completedGroups])]
+        toast.success('AI indexing complete!')
+      } else if (status === 'failed' || status === 'cancelled') {
+        clearInterval(aiEmbedPollTimer)
+        aiEmbedPollTimer = null
+        aiIndexing.value = false
+        toast.error(`AI indexing ${status}: ${res.data.error || 'Unknown error'}`)
+      }
+    } catch (e) {
+      console.debug('AI indexing poll error:', e.message)
+    }
+  }, 2500)
 }
 
 function onGroupsIndexed(groups) {
@@ -754,17 +787,17 @@ function onGroupsIndexed(groups) {
   toast.success(`${groups.length} groups indexed for AI`)
 }
 
-async function loadAutoIndexConfig() {
+async function loadAutoEmbedConfig() {
   try {
     const res = await api.get('/v2/ai/config')
-    autoIndexedGroups.value = res.data.auto_indexed_groups || []
+    autoEmbeddedGroups.value = res.data.auto_embedded_groups || []
   } catch {
-    autoIndexedGroups.value = []
+    autoEmbeddedGroups.value = []
   }
 }
 
-function isAutoIndexedGroup(name) {
-  return autoIndexedGroups.value.some(g => name?.toUpperCase().includes(g.toUpperCase()))
+function isAutoEmbeddedGroup(name) {
+  return autoEmbeddedGroups.value.some(g => name?.toUpperCase().includes(g.toUpperCase()))
 }
 
 function onFileUpdated(file) {
@@ -778,6 +811,13 @@ function onFileAdded(file) {
 function onFileRemoved(filename) {
   loadConvertedFiles()
 }
+
+onUnmounted(() => {
+  if (aiEmbedPollTimer) {
+    clearInterval(aiEmbedPollTimer)
+    aiEmbedPollTimer = null
+  }
+})
 
 </script>
 
@@ -1304,7 +1344,7 @@ function onFileRemoved(filename) {
   border-left: 3px solid var(--success);
 }
 
-.ai-group-item.auto-indexed {
+.ai-group-item.auto-embedded {
   border-left: 3px solid var(--brand-primary);
 }
 
