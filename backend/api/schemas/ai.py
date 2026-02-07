@@ -3,22 +3,22 @@ from typing import List, Dict, Optional, Any
 from enum import Enum
 
 
-class IndexMode(str, Enum):
-    """Indexing mode"""
-    FAST = "fast"  # Quick indexing with smaller chunks
-    FULL = "full"  # Full indexing with larger context
+class EmbeddingMode(str, Enum):
+    """Embedding mode"""
+    FAST = "fast"  # Quick embedding with smaller chunks
+    FULL = "full"  # Full embedding with larger context
     AUTO = "auto"  # Auto-detect based on size
 
 
-class IndexRequest(BaseModel):
-    """Request to index CSV files from a session"""
+class EmbeddingRequest(BaseModel):
+    """Request to embed groups from a session"""
     session_id: str
     groups: Optional[List[str]] = None
-    mode: IndexMode = IndexMode.AUTO
+    mode: EmbeddingMode = EmbeddingMode.AUTO
 
 
-class IndexResponse(BaseModel):
-    """Response from indexing operation"""
+class EmbeddingResponse(BaseModel):
+    """Response from embedding operation"""
     status: str
     message: str
     stats: Dict[str, Any]
@@ -42,6 +42,15 @@ class SourceDocument(BaseModel):
     snippet: str
     score: Optional[float] = None
     chunk_index: Optional[int] = None
+
+
+class VisualizationArtifact(BaseModel):
+    """Static visualization artifact (e.g., chart image)"""
+    type: str = "chart"
+    format: str = "png"
+    data: str
+    title: Optional[str] = None
+    chart_type: Optional[str] = None
 
 
 class RetrievalInfo(BaseModel):
@@ -101,22 +110,22 @@ class ZipScanResponse(BaseModel):
 
 
 # ============================================================
-# Auto-Index Schemas
+# Auto-Embedding Schemas
 # ============================================================
 
-class AutoIndexRequest(BaseModel):
-    """Request for auto-indexing based on admin config"""
+class AutoEmbedRequest(BaseModel):
+    """Request for auto-embedding based on admin config"""
     session_id: str
-    groups: List[str]  # Groups to index
-    mode: IndexMode = IndexMode.AUTO
+    groups: List[str]  # Groups to embed
+    mode: EmbeddingMode = EmbeddingMode.AUTO
 
 
-class AutoIndexStatus(BaseModel):
-    """Status of auto-indexing"""
+class AutoEmbedStatus(BaseModel):
+    """Status of auto-embedding"""
     session_id: str
     status: str  # pending, in_progress, completed, failed
     progress: float = 0.0
-    groups_indexed: List[str] = []
+    groups_embedded: List[str] = []
     groups_pending: List[str] = []
     error: Optional[str] = None
 
@@ -181,12 +190,12 @@ class RAGStatus(BaseModel):
     document_count: int = 0
     groups_indexed: List[str] = []
     last_indexed: Optional[str] = None
-    index_mode: Optional[IndexMode] = None
+    embedding_mode: Optional[EmbeddingMode] = None
 
 
 class AdminAIConfig(BaseModel):
     """AI configuration from admin panel"""
-    auto_indexed_groups: List[str] = []
+    auto_embedded_groups: List[str] = []
     default_collection: str = "documents"
     chunk_size: int = Field(default=10000, ge=1000, le=50000)
     retrieval_top_k: int = Field(default=16, ge=1, le=100)
@@ -300,6 +309,7 @@ class RAGChatResponse(BaseModel):
     query_plan: Optional[Dict[str, Any]] = None
     chunks_retrieved: int = 0
     response_type: Optional[str] = None  # factual, analytical, comparison, trend, summary
+    visualizations: List[VisualizationArtifact] = []
 
     # Advanced RAG metadata
     query_transformation: Optional[QueryTransformationInfo] = None
@@ -307,32 +317,34 @@ class RAGChatResponse(BaseModel):
 
 
 # ============================================================
-# Auto-Indexing Schemas
+# Auto-Embedding Schemas (Advanced)
 # ============================================================
 
-class AutoIndexProgress(BaseModel):
-    """Progress of auto-indexing operation"""
-    status: str  # idle, preparing, indexing, completed, failed, stopped
+class AutoEmbedProgress(BaseModel):
+    """Progress of auto-embedding operation"""
+    status: str  # idle, preparing, embedding, completed, failed, stopped
     progress: float = Field(default=0.0, ge=0.0, le=1.0)
     files_done: int = 0
     files_total: int = 0
     docs_done: int = 0
+    chunks_done: int = 0
     current_file: str = ""
     groups_done: List[str] = []
     error: Optional[str] = None
+    elapsed_seconds: float = 0.0
 
 
-class StartAutoIndexRequest(BaseModel):
-    """Request to start auto-indexing"""
+class StartAutoEmbedRequest(BaseModel):
+    """Request to start auto-embedding"""
     session_id: str
     groups: List[str]
     xml_inventory: List[Dict[str, Any]]
 
 
-class AutoIndexStatusResponse(BaseModel):
-    """Status response for auto-indexing"""
+class AutoEmbedStatusResponse(BaseModel):
+    """Status response for auto-embedding"""
     session_id: str
-    progress: AutoIndexProgress
+    progress: AutoEmbedProgress
     eligible_groups: List[str] = []
 
 
@@ -345,6 +357,7 @@ class GroupSelectionRequest(BaseModel):
     session_id: str
     selected_groups: Optional[List[str]] = None
     groups: Optional[List[str]] = None  # Alias for selected_groups (frontend compatibility)
+    background: bool = False  # If true, run embedding in background worker
     
     @property
     def group_list(self) -> List[str]:
@@ -356,8 +369,8 @@ class DetectedGroupsResponse(BaseModel):
     """Response with detected groups from ZIP scan"""
     session_id: str
     groups: List[GroupInfo]
-    auto_index_eligible: List[str] = []
-    auto_index_status: str = "pending"  # pending, in_progress, completed
+    auto_embed_eligible: List[str] = []
+    auto_embed_status: str = "pending"  # pending, in_progress, completed
 
 
 # ============================================================
@@ -376,4 +389,43 @@ class TranscriptRequest(BaseModel):
     session_id: str
     format: TranscriptFormat = TranscriptFormat.JSON
     include_sources: bool = True
+
+
+# ============================================================
+# Feedback Schema
+# ============================================================
+
+class FeedbackRequest(BaseModel):
+    """User feedback on a RAG answer (thumbs up/down)"""
+    session_id: str
+    message_index: int = Field(ge=0, description="Index within conversation history")
+    rating: int = Field(ge=-1, le=1, description="-1=bad, 0=neutral, 1=good")
+    comment: Optional[str] = Field(default=None, max_length=1000)
+
+
+class FeedbackResponse(BaseModel):
+    """Acknowledgement of feedback submission"""
+    status: str = "ok"
+    message: str = "Feedback recorded"
+
+
+# ============================================================
+# RAG Config Response (read-only exposure of settings)
+# ============================================================
+
+class RAGConfigResponse(BaseModel):
+    """Public-facing RAG configuration (read-only)"""
+    chunk_size: int
+    chunk_overlap: int
+    max_context_chars: int
+    max_chunks: int
+    vector_weight: float
+    lexical_weight: float
+    summary_weight: float
+    top_k_vector: int
+    top_k_summary: int
+    enable_query_transform: bool
+    enable_summaries: bool
+    enable_citation_repair: bool
+    rrf_k: int
 

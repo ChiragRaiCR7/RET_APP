@@ -113,61 +113,40 @@
       </div>
     </div>
 
-    <!-- Query Plan & Retrievals Inspector -->
-    <div v-if="lastQueryPlan || retrievals.length" class="inspector-panel">
-      <div class="inspector-tabs">
-        <button 
-          :class="['tab-btn', { active: activeTab === 'plan' }]"
-          @click="activeTab = 'plan'"
-          v-if="lastQueryPlan"
-        >
-          🔍 Query Plan
-        </button>
-        <button 
-          :class="['tab-btn', { active: activeTab === 'sources' }]"
-          @click="activeTab = 'sources'"
-          v-if="retrievals.length"
-        >
-          📚 Sources ({{ retrievals.length }})
+    <!-- RAG Retrieval Inspector - Documents Only -->
+    <div v-if="retrievals.length" class="inspector-panel">
+      <div class="inspector-header">
+        <div class="inspector-title">
+          <span class="inspector-icon">🔍</span>
+          <h4>RAG Retrieval Inspector</h4>
+          <span class="source-count">{{ retrievals.length }} document{{ retrievals.length !== 1 ? 's' : '' }} retrieved</span>
+        </div>
+        <button @click="inspectorExpanded = !inspectorExpanded" class="toggle-inspector-btn">
+          {{ inspectorExpanded ? '▼ Collapse' : '▶ Expand' }}
         </button>
       </div>
       
-      <div class="inspector-content">
-        <!-- Query Plan Tab -->
-        <div v-if="activeTab === 'plan' && lastQueryPlan" class="plan-content">
-          <div v-for="(step, idx) in lastQueryPlan.steps || []" :key="idx" class="plan-step">
-            <span class="step-number">{{ idx + 1 }}</span>
-            <div class="step-content">
-              <strong>{{ step.intent }}</strong>
-              <p>{{ step.description }}</p>
+      <div v-if="inspectorExpanded" class="inspector-content">
+        <div class="sources-grid">
+          <div v-for="(r, idx) in retrievals" :key="idx" class="source-card">
+            <div class="source-card-header">
+              <span class="source-index">#{{ idx + 1 }}</span>
+              <span class="source-filename">📄 {{ r.doc }}</span>
+              <span v-if="r.score" :class="['source-score', getScoreClass(r.score)]">
+                {{ (r.score * 100).toFixed(0) }}%
+              </span>
+            </div>
+            <div v-if="r.group" class="source-meta">
+              <span class="meta-label">Group:</span>
+              <span class="meta-value">{{ r.group }}</span>
+            </div>
+            <div v-if="r.snippet" class="source-snippet">
+              <p>{{ truncateText(r.snippet, 200) }}</p>
+            </div>
+            <div v-if="r.method" class="source-method">
+              <span class="method-badge" :class="`method-${r.method}`">{{ r.method }}</span>
             </div>
           </div>
-        </div>
-        
-        <!-- Sources Tab -->
-        <div v-if="activeTab === 'sources' && retrievals.length" class="sources-content">
-          <table class="sources-table">
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Score</th>
-                <th>Method</th>
-                <th>Snippet</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(r, idx) in retrievals" :key="idx">
-                <td class="source-name">{{ r.doc }}</td>
-                <td>
-                  <span :class="['score-badge', getScoreClass(r.score)]">
-                    {{ r.score ? (r.score * 100).toFixed(0) + '%' : 'N/A' }}
-                  </span>
-                </td>
-                <td class="method-badge">{{ r.method || 'hybrid' }}</td>
-                <td class="snippet-cell">{{ truncateText(r.snippet, 100) }}</td>
-              </tr>
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -212,8 +191,11 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, watch, onMounted, nextTick, h, render } from 'vue'
 import api from '@/utils/api'
+import ChartRenderer from './charts/ChartRenderer.vue'
+import DataTable from './charts/DataTable.vue'
+import StatsCardGrid from './charts/StatsCardGrid.vue'
 
 const props = defineProps({
   indexedGroups: {
@@ -239,9 +221,8 @@ const messages = ref([
 const input = ref('')
 const sending = ref(false)
 const retrievals = ref([])
-const lastQueryPlan = ref(null)
 const showStats = ref(false)
-const activeTab = ref('sources')
+const inspectorExpanded = ref(true)
 const inputEl = ref(null)
 const messagesContainer = ref(null)
 const indexStats = ref({
@@ -286,7 +267,7 @@ async function loadChatHistory() {
 
 async function loadIndexStats() {
   try {
-    const resp = await api.get(`/v2/ai/index/stats/${props.sessionId}`)
+    const resp = await api.get(`/v2/ai/embedding/stats/${props.sessionId}`)
     indexStats.value = {
       totalDocuments: resp.data.total_documents || 0,
       totalChunks: resp.data.total_chunks || 0,
@@ -439,11 +420,34 @@ async function downloadTranscript() {
 
 function formatMessage(content) {
   if (!content) return ''
-  return escapeHtml(content)
+  
+  let html = escapeHtml(content)
+  
+  // Process markdown-style formatting
+  html = html
+    .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\[source:(\d+)\]/g, '<span class="citation">[source:$1]</span>')
-    .replace(/\n/g, '<br>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+  
+  // Enhanced citation rendering
+  html = html.replace(/\[source:(\d+)\]/gi, (match, num) => {
+    return `<span class="citation" data-source="${num}" title="Source ${num}">
+      <span class="citation-icon">📄</span>
+      <span class="citation-num">${num}</span>
+    </span>`
+  })
+  
+  // Process CSV references
+  html = html.replace(/\[csv:(\d+)\]/g, '<span class="csv-ref">📊 CSV:$1</span>')
+  
+  // Convert line breaks
+  html = html.replace(/\n/g, '<br>')
+  
+  return html
 }
 
 function formatTime(ts) {

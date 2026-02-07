@@ -99,30 +99,72 @@ class BaseConfig(BaseSettings):
     AI_STRATEGY: str = "advanced"  # lite, langchain, advanced
     
     # ======================
+    # Conversion Timeouts
+    # ======================
+    CONVERSION_TIMEOUT_SECONDS: int = 180  # 3 minutes for conversion
+    ZIP_SCAN_TIMEOUT_SECONDS: int = 120    # 2 minutes for ZIP scanning
+    XML_PARSE_TIMEOUT_SECONDS: int = 60    # 1 minute for XML parsing
+    
+    # ======================
+    # Parallel Conversion Settings
+    # ======================
+    CONVERSION_DEFAULT_WORKERS: int = 32  # Default number of parallel workers
+    CONVERSION_MAX_WORKERS: int = 64  # Maximum allowed workers
+    CONVERSION_MIN_WORKERS: int = 4  # Minimum workers even for small jobs
+    CONVERSION_STREAMING_THRESHOLD_MB: int = 100  # Use streaming for files larger than this
+    CONVERSION_BATCH_SIZE: int = 1000  # Process files in batches of this size
+    CONVERSION_PROGRESS_LOG_INTERVAL: int = 100  # Log progress every N files
+    CONVERSION_MAX_ROWS_PER_XLSX: int = 50000  # Row limit for XLSX conversion of large files
+    CONVERSION_AUTO_WORKER_SCALING: bool = True  # Automatically scale workers based on file size/count
+    
+    # ======================
     # Advanced RAG Configuration
     # ======================
-    RAG_USE_ADVANCED: bool = True  # Use Advanced RAG Engine with LangGraph
+    RAG_USE_ADVANCED: bool = True  # Use Advanced RAG Engine
     RAG_TOP_K_VECTOR: int = 20  # Top K for vector retrieval
     RAG_TOP_K_LEXICAL: int = 15  # Top K for lexical retrieval
     RAG_TOP_K_SUMMARY: int = 5  # Top K for summary retrieval
     RAG_MAX_CHUNKS: int = 15  # Max chunks for context
     RAG_MAX_CONTEXT_CHARS: int = 40000  # Max characters in context
-    RAG_VECTOR_WEIGHT: float = 0.6  # Weight for vector similarity in fusion
-    RAG_LEXICAL_WEIGHT: float = 0.3  # Weight for lexical similarity in fusion
-    RAG_SUMMARY_WEIGHT: float = 0.1  # Weight for summary similarity in fusion
-    RAG_CHUNK_SIZE: int = 1500  # Chunk size for text splitting
+    RAG_VECTOR_WEIGHT: float = 0.70  # Weight for vector similarity in hybrid scoring
+    RAG_LEXICAL_WEIGHT: float = 0.30  # Weight for lexical similarity in hybrid scoring
+    RAG_SUMMARY_WEIGHT: float = 0.10  # Weight for summary docs in RRF fusion
+    RAG_CHUNK_SIZE: int = 1500  # Target chunk size for text splitting
     RAG_CHUNK_OVERLAP: int = 200  # Overlap between chunks
+    RAG_CHUNK_MIN: int = 900  # Minimum chunk size
+    RAG_CHUNK_MAX: int = 3500  # Maximum chunk size
+    RAG_CHUNK_MAX_COLS: int = 120  # Max columns in CSV chunk
+    RAG_CELL_MAX_CHARS: int = 250  # Max chars per CSV cell in chunk text
+    RAG_RRF_K: int = 60  # RRF constant for fusion retrieval
+    RAG_INDEX_SKIP_UNCHANGED: bool = True  # Skip re-index if file signature unchanged
+    RAG_SUMMARY_SAMPLE_ROWS: int = 5  # Sample rows to include in file summaries
     RAG_ENABLE_QUERY_TRANSFORM: bool = True  # Enable LLM-based query transformation
     RAG_ENABLE_SUMMARIES: bool = True  # Generate and index document summaries
+
+    # ── Hybrid Retrieval Fine-tuning ──
+    RAG_LEX_TOP_N_TOKENS: int = 80  # Max query tokens for lexical matching
+    RAG_FEEDBACK_BOOST: float = 0.15  # Boost factor for user-upvoted docs
+    RAG_RERANK_TOP_M: int = 30  # Max docs after reranking
+
+    # ── XML Record Indexing ──
+    RAG_XML_MAX_RECORDS_PER_FILE: int = 5000  # Max XML records to index per file
+    RAG_XML_MAX_CHARS_PER_RECORD: int = 6000  # Max chars per XML record chunk
+    RAG_XML_FIELD_MAX_LEN: int = 300  # Max chars per field in flattened XML
+
+    # ── Citation Enforcement ──
+    RAG_ENABLE_CITATION_REPAIR: bool = True  # Auto-repair invalid citations via LLM
+    RAG_CITATION_REPAIR_TEMPERATURE: float = 0.0  # Low temperature for precise repair
 
     # ======================
     # Azure OpenAI
     # ======================
     AZURE_OPENAI_API_KEY: Optional[str] = None
     AZURE_OPENAI_ENDPOINT: Optional[AnyHttpUrl] = None
-    AZURE_OPENAI_API_VERSION: Optional[str] = "2024-02-01"
+    AZURE_OPENAI_API_VERSION: Optional[str] = "2024-10-21"
     AZURE_OPENAI_CHAT_MODEL: Optional[str] = "gpt-4o"
     AZURE_OPENAI_EMBED_MODEL: Optional[str] = "text-embedding-3-small"
+    AZURE_OPENAI_TIMEOUT_SECONDS: int = 60  # API call timeout
+    AZURE_OPENAI_EMBED_TIMEOUT_SECONDS: int = 30  # Embedding call timeout
     
     # ======================
     # Rate Limiting
@@ -158,6 +200,10 @@ class BaseConfig(BaseSettings):
     AI_MAX_HISTORY: int = 50  # Max conversation history entries
     AI_MAX_TOKENS: int = 4000
     EMBED_BATCH_SIZE: int = 16
+    EMBED_BATCH_MAX_RETRIES: int = 3
+    EMBED_BACKOFF_BASE_SECONDS: float = 0.6
+    EMBED_GROUP_MAX_RETRIES: int = 2
+    EMBED_GROUP_BACKOFF_SECONDS: float = 1.5
     CHUNK_TARGET_CHARS: int = 10000
 
     @property

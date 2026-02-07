@@ -1,20 +1,14 @@
 """
 AI Services Package — UnifiedRAGService Architecture
 
-Active modules (imported directly where needed):
+Active modules:
+- api.services.advanced_ai_service — Core RAG engine (UnifiedRAGService)
 - api.services.ai.session_manager  — Per-session AI resource management
-- api.services.ai.auto_indexer     — Background auto-indexing after ZIP scans
-- api.services.ai.backends         — Azure OpenAI chat/embedding clients
-- api.services.ai.embedding_backend — Embedding service
-- api.services.ai.vector_store     — ChromaDB vector store
-
-Deprecated modules moved to api/_deprecated/:
-- ai_lite.py, ai_factory.py, ai_langchain_strategy.py
-- ai_rag_engine.py, ai_advanced_rag_engine.py
+- api.services.ai.auto_embedder    — Background auto-embedding after conversions
 """
 
-from api.services.ai.base import IndexingStats, ChatResponse
-from api.services.ai.auto_indexer import AutoIndexer, IndexingProgress
+from api.services.advanced_ai_service import EmbeddingStats
+from api.services.ai.auto_embedder import AutoEmbedder, EmbeddingProgress
 from api.services.ai.session_manager import (
     SessionAIManager,
     get_session_ai_manager,
@@ -22,10 +16,9 @@ from api.services.ai.session_manager import (
 )
 
 __all__ = [
-    "IndexingStats",
-    "ChatResponse",
-    "AutoIndexer",
-    "IndexingProgress",
+    "EmbeddingStats",
+    "AutoEmbedder",
+    "EmbeddingProgress",
     "SessionAIManager",
     "get_session_ai_manager",
     "cleanup_session_ai",

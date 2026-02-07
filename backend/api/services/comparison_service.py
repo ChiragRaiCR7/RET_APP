@@ -30,6 +30,10 @@ from collections import defaultdict, Counter
 from enum import Enum
 
 from api.services.storage_service import get_session_dir, create_session_dir
+from api.services.xml_processing_service import (
+    infer_group as _infer_group_canonical,
+    xml_to_rows as _xml_to_rows_canonical,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,16 +258,6 @@ def stream_hash_and_vector(path: str, dim: int = COS_DIM) -> Tuple[str, Dict[int
     except Exception as e:
         logger.warning(f"Error computing hash/vector for {path}: {e}")
         return "", {}, 0.0
-
-
-def write_rows_to_csv(rows: List[Dict], headers: List[str], csv_path: Path):
-    """Write rows to CSV file"""
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({h: row.get(h, "") for h in headers})
 
 
 # ============================================================
@@ -509,46 +503,11 @@ def compute_keyless_csv_delta(
 
 
 # ============================================================
-# Helper function for group inference
+# Group Inference — delegated to xml_processing_service
 # ============================================================
 def infer_group(logical_path: str, filename: str, custom_prefixes: Optional[Set] = None) -> str:
-    """Infer group from logical path and filename"""
-    custom_prefixes = custom_prefixes or set()
-    
-    # Try to get group from path
-    parts = logical_path.replace("\\", "/").strip("/").split("/")
-    if len(parts) >= 2:
-        candidate = parts[-2]
-        if candidate.lower() not in {"", ".", "..", "output", "csv", "xml", "temp"}:
-            return candidate
-    
-    # Try to get group from filename patterns
-    name_lower = filename.lower()
-    
-    # Common patterns
-    patterns = [
-        ("journal", "journal"),
-        ("book", "book"),
-        ("conference", "conference"),
-        ("proceeding", "proceedings"),
-        ("dissertation", "dissertation"),
-        ("grant", "grant"),
-        ("peer_review", "peer_review"),
-        ("posted", "posted_content"),
-        ("crossmark", "crossmark"),
-        ("resource", "resource"),
-    ]
-    
-    for pattern, group in patterns:
-        if pattern in name_lower:
-            return group
-    
-    # Check custom prefixes
-    for prefix in custom_prefixes:
-        if name_lower.startswith(prefix.lower()):
-            return prefix
-    
-    return "EXTRAS"
+    """Infer group from logical path and filename (delegates to canonical impl)."""
+    return _infer_group_canonical(logical_path, filename, custom_prefixes)
 
 
 # ============================================================
@@ -1043,8 +1002,6 @@ def compare_files(file_a_bytes: bytes, file_a_name: str,
 
 def _scan_zip_and_convert(zip_path: Path, output_dir: Path) -> List[CsvArtifact]:
     """Scan ZIP file and convert XML files to CSV artifacts"""
-    from lxml import etree
-    
     artifacts: List[CsvArtifact] = []
     
     try:
@@ -1092,67 +1049,12 @@ def _scan_zip_and_convert(zip_path: Path, output_dir: Path) -> List[CsvArtifact]
 
 
 def _xml_to_csv_rows(xml_bytes: bytes) -> Tuple[List[Dict], List[str]]:
-    """Convert XML bytes to list of row dicts and headers"""
-    from lxml import etree
-    
+    """Convert XML bytes to rows and headers (delegates to canonical xml_to_rows)."""
     try:
-        root = etree.fromstring(xml_bytes)
-    except etree.XMLSyntaxError:
+        rows, headers, _tag = _xml_to_rows_canonical(xml_bytes)
+        return rows, headers
+    except Exception:
         return [], []
-    
-    # Find repeating elements (potential record tags)
-    tag_counts: Dict[str, int] = Counter()
-    for elem in root.iter():
-        tag_counts[elem.tag] += 1
-    
-    # Find most common tag with count > 1 (likely records)
-    record_tag = None
-    max_count = 0
-    for tag, count in tag_counts.items():
-        if count > max_count and count > 1:
-            max_count = count
-            record_tag = tag
-    
-    if not record_tag:
-        # Single record - flatten whole document
-        row = _flatten_element(root, "")
-        headers = list(row.keys())
-        return [row], headers
-    
-    # Extract records
-    rows = []
-    all_keys = set()
-    
-    for elem in root.iter(record_tag):
-        row = _flatten_element(elem, "")
-        rows.append(row)
-        all_keys.update(row.keys())
-    
-    headers = sorted(all_keys)
-    return rows, headers
-
-
-def _flatten_element(elem, prefix: str, sep: str = ".") -> Dict[str, str]:
-    """Flatten XML element to dict with path keys"""
-    result = {}
-    
-    # Element text
-    if elem.text and elem.text.strip():
-        key = f"{prefix}{elem.tag}" if prefix else elem.tag
-        result[key] = elem.text.strip()
-    
-    # Attributes
-    for attr, val in elem.attrib.items():
-        key = f"{prefix}{elem.tag}@{attr}" if prefix else f"{elem.tag}@{attr}"
-        result[key] = val
-    
-    # Children
-    new_prefix = f"{prefix}{elem.tag}{sep}" if prefix else f"{elem.tag}{sep}"
-    for child in elem:
-        child_dict = _flatten_element(child, new_prefix, sep)
-        result.update(child_dict)
-    
-    return result
 
 
 # ============================================================

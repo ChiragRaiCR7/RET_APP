@@ -4,7 +4,7 @@ Unified AI Router — /api/v2/ai
 Single entry-point for all AI / RAG operations:
   - Status & configuration
   - Chat (with or without RAG retrieval)
-  - Indexing (manual group selection + auto-index)
+  - Embedding (manual group selection + auto-embed)
   - Embedding status per group
   - Transcript download
   - Session cleanup
@@ -27,21 +27,24 @@ from api.services.storage_service import (
     save_session_metadata,
 )
 from api.schemas.ai import (
-    AutoIndexProgress,
-    AutoIndexStatusResponse,
+    AutoEmbedProgress,
+    AutoEmbedStatusResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     GroupSelectionRequest,
     QueryTransformationInfo,
     RAGChatRequest,
     RAGChatResponse,
+    RAGConfigResponse,
     SourceDocument,
-    StartAutoIndexRequest,
+    StartAutoEmbedRequest,
     TranscriptFormat,
     TranscriptRequest,
 )
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v2/ai", tags=["ai-v2"])
+router = APIRouter(prefix="/v2/ai", tags=["ai-v2"])
 
 
 # ------------------------------------------------------------------
@@ -83,7 +86,7 @@ def get_ai_status(
         "configured": configured,
         "features": {
             "rag_chat": configured,
-            "auto_indexing": configured,
+            "auto_embedding": configured,
             "embeddings": configured,
         },
         "settings": {
@@ -94,19 +97,26 @@ def get_ai_status(
     }
 
 
-@router.get("/config")
+@router.get("/config", response_model=RAGConfigResponse)
 def get_ai_config(
     current_user_id: str = Depends(get_current_user_id),
 ):
     """Get AI configuration (chunk sizes, retrieval top-k, etc.)."""
-    return {
-        "chunk_size": settings.CHUNK_TARGET_CHARS,
-        "retrieval_top_k": settings.RAG_TOP_K_VECTOR,
-        "temperature": settings.RET_AI_TEMPERATURE,
-        "max_context_chars": settings.RAG_MAX_CONTEXT_CHARS,
-        "hybrid_alpha": settings.RAG_VECTOR_WEIGHT,
-        "hybrid_beta": settings.RAG_LEXICAL_WEIGHT,
-    }
+    return RAGConfigResponse(
+        chunk_size=settings.RAG_CHUNK_SIZE,
+        chunk_overlap=settings.RAG_CHUNK_OVERLAP,
+        max_context_chars=settings.RAG_MAX_CONTEXT_CHARS,
+        max_chunks=settings.RAG_MAX_CHUNKS,
+        vector_weight=settings.RAG_VECTOR_WEIGHT,
+        lexical_weight=settings.RAG_LEXICAL_WEIGHT,
+        summary_weight=settings.RAG_SUMMARY_WEIGHT,
+        top_k_vector=settings.RAG_TOP_K_VECTOR,
+        top_k_summary=settings.RAG_TOP_K_SUMMARY,
+        enable_query_transform=settings.RAG_ENABLE_QUERY_TRANSFORM,
+        enable_summaries=settings.RAG_ENABLE_SUMMARIES,
+        enable_citation_repair=getattr(settings, "RAG_ENABLE_CITATION_REPAIR", True),
+        rrf_k=settings.RAG_RRF_K,
+    )
 
 
 # ==================================================================
@@ -181,6 +191,7 @@ async def rag_chat(
         chunks_retrieved=len(sources),
         response_type=result.get("response_type"),
         query_transformation=qt_info,
+        visualizations=result.get("visualizations", []),
     )
 
 
@@ -230,13 +241,17 @@ def clear_chat_history(
 # ==================================================================
 
 
-@router.get("/index/groups")
+@router.get("/embedding/groups")
 def get_available_groups(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    List groups available for indexing.
+    List groups available for **manual** embedding by the user.
+
+    Groups that have already been auto-embedded by the admin configuration
+    are excluded from the returned list so the user only sees the ones
+    they still need to choose from.
 
     Reads the conversion_index.json to find which groups have been
     converted to CSV.  Merges with embedding status from the vector store.
@@ -255,13 +270,14 @@ def get_available_groups(
         return {
             "status": "no_inventory",
             "groups": [],
+            "auto_embedded_groups": [],
             "message": "No data found. Upload and scan a ZIP first.",
         }
 
     try:
         raw = json.loads(index_path.read_text(encoding="utf-8"))
     except Exception:
-        return {"status": "error", "groups": [], "message": "Failed to read inventory."}
+        return {"status": "error", "groups": [], "auto_embedded_groups": [], "message": "Failed to read inventory."}
 
     # Extract unique groups and file counts from conversion_index.json
     group_counts: Dict[str, int] = {}
@@ -289,38 +305,50 @@ def get_available_groups(
 
     # Get embedding status from the vector store (if manager exists)
     embedding_status: Dict[str, Dict[str, Any]] = {}
+    auto_embedded: List[str] = []
     try:
         manager = _get_manager(session_id, current_user_id)
         embedding_status = manager.get_embedding_status()
+        auto_embedded = [g.upper() for g in manager.auto_embedded_groups]
     except Exception:
         pass  # No manager yet — that's fine
 
     groups_info = []
     for grp in sorted(group_counts):
         es = embedding_status.get(grp, {})
+        is_auto = grp.upper() in auto_embedded
         groups_info.append({
             "name": grp,
             "file_count": group_counts[grp],
             "indexed": es.get("indexed", False),
             "chunk_count": es.get("chunk_count", 0),
+            "auto_embedded": is_auto,
         })
+
+    # For the user selection UI, filter out auto-embedded groups
+    user_selectable = [g for g in groups_info if not g["auto_embedded"]]
 
     return {
         "status": "success",
-        "groups": groups_info,
+        "groups": user_selectable,
+        "all_groups": groups_info,
+        "auto_embedded_groups": auto_embedded,
         "total_groups": len(groups_info),
     }
 
 
-@router.post("/index/groups")
-async def index_selected_groups(
+@router.post("/embedding/groups")
+async def embed_selected_groups(
     req: GroupSelectionRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    Index selected groups.
+    Embed user-selected groups.
 
-    Reads converted CSV files from the session output directory and indexes
+    Groups that were already auto-embedded by the admin configuration are
+    silently skipped so they are not re-embedded.
+
+    Reads converted CSV files from the session output directory and embeds
     them into ChromaDB for RAG retrieval.
     """
     _verify_session_owner(req.session_id, current_user_id)
@@ -334,27 +362,132 @@ async def index_selected_groups(
     if not manager.is_configured():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
+    # Filter out groups that were already auto-embedded
+    auto_embedded = {g.upper() for g in manager.auto_embedded_groups}
+    groups_to_embed = [g for g in groups if g.upper() not in auto_embedded]
+    skipped = [g for g in groups if g.upper() in auto_embedded]
+
+    if not groups_to_embed:
+        return {
+            "status": "success",
+            "message": "All selected groups are already auto-embedded.",
+            "embedded_groups": [],
+            "skipped_groups": skipped,
+            "files_embedded": 0,
+            "embedded_count": 0,
+            "chunks_embedded": 0,
+            "errors": [],
+        }
+
+    # Background mode: queue a task and return immediately
+    if req.background:
+        try:
+            from api.workers.embedding_worker import get_embedding_worker
+            from api.services.storage_service import get_session_dir
+            import uuid
+
+            session_dir = get_session_dir(req.session_id)
+            csv_dir = session_dir / "output"
+
+            worker = get_embedding_worker()
+            task = worker.submit_task(
+                task_id=f"manual_embed_{req.session_id}_{uuid.uuid4().hex[:8]}",
+                session_id=req.session_id,
+                user_id=current_user_id,
+                groups=groups_to_embed,
+                csv_dir=csv_dir,
+                rag_service=manager.rag_service,
+                admin_config=None,
+                enforce_admin_filter=False,
+                callback=None,
+            )
+
+            return {
+                "status": "queued",
+                "message": "Embedding task queued",
+                "task_id": task.task_id,
+                "queued_groups": list(groups_to_embed),
+                "skipped_groups": skipped,
+            }
+        except Exception as e:
+            logger.error("Failed to queue embedding task: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to queue embedding task: {e}")
+
     try:
-        stats = manager.index_groups(groups=groups)
+        stats = manager.embed_groups(groups=groups_to_embed)
 
         return {
             "status": "success",
             "message": (
-                f"Indexed {stats.indexed_chunks} chunks from "
-                f"{stats.indexed_files} files"
+                f"Embedded {stats.indexed_chunks} chunks from "
+                f"{stats.indexed_files} files, "
+                f"{stats.indexed_docs} documents"
             ),
-            "indexed_groups": list(stats.groups_processed),
-            "files_indexed": stats.indexed_files,
-            "indexed_count": stats.indexed_files,
-            "chunks_indexed": stats.indexed_chunks,
+            "embedded_groups": list(stats.groups_processed),
+            "skipped_groups": skipped,
+            "files_embedded": stats.indexed_files,
+            "embedded_count": stats.indexed_files,
+            "docs_embedded": stats.indexed_docs,
+            "chunks_embedded": stats.indexed_chunks,
             "errors": stats.errors[:10],
         }
     except Exception as e:
-        logger.error("Indexing failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Indexing failed: {e}")
+        logger.error("Embedding failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
 
 
-@router.get("/index/status/{session_id}")
+@router.get("/embedding/tasks/{task_id}")
+def get_embedding_task_status(
+    task_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """Get status for a specific embedding task."""
+    try:
+        from api.workers.embedding_worker import get_embedding_worker
+
+        worker = get_embedding_worker()
+        task = worker.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Security: only allow the owner to view the task
+        if task.user_id != current_user_id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        return task.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get embedding task status: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to get task status")
+
+
+@router.get("/embedding/tasks")
+def list_embedding_tasks(
+    session_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """List all embedding tasks for a session."""
+    try:
+        from api.workers.embedding_worker import get_embedding_worker
+
+        worker = get_embedding_worker()
+        tasks = worker.get_session_tasks(session_id)
+
+        # Filter by user ownership
+        visible = [t.to_dict() for t in tasks if t.user_id == current_user_id]
+
+        return {
+            "session_id": session_id,
+            "count": len(visible),
+            "tasks": visible,
+        }
+    except Exception as e:
+        logger.error("Failed to list embedding tasks: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to list tasks")
+
+
+@router.get("/embedding/status/{session_id}")
 def get_embedding_status(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
@@ -363,45 +496,35 @@ def get_embedding_status(
     Get per-group embedding status from the vector store.
 
     Returns which groups are indexed and their chunk counts.
-    Includes timeout protection to prevent hanging on slow Azure responses.
     """
-    import signal
-    from contextlib import contextmanager
-    
     _verify_session_owner(session_id, current_user_id)
 
-    @contextmanager
-    def timeout_handler(seconds=5):
-        """Context manager for operation timeout."""
-        class TimeoutException(Exception):
-            pass
-        
-        def signal_handler(signum, frame):
-            raise TimeoutException("Operation timed out")
-        
-        # Note: signal.alarm only works on Unix. For Windows, we use a simpler approach
-        old_handler = signal.signal(signal.SIGALRM, signal_handler)
-        signal.alarm(seconds)
-        
-        try:
-            yield
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-    
     try:
         manager = _get_manager(session_id, current_user_id)
-        
-        # Get status with attempt to handle slow responses
+
         try:
             status = manager.get_embedding_status()
             stats = manager.get_index_stats()
+        except AttributeError as e:
+            logger.error(
+                "Method missing in SessionAIManager: %s. "
+                "This indicates a code version mismatch.",
+                str(e)
+            )
+            return {
+                "session_id": session_id,
+                "groups": {},
+                "total_chunks": 0,
+                "total_groups": 0,
+                "is_indexed": False,
+                "status_error": "configuration",
+                "message": "AI service initialization error. Please restart the application.",
+            }
         except Exception as e:
             logger.warning(
-                f"Error retrieving embedding status for {session_id}, "
-                f"returning empty status: {e}"
+                "Error retrieving embedding status for %s: %s",
+                session_id, str(e),
             )
-            # Return valid response even if status check fails
             return {
                 "session_id": session_id,
                 "groups": {},
@@ -409,7 +532,7 @@ def get_embedding_status(
                 "total_groups": 0,
                 "is_indexed": False,
                 "status_error": "temporary",
-                "message": "Status check encountered a temporary issue. Try again in a moment."
+                "message": "Status check encountered a temporary issue. Try again.",
             }
 
         return {
@@ -421,7 +544,6 @@ def get_embedding_status(
         }
     except Exception as e:
         logger.error("Failed to get embedding status: %s", e)
-        # Return 200 with error details instead of 500 to prevent frontend retry storms
         return {
             "session_id": session_id,
             "groups": {},
@@ -433,7 +555,7 @@ def get_embedding_status(
         }
 
 
-@router.get("/index/stats/{session_id}")
+@router.get("/embedding/stats/{session_id}")
 def get_index_stats(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
@@ -452,7 +574,7 @@ def get_index_stats(
         )
 
 
-@router.delete("/index/{session_id}")
+@router.delete("/embedding/{session_id}")
 def clear_index(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
@@ -470,19 +592,19 @@ def clear_index(
 
 
 # ==================================================================
-# Auto-Indexing
+# Auto-Embedding
 # ==================================================================
 
 
-@router.post("/auto-index/start")
-async def start_auto_indexing(
-    req: StartAutoIndexRequest,
+@router.post("/auto-embed/start")
+async def start_auto_embedding(
+    req: StartAutoEmbedRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    Start auto-indexing for admin-configured groups.
+    Start auto-embedding for admin-configured groups.
 
-    Called automatically after ZIP scan when auto-indexing is enabled.
+    Called automatically after ZIP scan when auto-embedding is enabled.
     """
     _verify_session_owner(req.session_id, current_user_id)
 
@@ -491,38 +613,38 @@ async def start_auto_indexing(
     if not manager.is_configured():
         return {
             "status": "not_configured",
-            "message": "AI not configured — auto-indexing skipped",
+            "message": "AI not configured — auto-embedding skipped",
             "eligible_groups": [],
         }
 
     try:
-        result = manager.start_auto_index(xml_inventory=req.xml_inventory)
+        result = manager.start_auto_embed(xml_inventory=req.xml_inventory)
         return result
     except Exception as e:
-        logger.error("Auto-indexing start failed: %s", e, exc_info=True)
+        logger.error("Auto-embedding start failed: %s", e, exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Auto-indexing failed: {e}"
+            status_code=500, detail=f"Auto-embedding failed: {e}"
         )
 
 
 @router.get(
-    "/auto-index/progress/{session_id}",
-    response_model=AutoIndexStatusResponse,
+    "/auto-embed/progress/{session_id}",
+    response_model=AutoEmbedStatusResponse,
 )
-def get_auto_index_progress(
+def get_auto_embed_progress(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Get current auto-indexing progress."""
+    """Get current auto-embedding progress."""
     _verify_session_owner(session_id, current_user_id)
 
     try:
         manager = _get_manager(session_id, current_user_id)
-        progress = manager.get_auto_index_progress()
+        progress = manager.get_auto_embed_progress()
 
-        return AutoIndexStatusResponse(
+        return AutoEmbedStatusResponse(
             session_id=session_id,
-            progress=AutoIndexProgress(
+            progress=AutoEmbedProgress(
                 status=progress.status,
                 progress=progress.progress,
                 files_done=progress.files_done,
@@ -535,24 +657,24 @@ def get_auto_index_progress(
             eligible_groups=progress.groups_done,
         )
     except Exception as e:
-        logger.error("Failed to get auto-index progress: %s", e)
+        logger.error("Failed to get auto-embed progress: %s", e)
         raise HTTPException(status_code=500, detail="Failed to get progress")
 
 
-@router.post("/auto-index/stop/{session_id}")
-def stop_auto_indexing(
+@router.post("/auto-embed/stop/{session_id}")
+def stop_auto_embedding(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Stop ongoing auto-indexing."""
+    """Stop ongoing auto-embedding."""
     _verify_session_owner(session_id, current_user_id)
 
     try:
         manager = _get_manager(session_id, current_user_id)
-        manager.stop_auto_index()
+        manager.stop_auto_embed()
         return {"status": "success", "message": "Stop requested"}
     except Exception as e:
-        logger.error("Failed to stop auto-indexing: %s", e)
+        logger.error("Failed to stop auto-embedding: %s", e)
         raise HTTPException(status_code=500, detail="Failed to stop")
 
 
@@ -561,20 +683,72 @@ def stop_auto_indexing(
 # ==================================================================
 
 
-@router.get("/admin/auto-index-groups")
-def get_admin_auto_index_groups(
+@router.get("/admin/auto-embed-groups")
+def get_admin_auto_embed_groups(
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Get admin-configured auto-index groups (count only)."""
+    """Get admin-configured auto-embed groups."""
+    # Check admin_prefs.json (used by AutoEmbedder)
     prefs_path = Path(settings.RET_RUNTIME_ROOT) / "admin_prefs.json"
     if prefs_path.exists():
         try:
             data = json.loads(prefs_path.read_text(encoding="utf-8"))
-            groups = data.get("auto_index_groups", [])
-            return {"count": len(groups), "configured": len(groups) > 0}
+            groups = data.get("auto_embedded_groups", [])
+            return {"count": len(groups), "configured": len(groups) > 0, "groups": groups}
         except Exception:
             pass
-    return {"count": 0, "configured": False}
+
+    # Also check AI config (used by conversion auto-embed)
+    try:
+        from api.services.admin_service import get_ai_indexing_config_data
+        ai_config = get_ai_indexing_config_data()
+        groups = ai_config.get("auto_indexed_groups", [])
+        enabled = ai_config.get("enable_auto_indexing", False)
+        return {"count": len(groups), "configured": enabled and len(groups) > 0, "groups": groups}
+    except Exception:
+        pass
+
+    return {"count": 0, "configured": False, "groups": []}
+
+
+@router.get("/admin/worker-status")
+def get_worker_status(
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """Get embedding worker status for debugging and monitoring."""
+    try:
+        from api.workers.embedding_worker import get_embedding_worker
+
+        worker = get_embedding_worker()
+        
+        # Check if worker thread is running
+        is_running = worker._worker_thread is not None and worker._worker_thread.is_alive()
+        
+        # Get task statistics
+        with worker._lock:
+            tasks = list(worker._tasks.values())
+            pending = sum(1 for t in tasks if t.status == "pending")
+            running = sum(1 for t in tasks if t.status == "running")
+            completed = sum(1 for t in tasks if t.status == "completed")
+            failed = sum(1 for t in tasks if t.status == "failed")
+        
+        return {
+            "worker_running": is_running,
+            "total_tasks": len(tasks),
+            "pending": pending,
+            "running": running,
+            "completed": completed,
+            "failed": failed,
+            "max_workers": worker.max_workers,
+            "batch_size": worker.batch_size,
+            "message": "Worker starts automatically when tasks are submitted" if not is_running else "Worker is active",
+        }
+    except Exception as e:
+        logger.error("Failed to get worker status: %s", e)
+        return {
+            "worker_running": False,
+            "error": str(e),
+        }
 
 
 # ==================================================================
@@ -654,6 +828,40 @@ def download_transcript(
         raise HTTPException(
             status_code=500, detail="Failed to generate transcript"
         )
+
+
+# ==================================================================
+# Feedback
+# ==================================================================
+
+
+@router.post("/feedback", response_model=FeedbackResponse)
+def submit_feedback(
+    req: FeedbackRequest,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """Record user feedback (thumbs up/down) on a RAG response."""
+    _verify_session_owner(req.session_id, current_user_id)
+
+    try:
+        manager = _get_manager(req.session_id, current_user_id)
+        # Store feedback in session metadata for analytics
+        meta = get_session_metadata(req.session_id)
+        feedback_log = meta.get("feedback", [])
+        feedback_log.append({
+            "message_index": req.message_index,
+            "rating": req.rating,
+            "comment": req.comment,
+            "user_id": current_user_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+        meta["feedback"] = feedback_log
+        save_session_metadata(req.session_id, meta)
+
+        return FeedbackResponse(status="ok", message="Feedback recorded")
+    except Exception as e:
+        logger.error("Failed to record feedback: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to record feedback")
 
 
 # ==================================================================

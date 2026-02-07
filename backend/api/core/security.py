@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import secrets
-from jose import jwt
+from jose import jwt, JWTError
+from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHash
 from api.core.config import settings
@@ -30,7 +31,7 @@ def create_token(
     subject: str,
     expires_delta: timedelta,
     token_type: str = "access",
-    additional_claims: dict = None,
+    additional_claims: dict | None = None,
 ) -> str:
     """
     Create a JWT token with proper claims.
@@ -68,7 +69,7 @@ def create_token(
     )
 
 
-def create_access_token(subject: str, additional_claims: dict = None) -> str:
+def create_access_token(subject: str, additional_claims: dict | None = None) -> str:
     """Create an access token with standard expiration."""
     return create_token(
         subject=subject,
@@ -118,9 +119,9 @@ def verify_token(token: str, token_type: str = "access") -> dict:
             raise ValueError(f"Expected {token_type} token, got {payload.get('type')}")
         
         return payload
-    except jwt.ExpiredSignatureError:
+    except ExpiredSignatureError:
         raise ValueError("Token has expired")
-    except jwt.JWTClaimsError as e:
+    except JWTClaimsError as e:
         raise ValueError(f"Invalid token claims: {e}")
-    except jwt.JWTError as e:
+    except JWTError as e:
         raise ValueError(f"Invalid token: {e}")

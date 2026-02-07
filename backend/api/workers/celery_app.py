@@ -52,7 +52,7 @@ class JobQueue:
                 return json.load(f)
         return None
     
-    def update_job(self, job_id: str, status: str, result: Any = None, error: str = None):
+    def update_job(self, job_id: str, status: str, result: Any = None, error: Optional[str] = None):
         """Update job status"""
         job_file = self.jobs_dir / f"{job_id}.json"
         job = self.get_job(job_id) or {"job_id": job_id}

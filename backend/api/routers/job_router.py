@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from api.core.database import get_db
 from api.services.job_service import get_job
 
-router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 @router.get("/{job_id}")
 def job_status(job_id: int, db: Session = Depends(get_db)):

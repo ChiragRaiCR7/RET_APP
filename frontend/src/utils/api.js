@@ -2,7 +2,7 @@ import axios from 'axios'
 import { useAuthStore } from '@/stores/authStore'
 
 const instance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE || '/api',
+  baseURL: import.meta.env.VITE_API_BASE || '/api/v1',
   timeout: 30_000,
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true, // Important: send cookies with requests

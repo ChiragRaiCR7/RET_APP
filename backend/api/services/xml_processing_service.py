@@ -19,16 +19,24 @@ import re
 import tempfile
 import zipfile
 import shutil
+import time
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Iterator, Set, Literal
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 import logging
 
+# LXML is required for better performance and proper XML handling
 try:
     from lxml import etree as ET
+    LXML_AVAILABLE = True
+    logger = logging.getLogger(__name__)
+    logger.info("Using LXML for XML processing (recommended)")
 except ImportError:
     import xml.etree.ElementTree as ET
+    LXML_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("LXML not available - using slower ElementTree. Install lxml for better performance: pip install lxml")
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +46,10 @@ BATCH_ZIP_PATTERN = re.compile(r"^\d+[_\-]?BATCH", re.IGNORECASE)
 # Pattern to detect root/container ZIPs that should NOT become groups
 # These are usually long names with timestamps like: "Manufacturing and Supply Chain...20260113_055727.zip"
 ROOT_ZIP_PATTERN = re.compile(r".*_\d{8}_\d{4,6}.*\.zip$", re.IGNORECASE)
+
+# Memory-efficient processing thresholds
+STREAMING_THRESHOLD_MB = 100  # Use streaming for files larger than this
+MAX_MEMORY_ROWS = 50000  # Maximum rows to keep in memory at once
 
 
 @dataclass
@@ -324,9 +336,9 @@ def scan_zip_for_xml(
         subdirs = [p for p in items if p.is_dir()]
         
         # Process nested ZIPs
-        for nested_zip in nested_zips:
+        for nested_idx, nested_zip in enumerate(nested_zips, 1):
             if total_bytes_copied >= max_unzipped_bytes:
-                logger.warning(f"Max unzipped bytes {max_unzipped_bytes} reached")
+                logger.warning(f"  Max unzipped bytes {max_unzipped_bytes} reached at depth {depth}")
                 break
             
             nested_name = nested_zip.name
@@ -339,14 +351,16 @@ def scan_zip_for_xml(
             if is_batch_zip(nested_name):
                 nested_group = current_group
             
-            logger.debug(f"Processing nested ZIP: {nested_name}, group={nested_group}, depth={depth}")
+            logger.info(f"  [Depth {depth}] Processing nested ZIP {nested_idx}/{len(nested_zips)}: {nested_name} → group='{nested_group}'")
             
             # Extract nested ZIP
             nested_extract_dir = extract_dir / f"_nested_{depth}_{nested_zip.stem}"
             try:
                 nested_extract_dir.mkdir(parents=True, exist_ok=True)
+                zip_entries = 0
                 
                 with zipfile.ZipFile(nested_zip, 'r') as zf:
+                    nested_total = len(zf.infolist())
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
@@ -355,25 +369,32 @@ def scan_zip_for_xml(
                         if info.compress_size > 0:
                             ratio = info.file_size / info.compress_size
                             if ratio > 200:
-                                logger.warning(f"Skipping {info.filename}: high compression ratio {ratio}")
+                                logger.warning(f"    Skipping {info.filename}: high compression ratio {ratio}")
                                 continue
                         
                         total_bytes_copied += info.file_size
                         if total_bytes_copied > max_unzipped_bytes:
-                            logger.warning(f"Stopping extraction: max bytes exceeded")
+                            logger.warning(f"    Stopping extraction of {nested_name}: max bytes exceeded")
                             break
                         
                         zf.extract(info, nested_extract_dir)
+                        zip_entries += 1
+                
+                logger.info(f"    ✓ Extracted {zip_entries} entries from {nested_name}")
                 
                 # Recurse into the extracted content
                 _recursive_scan(nested_extract_dir, depth + 1, new_chain, nested_group)
                 
             except Exception as e:
-                logger.error(f"Failed to extract nested ZIP {nested_name}: {e}")
+                logger.error(f"    ✗ Failed to extract nested ZIP {nested_name}: {e}")
         
         # Process XML files at this level
-        for xml_file in xml_files_here:
+        if xml_files_here:
+            logger.info(f"  [Depth {depth}] Found {len(xml_files_here)} XML files in '{current_path.name}'")
+        
+        for xml_idx, xml_file in enumerate(xml_files_here, 1):
             if files_found >= max_files:
+                logger.warning(f"  Max files limit {max_files} reached")
                 break
             
             try:
@@ -408,25 +429,41 @@ def scan_zip_for_xml(
                 groups[group].append(file_info)
                 files_found += 1
                 
-                logger.debug(f"Found XML: {xml_file.name}, group={group}")
+                if files_found % 50 == 0:
+                    logger.info(f"    Progress: {files_found} XML files processed...")
                 
             except Exception as e:
-                logger.warning(f"Failed to process XML {xml_file}: {e}")
+                logger.warning(f"    ✗ Failed to process XML {xml_file.name}: {e}")
         
         # Process subdirectories (folders - just traverse, don't change group)
         for subdir in subdirs:
+            if total_bytes_copied >= max_unzipped_bytes:
+                break
+            if files_found >= max_files:
+                break
+            
             folder_name = subdir.name
             new_chain = zip_chain + [folder_name]
+            
+            # Skip system/hidden folders
+            if folder_name.startswith('.') or folder_name.startswith('_'):
+                continue
+            
             # Folders do NOT change the group - we inherit from the ZIP
             _recursive_scan(subdir, depth, new_chain, current_group)
     
     # Step 1: Extract root ZIP
-    logger.info(f"Scanning ZIP: {zip_path.name}")
+    scan_start = time.time()
+    logger.info(f"========== Starting ZIP scan: {zip_path.name} ==========")
+    logger.info(f"  Max depth: {max_depth}, Max files: {max_files}, Max bytes: {max_unzipped_bytes}")
     root_zip_name = zip_path.name
     is_root = is_root_zip(root_zip_name)
     
     try:
         with zipfile.ZipFile(zip_path, 'r') as zf:
+            total_entries = len(zf.infolist())
+            logger.info(f"  Extracting root ZIP with {total_entries} entries...")
+            extracted_count = 0
             for info in zf.infolist():
                 if info.is_dir():
                     continue
@@ -435,15 +472,20 @@ def scan_zip_for_xml(
                 if info.compress_size > 0:
                     ratio = info.file_size / info.compress_size
                     if ratio > 200:
-                        logger.warning(f"Skipping {info.filename}: high compression ratio")
+                        logger.warning(f"  Skipping {info.filename}: high compression ratio {ratio}")
                         continue
                 
                 total_bytes_copied += info.file_size
                 if total_bytes_copied > max_unzipped_bytes:
-                    logger.warning(f"Stopping extraction: max bytes exceeded")
+                    logger.warning(f"  Stopping extraction: max bytes {total_bytes_copied} exceeded limit {max_unzipped_bytes}")
                     break
                 
                 zf.extract(info, extract_dir)
+                extracted_count += 1
+                if extracted_count % 100 == 0:
+                    logger.info(f"  Extracted {extracted_count}/{total_entries} entries ({total_bytes_copied / 1024 / 1024:.1f} MB)")
+            
+            logger.info(f"  ✓ Root ZIP extraction complete: {extracted_count} files, {total_bytes_copied / 1024 / 1024:.1f} MB")
     except Exception as e:
         logger.error(f"Failed to extract root ZIP: {e}")
         raise
@@ -456,8 +498,44 @@ def scan_zip_for_xml(
     _recursive_scan(extract_dir, depth=1, zip_chain=root_chain, current_group=initial_group)
     
     total_size = sum(f["size"] for f in xml_files)
-    
-    logger.info(f"Scan complete: {len(xml_files)} XML files in {len(groups)} groups, {total_size} bytes")
+
+    # ── Group deduplication ──────────────────────────────────────────
+    # ZIP names and folder names can both produce the same group name.
+    # Merge duplicates (case-insensitive) so each file belongs to exactly
+    # one canonical group and no file appears in multiple groups.
+    canonical: Dict[str, str] = {}           # lower -> first-seen original
+    merged_groups: Dict[str, List[Dict]] = defaultdict(list)
+    seen_file_ids: Dict[str, str] = {}       # abs_path -> assigned group
+
+    for group_name, file_list in groups.items():
+        key = group_name.strip().upper()
+        canon = canonical.setdefault(key, key)
+
+        for finfo in file_list:
+            fid = finfo.get("abs_path", finfo.get("path", ""))
+            if fid in seen_file_ids:
+                # Already assigned to another group – skip duplicate
+                continue
+            # Normalise the group stored on the file entry
+            finfo["group"] = canon
+            merged_groups[canon].append(finfo)
+            seen_file_ids[fid] = canon
+
+    groups = dict(merged_groups)
+
+    # Also normalise group on the flat xml_files list
+    for f in xml_files:
+        key = (f.get("group") or "EXTRAS").strip().upper()
+        f["group"] = canonical.get(key, key)
+
+    scan_duration = time.time() - scan_start
+    logger.info(f"========== Scan complete in {scan_duration:.2f}s ==========")
+    logger.info(f"  XML files found: {len(xml_files)}")
+    logger.info(f"  Groups detected: {len(groups)}")
+    logger.info(f"  Total size: {total_size / 1024 / 1024:.2f} MB")
+    logger.info(f"  Average: {scan_duration / max(len(xml_files), 1):.3f}s per file")
+    for group_name, group_files in sorted(groups.items()):
+        logger.info(f"    Group '{group_name}': {len(group_files)} files")
     
     return xml_files, dict(groups), total_size
 
@@ -594,6 +672,107 @@ def xml_to_rows(
             rows.append(row)
     
     return rows, header_order, record_tag_used
+
+
+def xml_to_rows_streaming(
+    xml_path: Path,
+    record_tag: Optional[str] = None,
+    auto_detect: bool = True,
+    path_sep: str = ".",
+    include_root: bool = False,
+    max_field_len: int = 300,
+    chunk_size: int = 10000
+) -> Iterator[Tuple[List[dict], List[str], str]]:
+    """
+    Stream-parse large XML files and yield rows in chunks to avoid memory issues.
+    
+    For files larger than STREAMING_THRESHOLD_MB, this function yields rows in batches
+    instead of loading the entire file into memory.
+    
+    Args:
+        xml_path: Path to XML file
+        record_tag: Optional specific record tag to look for
+        auto_detect: Auto-detect record tag if not specified
+        path_sep: Field path separator
+        include_root: Include root element in paths
+        max_field_len: Maximum field length
+        chunk_size: Rows per chunk to yield
+    
+    Yields:
+        Tuples of (rows, headers, detected_record_tag)
+    """
+    if not LXML_AVAILABLE:
+        logger.warning("Streaming requires LXML. Falling back to full load.")
+        # Fallback to non-streaming
+        with open(xml_path, "rb") as f:
+            xml_bytes = f.read()
+        rows, headers, tag_used = xml_to_rows(
+            xml_bytes, record_tag, auto_detect, path_sep, include_root, max_field_len
+        )
+        yield rows, headers, tag_used
+        return
+    
+    try:
+        # First pass: detect record tag if needed
+        detected_tag = record_tag
+        if auto_detect and not record_tag:
+            # Quick scan to detect record tag
+            tree = ET.parse(str(xml_path))
+            root = tree.getroot()
+            detected_tag, _ = find_record_elements(root, None, True)
+            del tree, root  # Free memory
+        
+        # Second pass: stream parse with iterparse
+        context = ET.iterparse(str(xml_path), events=('end',), tag=detected_tag if detected_tag else None)
+        
+        rows_batch = []
+        header_order = []
+        header_seen = set()
+        
+        for event, elem in context:
+            # Skip if not our target tag (when no specific tag)
+            if detected_tag and strip_ns(elem.tag) != detected_tag:
+                elem.clear()
+                continue
+            
+            row = {}
+            flatten_element(
+                elem, "", row, header_order, header_seen,
+                path_sep, include_root, max_field_len
+            )
+            
+            if row:
+                rows_batch.append(row)
+            
+            # Clear element to free memory
+            elem.clear()
+            while elem.getprevious() is not None:
+                del elem.getparent()[0]
+            
+            # Yield batch when chunk size reached
+            if len(rows_batch) >= chunk_size:
+                yield rows_batch, header_order, detected_tag or "root"
+                rows_batch = []
+        
+        # Yield remaining rows
+        if rows_batch:
+            yield rows_batch, header_order, detected_tag or "root"
+        
+        del context
+        
+    except Exception as e:
+        logger.error(f"Streaming parse failed for {xml_path}: {e}")
+        # Fallback to regular parsing if streaming fails
+        try:
+            with open(xml_path, "rb") as f:
+                xml_bytes = f.read()
+            rows, headers, tag_used = xml_to_rows(
+                xml_bytes, record_tag, auto_detect, path_sep, include_root, max_field_len
+            )
+            yield rows, headers, tag_used
+        except Exception as fallback_err:
+            logger.exception(f"Fallback parse also failed: {fallback_err}")
+            yield [], [], ""
 
 
 def iter_xml_record_chunks(

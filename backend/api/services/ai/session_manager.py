@@ -3,9 +3,9 @@ AI Session Manager — Simplified Single-Stack Manager.
 
 Wraps UnifiedRAGService for session lifecycle management:
   - Creates/retrieves UnifiedRAGService per session
-  - Manages auto-indexing lifecycle
+  - Manages auto-embedding lifecycle
   - Handles cleanup on logout
-  - Provides chat, index, and status APIs
+  - Provides chat, embedding, and status APIs
 
 Replaces the dual-stack (AdvancedRAGEngine/RAGEngine) approach.
 """
@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from api.core.config import settings
 from api.services.advanced_ai_service import (
     UnifiedRAGService,
-    IndexingStats,
+    EmbeddingStats,
     get_rag_service,
     clear_rag_service,
 )
@@ -34,7 +34,7 @@ class SessionAIManager:
     Manages AI resources for a single user session.
 
     Delegates all RAG operations to UnifiedRAGService.
-    Manages auto-indexing, metadata persistence, and cleanup.
+    Manages auto-embedding, metadata persistence, and cleanup.
     """
 
     def __init__(self, session_id: str, user_id: str, session_dir: Path):
@@ -47,13 +47,18 @@ class SessionAIManager:
         self._metadata: Dict[str, Any] = {}
         self._load_metadata()
 
-        # Auto-indexer reference (lazy init)
-        self._auto_indexer = None
+        # Auto-embedder reference (lazy init)
+        self._auto_embedder = None
         self._lock = threading.Lock()
 
         # Lazily initialised RAG service
         self._rag_service: Optional[UnifiedRAGService] = None
         self._rag_init_in_progress = False
+
+        # Track which groups were auto-embedded vs user-selected
+        self._auto_embedded_groups: List[str] = self._metadata.get(
+            "auto_embedded_groups", []
+        )
 
         logger.info(
             f"SessionAIManager initialised: session={session_id}, user={user_id}"
@@ -147,17 +152,17 @@ class SessionAIManager:
         return result
 
     # ------------------------------------------------------------------
-    # Indexing
+    # Embedding
     # ------------------------------------------------------------------
 
-    def index_groups(
+    def embed_groups(
         self,
         groups: List[str],
         csv_dir: Optional[Path] = None,
         conversion_index: Optional[Dict] = None,
-    ) -> IndexingStats:
+    ) -> EmbeddingStats:
         """
-        Index CSV files for specified groups.
+        Embed CSV files for specified groups.
 
         Args:
             groups: List of group names
@@ -165,16 +170,16 @@ class SessionAIManager:
             conversion_index: Optional conversion_index.json content
 
         Returns:
-            IndexingStats
+            EmbeddingStats
         """
         if not self.is_configured():
-            stats = IndexingStats()
+            stats = EmbeddingStats()
             stats.errors.append("AI not configured")
             return stats
 
         output_dir = csv_dir or (self.session_dir / "output")
         if not output_dir.exists():
-            stats = IndexingStats()
+            stats = EmbeddingStats()
             stats.errors.append("No output directory found")
             return stats
 
@@ -187,48 +192,48 @@ class SessionAIManager:
                 except Exception:
                     pass
 
-        stats = self.rag_service.index_groups(
+        stats = self.rag_service.embed_groups(
             groups=groups,
             csv_dir=output_dir,
             conversion_index=conversion_index,
         )
 
         # Update metadata
-        existing_groups = set(self._metadata.get("indexed_groups", []))
+        existing_groups = set(self._metadata.get("embedded_groups", []))
         existing_groups.update(stats.groups_processed)
-        self._metadata["indexed_groups"] = sorted(existing_groups)
-        self._metadata["last_indexed"] = datetime.now(timezone.utc).isoformat()
+        self._metadata["embedded_groups"] = sorted(existing_groups)
+        self._metadata["last_embedded"] = datetime.now(timezone.utc).isoformat()
         self._save_metadata()
 
         return stats
 
-    def index_csv_files(
+    def embed_csv_files(
         self,
         csv_paths: List[str],
         group_override: Optional[str] = None,
-    ) -> IndexingStats:
+    ) -> EmbeddingStats:
         """
-        Index specific CSV files directly.
+        Embed specific CSV files directly.
 
         Args:
             csv_paths: Absolute paths to CSV files
             group_override: Optional group name override
 
         Returns:
-            IndexingStats
+            EmbeddingStats
         """
         if not self.is_configured():
-            stats = IndexingStats()
+            stats = EmbeddingStats()
             stats.errors.append("AI not configured")
             return stats
 
-        stats = self.rag_service.index_csv_files(csv_paths, group_override)
+        stats = self.rag_service.embed_csv_files(csv_paths, group_override)
 
         # Update metadata
-        existing_groups = set(self._metadata.get("indexed_groups", []))
+        existing_groups = set(self._metadata.get("embedded_groups", []))
         existing_groups.update(stats.groups_processed)
-        self._metadata["indexed_groups"] = sorted(existing_groups)
-        self._metadata["last_indexed"] = datetime.now(timezone.utc).isoformat()
+        self._metadata["embedded_groups"] = sorted(existing_groups)
+        self._metadata["last_embedded"] = datetime.now(timezone.utc).isoformat()
         self._save_metadata()
 
         return stats
@@ -241,35 +246,42 @@ class SessionAIManager:
         """Get per-group embedding status from the vector store."""
         return self.rag_service.get_embedding_status()
 
-    def get_index_stats(self) -> Dict[str, Any]:
-        """Get overall indexing statistics."""
+    def get_embedding_stats(self) -> Dict[str, Any]:
+        """Get overall embedding statistics."""
         return self.rag_service.get_stats()
+    
+    def get_index_stats(self) -> Dict[str, Any]:
+        """Get index statistics (alias for get_embedding_stats for compatibility)."""
+        return self.get_embedding_stats()
 
     # ------------------------------------------------------------------
-    # Auto-Indexing
+    # Auto-Embedding
     # ------------------------------------------------------------------
 
     @property
-    def auto_indexer(self):
-        """Get or create auto-indexer."""
-        if self._auto_indexer is None:
+    def auto_embedder(self):
+        """Get or create auto-embedder."""
+        if self._auto_embedder is None:
             with self._lock:
-                if self._auto_indexer is None:
-                    from api.services.ai.auto_indexer import AutoIndexer
+                if self._auto_embedder is None:
+                    from api.services.ai.auto_embedder import AutoEmbedder
 
-                    self._auto_indexer = AutoIndexer(
+                    self._auto_embedder = AutoEmbedder(
                         session_id=self.session_id,
                         session_dir=self.session_dir,
                         rag_service=self.rag_service,
                     )
-        return self._auto_indexer
+        return self._auto_embedder
 
-    def start_auto_index(
+    def start_auto_embed(
         self,
         xml_inventory: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Start auto-indexing for admin-configured groups.
+        Start auto-embedding for admin-configured groups ONLY.
+
+        Only groups that appear in admin_prefs.json → auto_embedded_groups AND
+        are actually present in the ZIP inventory will be embedded.
 
         Args:
             xml_inventory: List of XML file entries from ZIP scan
@@ -277,34 +289,44 @@ class SessionAIManager:
         Returns:
             Status dict
         """
-        eligible = self.auto_indexer.detect_eligible_groups(xml_inventory)
+        eligible = self.auto_embedder.detect_eligible_groups(xml_inventory)
 
         if not eligible:
             return {
                 "status": "no_eligible_groups",
                 "eligible_groups": [],
-                "message": "No groups match admin auto-index configuration",
+                "message": "No groups match admin auto-embed configuration",
             }
 
-        self.auto_indexer.start_auto_index(
+        self.auto_embedder.start_auto_embed(
             xml_inventory=xml_inventory,
-            groups_to_index=eligible,
+            groups_to_embed=eligible,
         )
+
+        # Track auto-embedded groups so the UI can hide them from manual selection
+        self._auto_embedded_groups = list(set(self._auto_embedded_groups + eligible))
+        self._metadata["auto_embedded_groups"] = self._auto_embedded_groups
+        self._save_metadata()
 
         return {
             "status": "started",
             "eligible_groups": eligible,
-            "message": f"Auto-indexing started for {len(eligible)} groups",
+            "message": f"Auto-embedding started for {len(eligible)} groups",
         }
 
-    def get_auto_index_progress(self):
-        """Get current auto-indexing progress."""
-        return self.auto_indexer.progress
+    @property
+    def auto_embedded_groups(self) -> List[str]:
+        """Groups that were automatically embedded (admin-configured)."""
+        return list(self._auto_embedded_groups)
 
-    def stop_auto_index(self) -> None:
-        """Stop auto-indexing if running."""
-        if self._auto_indexer:
-            self._auto_indexer.stop()
+    def get_auto_embed_progress(self):
+        """Get current auto-embedding progress."""
+        return self.auto_embedder.progress
+
+    def stop_auto_embed(self) -> None:
+        """Stop auto-embedding if running."""
+        if self._auto_embedder:
+            self._auto_embedder.stop()
 
     # ------------------------------------------------------------------
     # History
@@ -323,17 +345,17 @@ class SessionAIManager:
     # Cleanup
     # ------------------------------------------------------------------
 
-    def clear_index(self) -> None:
-        """Clear all indexed data (keep session alive)."""
+    def clear_embeddings(self) -> None:
+        """Clear all embedded data (keep session alive)."""
         self.rag_service.clear()
-        self._metadata["indexed_groups"] = []
+        self._metadata["embedded_groups"] = []
         self._save_metadata()
 
     def cleanup(self) -> None:
         """Full cleanup — destroy vector store, clear history, delete metadata."""
         try:
-            if self._auto_indexer:
-                self._auto_indexer.stop()
+            if self._auto_embedder:
+                self._auto_embedder.stop()
 
             if self._rag_service:
                 self._rag_service.destroy()

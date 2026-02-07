@@ -144,6 +144,7 @@ const selectedGroups = ref([])
 const searchQuery = ref('')
 const loading = ref(false)
 const indexing = ref(false)
+let embedPollTimer = null
 
 // Filtered groups based on search
 const filteredGroups = computed(() => {
@@ -195,22 +196,54 @@ async function startIndexing() {
   emit('index-start', selectedGroups.value)
   
   try {
-    const resp = await api.post('/v2/ai/index/groups', {
+    const resp = await api.post('/v2/ai/embedding/groups', {
       session_id: props.sessionId,
-      groups: selectedGroups.value
+      groups: selectedGroups.value,
+      background: true
     })
     
-    emit('index-complete', {
-      groups: selectedGroups.value,
-      stats: resp.data.stats
-    })
+    if (resp.data.status === 'queued' && resp.data.task_id) {
+      startEmbeddingTaskPoll(resp.data.task_id)
+    } else {
+      emit('index-complete', {
+        groups: selectedGroups.value,
+        stats: resp.data.stats
+      })
+      indexing.value = false
+    }
     
   } catch (e) {
     const errorMsg = e.response?.data?.detail || e.message
     emit('index-error', errorMsg)
-  } finally {
     indexing.value = false
   }
+}
+
+function startEmbeddingTaskPoll(taskId) {
+  if (embedPollTimer) clearInterval(embedPollTimer)
+  embedPollTimer = setInterval(async () => {
+    try {
+      const res = await api.get(`/v2/ai/embedding/tasks/${taskId}`)
+      const status = res.data.status
+
+      if (status === 'completed') {
+        clearInterval(embedPollTimer)
+        embedPollTimer = null
+        indexing.value = false
+        emit('index-complete', {
+          groups: res.data.groups || selectedGroups.value,
+          stats: res.data
+        })
+      } else if (status === 'failed' || status === 'cancelled') {
+        clearInterval(embedPollTimer)
+        embedPollTimer = null
+        indexing.value = false
+        emit('index-error', res.data.error || `Embedding ${status}`)
+      }
+    } catch (e) {
+      console.debug('Embedding task poll error:', e.message)
+    }
+  }, 2500)
 }
 
 // Helper functions

@@ -90,8 +90,20 @@ def cleanup_session(session_id: str) -> None:
     logger.info("Cleaning up session: %s", session_id)
     
     try:
-        from api.services.ai_indexing_service import clear_session_indexer
-        clear_session_indexer(session_id)
+        from api.services.advanced_ai_service import (
+            _RAG_SERVICES, _RAG_LOCK,
+        )
+        # Clear all RAG services matching this session_id
+        with _RAG_LOCK:
+            keys_to_remove = [
+                k for k in _RAG_SERVICES if k.endswith(f"::{session_id}")
+            ]
+            for k in keys_to_remove:
+                try:
+                    _RAG_SERVICES[k].destroy()
+                except Exception:
+                    pass
+                del _RAG_SERVICES[k]
     except Exception:
         logger.debug("No AI index cleanup or failed (continuing)")
 

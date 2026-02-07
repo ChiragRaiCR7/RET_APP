@@ -62,12 +62,12 @@
     <div v-show="activeTab === 1" class="enterprise-card">
       <div class="card-header">
         <h3 class="card-title">🗂️ AI Indexing Configuration</h3>
-        <p class="card-description">Configure which groups are automatically indexed for AI</p>
+        <p class="card-description">Configure which groups are automatically embedded for AI</p>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Auto-Indexed Groups</label>
-        <p class="form-hint">These groups will be automatically indexed when detected during ZIP scanning</p>
+        <label class="form-label">Auto-Embedded Groups</label>
+        <p class="form-hint">These groups will be automatically embedded when detected during ZIP scanning</p>
       </div>
 
       <!-- Two-sided selector -->
@@ -111,11 +111,11 @@
           </button>
         </div>
 
-        <!-- Auto-Indexed Groups (Right) -->
+        <!-- Auto-Embedded Groups (Right) -->
         <div class="group-selector-box">
-          <h4 class="box-title">Auto-Indexed</h4>
+          <h4 class="box-title">Auto-Embedded</h4>
           <div class="group-list">
-            <label v-for="group in autoIndexedGroups" :key="group" class="group-item">
+            <label v-for="group in autoEmbeddedGroups" :key="group" class="group-item">
               <input 
                 type="checkbox" 
                 :value="group" 
@@ -129,7 +129,7 @@
 
       <!-- Save Button -->
       <div style="margin-top:var(--space-lg); display:flex; gap:8px">
-        <button class="btn btn-primary" @click="saveIndexingConfig" :disabled="saving">
+        <button class="btn btn-primary" @click="saveEmbeddingConfig" :disabled="saving">
           <span v-if="saving" class="spinner" style="margin-right:8px"></span>
           {{ saving ? 'Saving...' : 'Save Configuration' }}
         </button>
@@ -537,9 +537,9 @@ const userInitials = computed(() => {
   return auth.user.username.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
 })
 
-// AI Indexing Configuration
+// AI Embedding Configuration
 const availableGroupsList = ref([])
-const autoIndexedGroups = ref([])
+const autoEmbeddedGroups = ref([])
 const selectedLeftGroups = ref([])
 const selectedRightGroups = ref([])
 const newGroup = ref('')
@@ -549,7 +549,7 @@ const configStatus = ref(null)
 function addGroup() {
   if (!newGroup.value) return
   const val = newGroup.value.toUpperCase().trim()
-  if (!availableGroupsList.value.includes(val) && !autoIndexedGroups.value.includes(val)) {
+  if (!availableGroupsList.value.includes(val) && !autoEmbeddedGroups.value.includes(val)) {
     availableGroupsList.value.push(val)
   }
   newGroup.value = ''
@@ -695,10 +695,10 @@ async function cleanupSessions() {
   }
 }
 
-// AI Indexing Configuration Functions
+// AI Embedding Configuration Functions
 function moveToRight() {
-  autoIndexedGroups.value.push(...selectedLeftGroups.value)
-  autoIndexedGroups.value = [...new Set(autoIndexedGroups.value)]
+  autoEmbeddedGroups.value.push(...selectedLeftGroups.value)
+  autoEmbeddedGroups.value = [...new Set(autoEmbeddedGroups.value)]
   availableGroupsList.value = availableGroupsList.value.filter(g => !selectedLeftGroups.value.includes(g))
   selectedLeftGroups.value = []
 }
@@ -706,16 +706,16 @@ function moveToRight() {
 function moveToLeft() {
   availableGroupsList.value.push(...selectedRightGroups.value)
   availableGroupsList.value = [...new Set(availableGroupsList.value)]
-  autoIndexedGroups.value = autoIndexedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
+  autoEmbeddedGroups.value = autoEmbeddedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
   selectedRightGroups.value = []
 }
 
-async function saveIndexingConfig() {
+async function saveEmbeddingConfig() {
   saving.value = true
   configStatus.value = null
   try {
     await api.post('/admin/ai-indexing-config', {
-      auto_indexed_groups: autoIndexedGroups.value
+      auto_embedded_groups: autoEmbeddedGroups.value
     })
     configStatus.value = {
       type: 'success',
@@ -740,11 +740,11 @@ onMounted(async () => {
   // Load AI Config
   try {
     const res = await api.get('/admin/ai-indexing-config')
-    if (res.data.auto_indexed_groups) {
-      autoIndexedGroups.value = res.data.auto_indexed_groups
-      // Remove auto-indexed from available to avoid duplicates
+    if (res.data.auto_embedded_groups) {
+      autoEmbeddedGroups.value = res.data.auto_embedded_groups
+      // Remove auto-embedded from available to avoid duplicates
       availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER']
-        .filter(g => !autoIndexedGroups.value.includes(g))
+        .filter(g => !autoEmbeddedGroups.value.includes(g))
     }
   } catch (e) {
     console.error("Failed to load AI config", e)

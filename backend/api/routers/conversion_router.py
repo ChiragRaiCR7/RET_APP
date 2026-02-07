@@ -37,56 +37,102 @@ from api.core.dependencies import get_current_user, get_current_user_id
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/conversion", tags=["conversion"])
-workflow_router = APIRouter(prefix="/api/workflow", tags=["workflow"])
+router = APIRouter(prefix="/conversion", tags=["conversion"])
+workflow_router = APIRouter(prefix="/workflow", tags=["workflow"])
 
 
 def _auto_embed_after_conversion(session_id: str, user_id: str, converted_files: list):
     """Background task to embed converted CSVs into ChromaDB after conversion.
-    Only indexes groups configured in admin AI indexing config.
+    
+    STRICT ADMIN CONFIG ENFORCEMENT:
+    Only embeds groups that are BOTH:
+      1. Configured by admin in AI embedding config (auto_embedded_groups)  
+      2. Present in the converted output
+    
+    Groups not in the admin config are left for the user to select manually
+    in the ASK RET AI section.
+    
+    Uses the dedicated embedding worker for fast background processing.
+    
+    IMPORTANT: This runs SILENTLY in the background and NEVER interferes with
+    the main conversion workflow. All errors are logged but not raised.
     """
     try:
         from api.services.ai.session_manager import get_session_ai_manager
         from api.services.admin_service import get_ai_indexing_config_data
+        from api.services.storage_service import get_session_dir
+        from api.workers.embedding_worker import get_embedding_worker
+        import uuid
+
+        logger.info(f"[AUTO-EMBED] Evaluating auto-embedding for session {session_id}")
 
         manager = get_session_ai_manager(session_id, user_id)
 
         if not manager.is_configured():
-            logger.info(f"Auto-embed skipped for session {session_id}: AI not configured")
+            logger.info(f"[AUTO-EMBED] Skipped for session {session_id}: AI not configured")
             return
 
-        # Check if auto-indexing is enabled in admin config
+        # STRICT: Check if auto-embedding is enabled in admin config
         ai_config = get_ai_indexing_config_data()
         if not ai_config.get("enable_auto_indexing", False):
-            logger.info(f"Auto-embed skipped for session {session_id}: Auto-indexing disabled in admin config")
+            logger.info(f"[AUTO-EMBED] Skipped for session {session_id}: Auto-embedding disabled in admin config")
             return
 
-        # Get configured groups from admin config
-        configured_groups = ai_config.get("auto_indexed_groups", [])
+        # STRICT: Get configured groups from admin config (ONLY these groups)
+        configured_groups = [g.strip().upper() for g in ai_config.get("auto_indexed_groups", []) if g]
         if not configured_groups:
-            logger.info(f"Auto-embed skipped for session {session_id}: No groups configured for auto-indexing")
+            logger.info(f"[AUTO-EMBED] Skipped for session {session_id}: No groups configured for auto-embedding")
             return
 
-        # Filter converted files to only include configured groups
-        groups_to_index = list(set(cf.get("group", "MISC") for cf in converted_files))
-        groups_to_index = [g for g in groups_to_index if g in configured_groups]
+        # Filter converted files to ONLY include admin-configured groups
+        available_groups = list(set(cf.get("group", "MISC").upper() for cf in converted_files))
+        groups_to_embed = [g for g in available_groups if g in configured_groups]
         
-        if not groups_to_index:
+        if not groups_to_embed:
             logger.info(
-                f"Auto-embed skipped for session {session_id}: "
+                f"[AUTO-EMBED] Skipped for session {session_id}: "
                 f"No converted groups match configured groups. "
-                f"Configured: {configured_groups}, Available: {[cf.get('group') for cf in converted_files]}"
+                f"Configured: {configured_groups}, Available: {available_groups}"
             )
             return
 
-        logger.info(f"Auto-indexing groups for session {session_id}: {groups_to_index}")
-        stats = manager.index_groups(groups=groups_to_index)
+        logger.info(f"[AUTO-EMBED] Submitting task for session {session_id}: {groups_to_embed}")
+        
+        # Submit to embedding worker for fast background processing
+        session_dir = get_session_dir(session_id)
+        csv_dir = session_dir / "output"
+        
+        worker = get_embedding_worker()
+        task = worker.submit_task(
+            task_id=f"auto_embed_{session_id}_{uuid.uuid4().hex[:8]}",
+            session_id=session_id,
+            user_id=user_id,
+            groups=groups_to_embed,
+            csv_dir=csv_dir,
+            rag_service=manager.rag_service,
+            admin_config=ai_config,
+            callback=None,  # Could add progress callback if needed
+        )
+
+        # Track which groups were auto-embedded
+        existing_auto_embedded = getattr(manager, '_auto_embedded_groups', [])
+        manager._auto_embedded_groups = list(
+            set(existing_auto_embedded + groups_to_embed)
+        )
+        manager._metadata["auto_embedded_groups"] = manager._auto_embedded_groups
+        manager._save_metadata()
+
         logger.info(
-            f"Auto-embed complete for session {session_id}: "
-            f"{stats.indexed_files} files, {stats.indexed_chunks} chunks"
+            f"[AUTO-EMBED] Task submitted successfully: "
+            f"session={session_id}, task_id={task.task_id}, groups={groups_to_embed}"
         )
     except Exception as e:
-        logger.error(f"Auto-embed failed for session {session_id}: {e}")
+        # CRITICAL: Never let auto-embed errors crash the conversion workflow
+        logger.error(
+            f"[AUTO-EMBED] Task submission failed for session {session_id}: {e}. "
+            f"Conversion workflow continues normally.",
+            exc_info=True
+        )
 
 
 @router.post("/scan", response_model=ZipScanResponse)
@@ -167,24 +213,69 @@ async def convert_async(
     
     logger.info(f"Conversion request: session={session_id}, groups={groups}, format={output_format}, auto_embed={auto_embed}")
 
+    # Validate session exists
+    from api.services.storage_service import get_session_dir, get_session_metadata
+    try:
+        sess_dir = get_session_dir(session_id)
+        if not sess_dir.exists():
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found. Please scan a file first.")
+        
+        extract_dir = sess_dir / "extracted"
+        if not extract_dir.exists():
+            raise HTTPException(status_code=400, detail="No extracted files found. Please scan a file first.")
+        
+        # Check if there are any XML files
+        xml_count = len(list(extract_dir.rglob("*.xml")))
+        if xml_count == 0:
+            raise HTTPException(status_code=400, detail="No XML files found in session. Please scan a valid ZIP/XML file.")
+        
+        logger.info(f"Session validation passed: {xml_count} XML files found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error during validation: {str(e)}")
+
     try:
         job = create_job(db, "conversion")
         result = convert_session(session_id, groups, output_format)
 
-        # Trigger auto-embedding if requested and conversion produced files
+        # Check if conversion was successful
+        stats = result.get("stats", {})
+        if stats.get("success", 0) == 0 and stats.get("failed", 0) > 0:
+            error_details = result.get("errors", [])
+            error_msg = f"All {stats.get('failed')} files failed to convert. First error: {error_details[0].get('error', 'Unknown')}" if error_details else "All files failed to convert"
+            logger.error(error_msg)
+            return {
+                "success": False, 
+                "job_id": job.id, 
+                "message": error_msg,
+                **result
+            }
+
+        # Trigger auto-embedding ONLY if explicitly requested and conversion produced files
+        # This is disabled by default to prevent interference with utility workflow
         if auto_embed and result.get("stats", {}).get("success", 0) > 0:
-            background_tasks.add_task(
-                _auto_embed_after_conversion,
-                session_id=session_id,
-                user_id=current_user_id,
-                converted_files=result.get("converted_files", []),
-            )
-            result["embedding_status"] = "started"
+            try:
+                background_tasks.add_task(
+                    _auto_embed_after_conversion,
+                    session_id=session_id,
+                    user_id=current_user_id,
+                    converted_files=result.get("converted_files", []),
+                )
+                result["embedding_status"] = "queued"
+                logger.info(f"Auto-embedding queued for session {session_id}")
+            except Exception as e:
+                logger.error(f"Failed to queue auto-embedding: {e}")
+                result["embedding_status"] = "failed_to_queue"
+                # Don't fail the conversion if embedding fails to queue
 
         return {"success": True, "job_id": job.id, **result}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Conversion failed")
-        raise HTTPException(status_code=400, detail=f"Conversion failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
 
 @router.get("/download/{session_id}")
