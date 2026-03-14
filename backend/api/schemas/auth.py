@@ -1,6 +1,12 @@
-from pydantic import BaseModel, Field, field_validator
+
+
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Optional
+
+from pydantic import BaseModel, field_validator
+
 
 # -------- Requests --------
 
@@ -8,16 +14,24 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+
 class RefreshRequest(BaseModel):
+    """
+    Backward-compatible request model.
+    Refresh is cookie-based; body token is not required by current backend.
+    """
     refresh_token: str
+
 
 class PasswordResetRequest(BaseModel):
     username: str
     reason: Optional[str] = None
 
+
 class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str
+
 
 # -------- Responses --------
 
@@ -32,20 +46,22 @@ class UserInfo(BaseModel):
     @field_validator("role", mode="before")
     @classmethod
     def normalize_role(cls, v):
-        if hasattr(v, 'value'):
+        if hasattr(v, "value"):
             return v.value.lower()
         return str(v).lower() if v else v
 
-    class Config:
-        from_attributes = True
+    # Pydantic v2-friendly (keeps behavior similar to Config.from_attributes)
+    model_config = {"from_attributes": True}
+
 
 class TokenResponse(BaseModel):
     """Token response - refresh_token is delivered via HttpOnly cookie, not in body."""
     access_token: str
     token_type: str = "bearer"
     user: UserInfo
-    # Note: refresh_token is set as HttpOnly cookie, not returned in response body
+
 
 class RefreshTokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+

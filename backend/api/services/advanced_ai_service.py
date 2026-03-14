@@ -1,3 +1,4 @@
+
 """
 Unified RAG Service — Single AI Stack for RET v4
 
@@ -16,6 +17,7 @@ Key improvements over the previous implementation:
   6. Conversation history with configurable max length
 """
 
+import asyncio
 import csv
 import hashlib
 import json
@@ -28,7 +30,7 @@ from datetime import datetime, timezone
 from collections import Counter
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from api.core.config import settings
 from api.core.prompts import (
@@ -42,7 +44,7 @@ from api.core.prompts import (
     build_user_prompt,
     get_citation_repair_messages,
 )
-from api.integrations.azure_openai import _retry_with_backoff
+from api.integrations.azure_openai import _retry_with_backoff, _retry_with_backoff_async
 from api.utils.io_utils import atomic_write_json, safe_read_json
 from api.services.ai.visualization_service import render_chart_images_from_answer
 
@@ -55,6 +57,11 @@ try:
     from openai import AzureOpenAI
 except ImportError:
     AzureOpenAI = None
+
+try:
+    from openai import AsyncAzureOpenAI
+except ImportError:
+    AsyncAzureOpenAI = None
 
 
 logger = logging.getLogger(__name__)
@@ -122,7 +129,7 @@ class RetrievalResult:
     """Single retrieval result from vector store."""
     document: str
     metadata: Dict[str, Any]
-    distance: float
+    distance: Optional[float]
     similarity: float
 
 
@@ -309,10 +316,11 @@ class ChromaVectorStore:
             for i in range(min(len(docs), len(metas), len(dists))):
                 distance = float(dists[i]) if dists[i] is not None else None
                 similarity = vector_similarity_from_distance(distance)
+                meta = metas[i] if isinstance(metas[i], dict) else {}
                 hits.append(
                     RetrievalResult(
                         document=docs[i],
-                        metadata=metas[i] or {},
+                        metadata=dict(cast(Dict[str, Any], meta)),
                         distance=distance,
                         similarity=similarity,
                     )
@@ -348,8 +356,8 @@ class ChromaVectorStore:
             for meta in (result.get("metadatas") or []):
                 if not meta or meta.get("doc_type") in ("summary", "file_marker"):
                     continue
-                if "group" in meta:
-                    g = meta["group"]
+                g = meta.get("group") if isinstance(meta, dict) else None
+                if isinstance(g, str):
                     groups[g] = groups.get(g, 0) + 1
             return groups
         except Exception:
@@ -362,7 +370,7 @@ class ChromaVectorStore:
         partially-indexed files.
         """
         try:
-            where = {
+            where: Dict[str, Any] = {
                 "$and": [
                     {"filename": {"$eq": filename}},
                     {"group": {"$eq": group}},
@@ -370,7 +378,7 @@ class ChromaVectorStore:
                     {"doc_type": {"$eq": "summary"}},
                 ]
             }
-            result = self.collection.get(where=where, include=[])
+            result = self.collection.get(where=cast(Any, where), include=[])
             return len(result.get("ids", [])) > 0
         except Exception:
             return False
@@ -602,7 +610,7 @@ class ChatService:
 
     def generate(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         temperature: float = AI_TEMPERATURE,
         max_tokens: int = AI_MAX_TOKENS,
     ) -> str:
@@ -610,12 +618,65 @@ class ChatService:
         def _call():
             return self.client.chat.completions.create(
                 model=self.deploy_name,
-                messages=messages,
+                messages=cast(Any, messages),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=self._timeout,
             )
         response = _retry_with_backoff(_call)
+        return (response.choices[0].message.content or "").strip()
+
+
+# ============================================================
+# Async Azure OpenAI Chat Service
+# ============================================================
+
+class AsyncChatService:
+    """Async chat generation via Azure OpenAI — non-blocking LLM calls."""
+
+    def __init__(self):
+        if AsyncAzureOpenAI is None:
+            raise RuntimeError(
+                "openai package (with async support) is not installed. "
+                "Install it with: pip install openai"
+            )
+
+        api_key = settings.AZURE_OPENAI_API_KEY or ""
+        endpoint = str(settings.AZURE_OPENAI_ENDPOINT or "")
+        api_version = settings.AZURE_OPENAI_API_VERSION or "2024-10-21"
+        self.deploy_name = settings.AZURE_OPENAI_CHAT_MODEL or ""
+        self._timeout = getattr(settings, "AZURE_OPENAI_TIMEOUT_SECONDS", None) or 60
+
+        if not all([api_key, endpoint, self.deploy_name]):
+            raise RuntimeError(
+                "Azure OpenAI chat config incomplete. "
+                "Set AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
+                "and AZURE_OPENAI_CHAT_MODEL in settings/.env"
+            )
+
+        self.client = AsyncAzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            api_version=api_version,
+            timeout=self._timeout,
+        )
+
+    async def generate_async(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float = AI_TEMPERATURE,
+        max_tokens: int = AI_MAX_TOKENS,
+    ) -> str:
+        """Generate a chat response asynchronously with retry."""
+        async def _call():
+            return await self.client.chat.completions.create(
+                model=self.deploy_name,
+                messages=cast(Any, messages),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=self._timeout,
+            )
+        response = await _retry_with_backoff_async(_call, name="async_chat_completion")
         return (response.choices[0].message.content or "").strip()
 
 
@@ -644,6 +705,9 @@ class UnifiedRAGService:
         self.vector_store = ChromaVectorStore(session_dir, session_id, user_id)
         self.embeddings = EmbeddingService()
         self.chat_service = ChatService()
+
+        # Async chat service — lazily initialised on first async call
+        self._async_chat_service: Optional[AsyncChatService] = None
 
         # Track which groups have been indexed and their chunk counts
         self.indexed_groups: Dict[str, int] = {}
@@ -836,7 +900,7 @@ class UnifiedRAGService:
                         stats.groups_processed.append(group)
                     continue
 
-                chunk_iter, summary_info = self._chunk_csv_iter(
+                chunk_iter, summary_info = self._chunk_csv_with_sidecar(
                     str(path),
                     target_chars=CHUNK_TARGET_CHARS,
                     group_override=group,
@@ -1298,6 +1362,20 @@ class UnifiedRAGService:
         Returns:
             List of RetrievalResult sorted by hybrid score, diversified via MMR
         """
+        from api.utils.metrics import timed_block
+
+        with timed_block("rag_retrieve", extra={"top_k": top_k, "intent": intent, "group_filter": group_filter}):
+            return self._retrieve_impl(query, top_k, group_filter, extra_queries, include_summaries, intent)
+
+    def _retrieve_impl(
+        self,
+        query: str,
+        top_k: int = RETRIEVAL_TOP_K,
+        group_filter: Optional[str] = None,
+        extra_queries: Optional[List[str]] = None,
+        include_summaries: bool = True,
+        intent: str = "factual",
+    ) -> List[RetrievalResult]:
         extra_queries = [q for q in (extra_queries or []) if q.strip()]
 
         # Broaden retrieval for summary/exploratory intents
@@ -1375,6 +1453,13 @@ class UnifiedRAGService:
             Dict with answer, sources, citations, query_transformation, response_type
         """
         start_time = time.time()
+
+        try:
+            from api.utils.metrics import timed_block as _tb
+            _perf_ctx = _tb("rag_chat", extra={"group_filter": group_filter, "top_k": top_k})
+            _perf_ctx.__enter__()
+        except Exception:
+            _perf_ctx = None  # type: ignore[assignment]
 
         try:
             # Step 1: Transform query for better retrieval
@@ -1542,6 +1627,12 @@ class UnifiedRAGService:
                 "response_type": "error",
                 "visualizations": [],
             }
+        finally:
+            if _perf_ctx is not None:
+                try:
+                    _perf_ctx.__exit__(None, None, None)
+                except Exception:
+                    pass
 
     def chat_direct(self, message: str) -> str:
         """
@@ -1556,6 +1647,204 @@ class UnifiedRAGService:
             {"role": "user", "content": message},
         ]
         return self.chat_service.generate(messages)
+
+    # ------------------------------------------------------------------
+    # Async variants — non-blocking for use from async router endpoints
+    # ------------------------------------------------------------------
+
+    def _get_async_chat_service(self) -> "AsyncChatService":
+        """Lazily create the async chat service on first async call."""
+        if self._async_chat_service is None:
+            self._async_chat_service = AsyncChatService()
+        return self._async_chat_service
+
+    async def chat_async(
+        self,
+        query: str,
+        group_filter: Optional[str] = None,
+        top_k: int = RETRIEVAL_TOP_K,
+    ) -> Dict[str, Any]:
+        """
+        Async RAG chat — same pipeline as chat() but non-blocking.
+
+        CPU-bound work (query transform, retrieval, context building)
+        runs via asyncio.to_thread(), while LLM calls use AsyncAzureOpenAI.
+        """
+        start_time = time.time()
+        async_chat = self._get_async_chat_service()
+
+        try:
+            # Step 1: Transform query (CPU-bound, uses sync LLM)
+            transform = None
+            if getattr(settings, "RAG_ENABLE_QUERY_TRANSFORM", True):
+                transform = await asyncio.to_thread(self._transform_query, query)
+
+            search_query = transform["transformed_query"] if transform else query
+            intent = transform.get("intent", "factual") if transform else "factual"
+
+            if not group_filter and transform and transform.get("filters"):
+                inferred_group = transform.get("filters", {}).get("group")
+                if isinstance(inferred_group, str) and inferred_group.strip():
+                    group_filter = inferred_group
+
+            extra_queries: List[str] = []
+            if transform:
+                extra_queries.extend(transform.get("sub_queries", [])[:3])
+                keywords = transform.get("keywords", [])
+                if keywords:
+                    extra_queries.append(" ".join(keywords[:8]))
+
+            # Step 2: Retrieval (ChromaDB + embeddings — sync, run in thread)
+            hits = await asyncio.to_thread(
+                self.retrieve,
+                search_query,
+                top_k=top_k,
+                group_filter=group_filter,
+                extra_queries=extra_queries,
+                include_summaries=True,
+                intent=intent,
+            )
+
+            # No context → refuse cleanly
+            if not hits:
+                answer = REFUSE_NO_SOURCES
+                self._append_history("user", query)
+                self._append_history("assistant", answer)
+                return {
+                    "answer": answer,
+                    "sources": [],
+                    "citations": [],
+                    "query_time_ms": self._elapsed_ms(start_time),
+                    "error": False,
+                    "query_transformation": transform,
+                    "response_type": intent,
+                }
+
+            # Step 4: Build context (CPU-bound)
+            context = await asyncio.to_thread(
+                build_context_from_hits, hits, max_chunks=MAX_CONTEXT_CHUNKS
+            )
+
+            if len(context.strip()) < 50 or context.strip() == "(empty)":
+                answer = REFUSE_INSUFFICIENT_CONTEXT
+                self._append_history("user", query)
+                self._append_history("assistant", answer)
+                return {
+                    "answer": answer,
+                    "sources": [],
+                    "citations": [],
+                    "query_time_ms": self._elapsed_ms(start_time),
+                    "error": False,
+                    "query_transformation": transform,
+                    "response_type": intent,
+                }
+
+            # Step 5: Build messages
+            messages: List[Dict[str, str]] = [
+                {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+            ]
+            for msg in self.conversation_history[-6:]:
+                messages.append({"role": msg.role, "content": msg.content})
+            user_content = build_user_prompt(query, context, intent=intent)
+            messages.append({"role": "user", "content": user_content})
+
+            # Step 6: Generate answer — async LLM call (non-blocking!)
+            answer = await async_chat.generate_async(messages)
+
+            # Step 7: Citation validation & repair
+            citations_found = extract_citations(answer)
+            allowed_citations = {
+                f"[{hit.metadata.get('source', 'csv')}:{i}]"
+                for i, hit in enumerate(hits)
+            }
+
+            invalid = citations_found - allowed_citations
+            if invalid and citations_found and ENABLE_CITATION_REPAIR:
+                try:
+                    repair_msgs = get_citation_repair_messages(
+                        answer, sorted(allowed_citations)
+                    )
+                    repair_messages = [
+                        repair_msgs["system"],
+                        repair_msgs["user"],
+                    ]
+                    repaired = await async_chat.generate_async(
+                        repair_messages,
+                        temperature=CITATION_REPAIR_TEMP,
+                        max_tokens=AI_MAX_TOKENS,
+                    )
+                    if repaired and len(repaired) > 20:
+                        answer = repaired
+                        citations_found = extract_citations(answer)
+                except Exception as e:
+                    logger.warning(f"Async citation repair failed: {e}")
+
+            if citations_found and not (citations_found & allowed_citations):
+                answer = REFUSE_INVALID_CITATIONS
+
+            # Build sources
+            sources = []
+            for i, hit in enumerate(hits):
+                meta = hit.metadata or {}
+                sources.append(
+                    asdict(SourceDocument(
+                        file=meta.get("filename", "unknown"),
+                        group=meta.get("group"),
+                        snippet=hit.document[:300],
+                        chunk_index=meta.get("chunk_index"),
+                        score=round(hit.similarity, 4),
+                    ))
+                )
+
+            citations = list(extract_citations(answer))
+
+            # Chart rendering (CPU-bound)
+            visualizations = []
+            try:
+                visualizations = await asyncio.to_thread(
+                    render_chart_images_from_answer, answer
+                )
+            except Exception as e:
+                logger.debug(f"Chart rendering skipped: {e}")
+
+            self._append_history("user", query)
+            self._append_history("assistant", answer)
+
+            return {
+                "answer": answer,
+                "sources": sources,
+                "citations": citations,
+                "query_time_ms": self._elapsed_ms(start_time),
+                "error": False,
+                "query_transformation": transform,
+                "response_type": intent,
+                "visualizations": visualizations,
+            }
+
+        except Exception as e:
+            logger.error(f"Async chat error: {e}", exc_info=True)
+            return {
+                "answer": f"Error generating response: {str(e)}",
+                "sources": [],
+                "citations": [],
+                "query_time_ms": self._elapsed_ms(start_time),
+                "error": True,
+                "query_transformation": None,
+                "response_type": "error",
+                "visualizations": [],
+            }
+
+    async def chat_direct_async(self, message: str) -> str:
+        """Async direct LLM call without RAG retrieval."""
+        async_chat = self._get_async_chat_service()
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant for the RET Application.",
+            },
+            {"role": "user", "content": message},
+        ]
+        return await async_chat.generate_async(messages)
 
     # ------------------------------------------------------------------
     # History Management
@@ -1640,6 +1929,33 @@ class UnifiedRAGService:
             lines.extend(sample_rows[:SUMMARY_SAMPLE_ROWS])
 
         return "\n".join(lines)[:CHUNK_MAX_CHARS]
+
+    def _chunk_csv_with_sidecar(
+        self,
+        csv_path: str,
+        target_chars: int = CHUNK_TARGET_CHARS,
+        group_override: Optional[str] = None,
+    ) -> Tuple[Any, Dict[str, Any]]:
+        """Try sidecar cache first, fall back to live CSV chunking."""
+        if getattr(settings, "FEATURE_SIDECAR_CACHE", False):
+            try:
+                from api.utils.sidecar import find_sidecar, read_sidecar
+                sc = find_sidecar(Path(csv_path))
+                if sc is not None:
+                    chunks = read_sidecar(sc)
+                    if chunks:
+                        logger.debug("Using sidecar cache for %s (%d chunks)", Path(csv_path).name, len(chunks))
+                        summary_info = {
+                            "filename": Path(csv_path).name,
+                            "group": group_override or chunks[0].get("group", ""),
+                            "total_chunks": len(chunks),
+                            "from_sidecar": True,
+                        }
+                        return iter(chunks), summary_info
+            except Exception as exc:
+                logger.debug("Sidecar read failed for %s: %s", csv_path, exc)
+
+        return self._chunk_csv_iter(csv_path, target_chars, group_override)
 
     def _chunk_csv_iter(
         self,

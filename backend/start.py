@@ -11,20 +11,44 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(backend_dir))
 
-def init_database():
-    """Initialize database tables"""
-    print("[*] Initializing database...")
+def run_migrations() -> bool:
+    """Apply all pending Alembic migrations."""
+    print("[*] Applying database migrations (alembic upgrade head)...")
     try:
-        from scripts.init_db import init_db
-        init_db()
-        print("[+] Database initialized")
-        
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"[-] Migration failed:\n{result.stderr}")
+            return False
+        else:
+            print("[+] Migrations applied")
+            if result.stdout.strip():
+                print(result.stdout.strip())
+            return True
+    except Exception as e:
+        print(f"[-] Migration error: {e}")
+        return False
+
+
+def init_database():
+    """Initialize database state for development startup."""
+    print("[*] Initializing database...")
+    if not run_migrations():
+        raise RuntimeError("Database migrations failed. Aborting startup.")
+
+    print("[+] Database initialized")
+
+    try:
         # Create demo users
         print("[*] Creating demo users...")
         from scripts.demo_users import create_demo_users
-        create_demo_users()
+        create_demo_users(force_reset_passwords=False)
     except Exception as e:
-        print(f"[!] Database init warning: {e}")
+        print(f"[!] Demo users warning: {e}")
 
 def start_server():
     """Start uvicorn development server"""

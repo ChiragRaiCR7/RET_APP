@@ -1,3 +1,4 @@
+
 """
 Visualization service for rendering static chart images using matplotlib + seaborn.
 
@@ -13,32 +14,39 @@ import json
 import re
 from typing import Any, Dict, List, Optional, cast
 
-_CHART_BLOCK_RE = re.compile(r"```chart\s*\n([\s\S]*?)```", re.IGNORECASE)
+_CHART_BLOCK_RE = re.compile(r"```(?:chart|chart-data|graph|plot)\s*\n([\s\S]*?)```", re.IGNORECASE)
 _THEME_INITIALIZED = False
 _MPL_AVAILABLE: Optional[bool] = None
 
+# These will be populated dynamically at runtime
+plt: Any = None
+Circle: Any = None
+PolarAxes: Any = None
+np: Any = None
+sns: Any = None
+
 
 def _load_matplotlib() -> bool:
-    global _MPL_AVAILABLE
+    global _MPL_AVAILABLE, plt, Circle, PolarAxes, np, sns
     if _MPL_AVAILABLE is not None:
         return _MPL_AVAILABLE
 
     try:
-        import matplotlib
-
+        import matplotlib  # type: ignore[import-not-found]
         matplotlib.use("Agg")
 
-        import matplotlib.pyplot as plt  # noqa: WPS433
-        from matplotlib.patches import Circle  # noqa: WPS433
-        from matplotlib.projections.polar import PolarAxes  # noqa: WPS433
-        import numpy as np  # noqa: WPS433
-        import seaborn as sns  # noqa: WPS433
+        import matplotlib.pyplot as mplt  # noqa: WPS433  # type: ignore[import-not-found]
+        from matplotlib.patches import Circle as MCircle  # noqa: WPS433  # type: ignore[import-not-found]
+        from matplotlib.projections.polar import PolarAxes as MPolarAxes  # noqa: WPS433  # type: ignore[import-not-found]
+        import numpy as mnp  # noqa: WPS433
+        import seaborn as msns  # noqa: WPS433  # type: ignore[import-not-found]
 
-        globals()["plt"] = plt
-        globals()["Circle"] = Circle
-        globals()["PolarAxes"] = PolarAxes
-        globals()["np"] = np
-        globals()["sns"] = sns
+        # Assign to module-level variables
+        plt = mplt
+        Circle = MCircle
+        PolarAxes = MPolarAxes
+        np = mnp
+        sns = msns
 
         _MPL_AVAILABLE = True
     except Exception:
@@ -69,14 +77,30 @@ def _extract_chart_blocks(answer: str) -> List[Dict[str, Any]]:
         try:
             blocks.append(json.loads(raw))
         except Exception:
-            continue
+            # Common LLM formatting issue: trailing commas before } or ]
+            try:
+                cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+                blocks.append(json.loads(cleaned))
+            except Exception:
+                continue
     return blocks
+
+
+def _normalize_chart_type(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "polararea": "polararea",
+        "polar_area": "polararea",
+        "polar": "polararea",
+        "area": "line",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _render_chart_image(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not _load_matplotlib():
         return None
-    chart_type = str(config.get("type", "")).lower().strip()
+    chart_type = _normalize_chart_type(str(config.get("type") or config.get("chartType") or ""))
     data = config.get("data", {}) or {}
     labels = data.get("labels", []) or []
     datasets = data.get("datasets", []) or []
@@ -130,7 +154,7 @@ def _render_chart_image(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 ax.scatter(xs, ys, label=label)
 
         elif chart_type in {"radar", "polararea"}:
-            ax = cast(PolarAxes, fig.add_subplot(1, 1, 1, polar=True))
+            ax: Any = fig.add_subplot(1, 1, 1, polar=True)
             values = datasets[0].get("data", []) or []
             if not values:
                 return None

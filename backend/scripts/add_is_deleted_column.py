@@ -1,3 +1,4 @@
+
 """
 Migration script to add is_deleted column to users table
 Run this if you need to preserve existing data instead of recreating the database

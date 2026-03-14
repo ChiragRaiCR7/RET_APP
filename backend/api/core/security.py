@@ -1,29 +1,46 @@
+
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 import secrets
+from typing import Any, Optional, Dict
+
 from jose import jwt, JWTError
 from jose.exceptions import ExpiredSignatureError, JWTClaimsError
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHash
+
 from api.core.config import settings
 
 # Initialize Argon2 password hasher
 hasher = PasswordHasher()
 
 
+def _utcnow() -> datetime:
+    """UTC now helper."""
+    return datetime.now(timezone.utc)
+
+
+def _to_ts(dt: datetime) -> int:
+    """Convert datetime to unix timestamp seconds (int)."""
+    return int(dt.timestamp())
+
+
 def hash_password(password: str) -> str:
-    """Hash a password using Argon2"""
+    """Hash a password using Argon2."""
     return hasher.hash(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    """Verify a password against its Argon2 hash"""
+    """Verify a password against its Argon2 hash."""
     try:
-        hasher.verify(hashed, password)  # verify(hash, password) - order matters!
+        # verify(hash, password) - order matters!
+        hasher.verify(hashed, password)
         return True
     except (VerifyMismatchError, InvalidHash):
         return False
     except Exception:
-        # Log unexpected errors but still return False
+        # Log unexpected errors elsewhere if desired; keep behavior: return False
         return False
 
 
@@ -31,37 +48,38 @@ def create_token(
     subject: str,
     expires_delta: timedelta,
     token_type: str = "access",
-    additional_claims: dict | None = None,
+    additional_claims: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Create a JWT token with proper claims.
-    
+
     Args:
         subject: The user ID or identifier
         expires_delta: Token expiration time
         token_type: 'access' or 'refresh'
         additional_claims: Optional extra claims to include
-    
+
     Returns:
         Encoded JWT token
     """
     if not settings.JWT_SECRET_KEY:
         raise ValueError("JWT_SECRET_KEY is not configured")
-    
-    now = datetime.now(timezone.utc)
-    payload = {
+
+    now = _utcnow()
+    payload: Dict[str, Any] = {
         "sub": subject,
-        "iat": now,  # Issued at
-        "exp": now + expires_delta,
-        "iss": settings.JWT_ISSUER,  # Issuer
-        "aud": settings.JWT_AUDIENCE,  # Audience
+        # ✅ Use int timestamps for portability
+        "iat": _to_ts(now),
+        "exp": _to_ts(now + expires_delta),
+        "iss": settings.JWT_ISSUER,
+        "aud": settings.JWT_AUDIENCE,
         "jti": secrets.token_hex(16),  # JWT ID for revocation tracking
         "type": token_type,
     }
-    
+
     if additional_claims:
         payload.update(additional_claims)
-    
+
     return jwt.encode(
         payload,
         settings.JWT_SECRET_KEY,
@@ -69,7 +87,7 @@ def create_token(
     )
 
 
-def create_access_token(subject: str, additional_claims: dict | None = None) -> str:
+def create_access_token(subject: str, additional_claims: Optional[Dict[str, Any]] = None) -> str:
     """Create an access token with standard expiration."""
     return create_token(
         subject=subject,
@@ -88,40 +106,42 @@ def create_refresh_token(subject: str) -> str:
     )
 
 
-def verify_token(token: str, token_type: str = "access") -> dict:
+def verify_token(token: str, token_type: str = "access") -> Dict[str, Any]:
     """
     Verify and decode a JWT token.
-    
+
     Args:
         token: The JWT token to verify
         token_type: Expected token type ('access' or 'refresh')
-    
+
     Returns:
         Decoded token payload
-    
+
     Raises:
         ValueError: If token is invalid or verification fails
     """
     if not settings.JWT_SECRET_KEY:
         raise ValueError("JWT_SECRET_KEY is not configured")
-    
+
     try:
-        payload = jwt.decode(
+        payload: Dict[str, Any] = jwt.decode(
             token,
             settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
             audience=settings.JWT_AUDIENCE,
             issuer=settings.JWT_ISSUER,
         )
-        
+
         # Verify token type
         if payload.get("type") != token_type:
             raise ValueError(f"Expected {token_type} token, got {payload.get('type')}")
-        
+
         return payload
+
     except ExpiredSignatureError:
         raise ValueError("Token has expired")
     except JWTClaimsError as e:
         raise ValueError(f"Invalid token claims: {e}")
     except JWTError as e:
         raise ValueError(f"Invalid token: {e}")
+

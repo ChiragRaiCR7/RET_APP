@@ -20,8 +20,17 @@ if config.config_file_name:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-db_url = settings.DATABASE_URL or "sqlite:///./test.db"
-config.set_main_option("sqlalchemy.url", db_url)
+
+# Alembic uses a *sync* driver.  Convert async DSNs so migrations work:
+#   postgresql+asyncpg://  →  postgresql+psycopg2://
+#   sqlite+aiosqlite://    →  sqlite:///
+_raw_url = settings.DATABASE_URL or "sqlite:///./test.db"
+_sync_url = (
+    _raw_url
+    .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+    .replace("sqlite+aiosqlite:///", "sqlite:///")
+)
+config.set_main_option("sqlalchemy.url", _sync_url)
 
 
 def run_migrations_offline():

@@ -3,7 +3,7 @@
     <div class="ret-container">
       <BrandHeader @toggle-theme="toggleTheme" />
       <router-view />
-      <footer class="ret-footer">© 2025 TATA Consultancy Services — RET v4</footer>
+      <footer class="ret-footer">© 2026 TATA Consultancy Services — RET v4</footer>
     </div>
     <ToastContainer />
   </div>

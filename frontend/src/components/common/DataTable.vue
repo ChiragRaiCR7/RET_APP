@@ -1,3 +1,5 @@
+
+
 <template>
   <div class="data-table-wrapper">
     <table class="data-table" role="table" :aria-label="ariaLabel">

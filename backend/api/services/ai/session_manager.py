@@ -1,3 +1,4 @@
+
 """
 AI Session Manager — Simplified Single-Stack Manager.
 
@@ -14,6 +15,7 @@ import json
 import logging
 import shutil
 import threading
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -150,6 +152,232 @@ class SessionAIManager:
         self._save_metadata()
 
         return result
+
+    async def chat_async(
+        self,
+        message: str,
+        use_rag: bool = True,
+        group_filter: Optional[str] = None,
+        top_k: int = 16,
+        thread_id: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Async chat — fully non-blocking.
+
+        When FEATURE_LANGGRAPH_ENABLED is True and use_rag is True, delegates
+        to the LangGraph RAG pipeline.  Otherwise falls back to the existing
+        UnifiedRAGService async/sync paths.
+        """
+        if not self.is_configured():
+            return {
+                "answer": (
+                    "AI is not configured. Please set Azure OpenAI credentials "
+                    "in your environment (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT)."
+                ),
+                "sources": [],
+                "citations": [],
+                "error": "not_configured",
+            }
+
+        if use_rag and getattr(settings, "FEATURE_LANGGRAPH_ENABLED", False):
+            try:
+                from api.services.ai.langgraph.graph import run_rag_graph
+
+                history = [
+                    {"role": m.role, "content": m.content}
+                    for m in getattr(self.rag_service, "conversation_history", [])
+                ]
+                result = await run_rag_graph(
+                    query=message,
+                    session_id=self.session_id,
+                    user_id=self.user_id,
+                    group_filter=group_filter,
+                    top_k=top_k,
+                    conversation_history=history[-6:],
+                    thread_id=thread_id,
+                )
+                # Keep conversation history in sync
+                self.rag_service._append_history("user", message)
+                self.rag_service._append_history("assistant", result.get("answer", ""))
+                self._save_metadata()
+                return result
+            except Exception:
+                logger.warning(
+                    "LangGraph RAG failed; falling back to legacy async path",
+                    exc_info=True,
+                )
+
+        if use_rag:
+            # Use the native async RAG pipeline (AsyncAzureOpenAI + asyncio.to_thread)
+            try:
+                result = await self.rag_service.chat_async(
+                    query=message,
+                    group_filter=group_filter,
+                    top_k=top_k,
+                )
+            except Exception:
+                logger.warning(
+                    "Async RAG chat failed; falling back to sync-in-thread",
+                    exc_info=True,
+                )
+                result = await asyncio.to_thread(
+                    self.chat, message, True, group_filter, top_k,
+                )
+        else:
+            try:
+                from api.services.ai.async_azure_openai_service import (
+                    get_async_azure_chat_service,
+                )
+
+                service = get_async_azure_chat_service()
+                answer = await service.generate(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a helpful assistant for the RET Application.",
+                        },
+                        {"role": "user", "content": message},
+                    ],
+                    temperature=settings.RET_AI_TEMPERATURE,
+                    max_tokens=getattr(settings, "AI_MAX_TOKENS", 1200),
+                )
+
+                result = {
+                    "answer": answer,
+                    "sources": [],
+                    "citations": [],
+                    "query_time_ms": 0,
+                    "error": False,
+                }
+            except Exception:
+                logger.warning(
+                    "Async direct chat failed; falling back to sync",
+                    exc_info=True,
+                )
+                result = await asyncio.to_thread(
+                    self.chat, message, False, group_filter, top_k,
+                )
+
+        # Persist metadata in background
+        await asyncio.to_thread(self._save_metadata)
+        return result
+
+    async def chat_stream(
+        self,
+        message: str,
+        group_filter: Optional[str] = None,
+        top_k: int = 16,
+        thread_id: str = "",
+    ):
+        """
+        Async generator that yields SSE events for a streaming RAG chat.
+
+        Falls back to a single ``done`` event wrapping ``chat_async`` when
+        LangGraph streaming is unavailable or FEATURE_CHAT_STREAMING is off.
+        """
+        import json as _json
+
+        if not self.is_configured():
+            yield (
+                'event: error\ndata: {"detail":"AI is not configured."}\n\n'
+            )
+            return
+
+        if not getattr(settings, "FEATURE_CHAT_STREAMING", False):
+            # Feature flag off — fall back to non-streaming response
+            result = await self.chat_async(
+                message=message,
+                use_rag=True,
+                group_filter=group_filter,
+                top_k=top_k,
+            )
+            yield f"event: done\ndata: {_json.dumps(result, default=str)}\n\n"
+            return
+
+        try:
+            from api.services.ai.langgraph.graph import stream_rag_graph
+
+            history = [
+                {"role": m.role, "content": m.content}
+                for m in getattr(self.rag_service, "conversation_history", [])
+            ]
+
+            final_answer: str = ""
+
+            async for event in stream_rag_graph(
+                query=message,
+                session_id=self.session_id,
+                user_id=self.user_id,
+                group_filter=group_filter,
+                top_k=top_k,
+                conversation_history=history[-6:],
+                thread_id=thread_id,
+            ):
+                yield event
+                # Capture answer from the done event
+                if event.startswith("event: done"):
+                    try:
+                        data_line = event.split("data: ", 1)[1]
+                        done_payload = _json.loads(data_line.strip())
+                        final_answer = done_payload.get("answer", "")
+                    except Exception:
+                        pass
+
+            # Keep conversation history in sync
+            if final_answer:
+                self.rag_service._append_history("user", message)
+                self.rag_service._append_history("assistant", final_answer)
+            await asyncio.to_thread(self._save_metadata)
+
+        except Exception as exc:
+            logger.warning(
+                "LangGraph streaming failed; falling back to non-streaming",
+                exc_info=True,
+            )
+            result = await self.chat_async(
+                message=message,
+                use_rag=True,
+                group_filter=group_filter,
+                top_k=top_k,
+            )
+            yield f"event: done\ndata: {_json.dumps(result, default=str)}\n\n"
+
+    async def resume_hitl(
+        self,
+        thread_id: str,
+        decision: str = "approve",
+        edited_answer: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Resume a HITL-interrupted graph execution.
+
+        Delegates to ``resume_rag_graph`` from the LangGraph module.
+        """
+        try:
+            from api.services.ai.langgraph.graph import resume_rag_graph
+
+            result = await resume_rag_graph(
+                thread_id=thread_id,
+                decision=decision,
+                edited_answer=edited_answer,
+            )
+
+            # Keep conversation history in sync
+            if result.get("answer") and not result.get("error"):
+                self.rag_service._append_history("assistant", result["answer"])
+            await asyncio.to_thread(self._save_metadata)
+            return result
+
+        except Exception as exc:
+            logger.error("HITL resume failed in session manager: %s", exc, exc_info=True)
+            return {
+                "answer": f"Resume failed: {exc}",
+                "sources": [],
+                "citations": [],
+                "query_time_ms": 0,
+                "error": True,
+                "response_type": "error",
+            }
 
     # ------------------------------------------------------------------
     # Embedding
@@ -289,6 +517,19 @@ class SessionAIManager:
         Returns:
             Status dict
         """
+        # Always refresh admin config at trigger time so latest admin changes apply.
+        try:
+            self.auto_embedder.reload_admin_config()
+        except Exception as e:
+            logger.warning("Failed to reload admin config before auto-embed trigger: %s", e)
+
+        if not self.auto_embedder.is_auto_embed_enabled:
+            return {
+                "status": "disabled",
+                "eligible_groups": [],
+                "message": "Auto-embedding is disabled in admin configuration",
+            }
+
         eligible = self.auto_embedder.detect_eligible_groups(xml_inventory)
 
         if not eligible:
@@ -301,11 +542,18 @@ class SessionAIManager:
         self.auto_embedder.start_auto_embed(
             xml_inventory=xml_inventory,
             groups_to_embed=eligible,
+            group_callback=self._on_group_embed_update,
         )
 
         # Track auto-embedded groups so the UI can hide them from manual selection
         self._auto_embedded_groups = list(set(self._auto_embedded_groups + eligible))
         self._metadata["auto_embedded_groups"] = self._auto_embedded_groups
+
+        # Initialize per-group status
+        group_status = self._metadata.get("embed_group_status", {})
+        for g in eligible:
+            group_status[g] = {"status": "queued", "updated_at": datetime.now(timezone.utc).isoformat()}
+        self._metadata["embed_group_status"] = group_status
         self._save_metadata()
 
         return {
@@ -318,6 +566,23 @@ class SessionAIManager:
     def auto_embedded_groups(self) -> List[str]:
         """Groups that were automatically embedded (admin-configured)."""
         return list(self._auto_embedded_groups)
+
+    def get_embed_group_status(self) -> Dict[str, Any]:
+        """Return persistent per-group embedding status."""
+        return dict(self._metadata.get("embed_group_status", {}))
+
+    def _on_group_embed_update(self, group: str, status: str, detail: str = "") -> None:
+        """Callback invoked by the auto-embedder as each group progresses."""
+        try:
+            gs = self._metadata.setdefault("embed_group_status", {})
+            gs[group] = {
+                "status": status,
+                "detail": detail,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._save_metadata()
+        except Exception as exc:
+            logger.debug("Failed to persist group embed status for %s: %s", group, exc)
 
     def get_auto_embed_progress(self):
         """Get current auto-embedding progress."""
@@ -350,6 +615,10 @@ class SessionAIManager:
         self.rag_service.clear()
         self._metadata["embedded_groups"] = []
         self._save_metadata()
+
+    def clear_index(self) -> None:
+        """Compatibility alias for older router callers."""
+        self.clear_embeddings()
 
     def cleanup(self) -> None:
         """Full cleanup — destroy vector store, clear history, delete metadata."""
@@ -402,6 +671,165 @@ class SessionAIManager:
                 json.dump(self._metadata, f, indent=2)
         except Exception as e:
             logger.error(f"Error saving AI metadata: {e}")
+
+
+def _load_conversion_inventory_for_auto_embed(session_dir: Path) -> List[Dict[str, Any]]:
+    """Load best-effort conversion inventory for auto-embedding decisions."""
+    for candidate in ("conversion_index.json", "xml_inventory.json"):
+        path = session_dir / candidate
+        if not path.exists():
+            continue
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Failed to parse %s for auto-embed trigger: %s", path.name, e)
+            continue
+
+        if isinstance(raw, dict):
+            files = raw.get("files")
+            if isinstance(files, list):
+                return [x for x in files if isinstance(x, dict)]
+
+        if isinstance(raw, list):
+            return [x for x in raw if isinstance(x, dict)]
+
+    return []
+
+
+def trigger_auto_embed_after_conversion(
+    session_id: str,
+    user_id: str,
+    conversion_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Best-effort auto-embed trigger after conversion completion.
+
+    Returns a metadata payload suitable for conversion responses and async job result.
+    """
+    meta: Dict[str, Any] = {
+        "status": "not_attempted",
+        "attempted": False,
+        "triggered": False,
+        "eligible_groups": [],
+        "message": "Auto-embedding not attempted",
+    }
+
+    if not session_id or not user_id:
+        meta["message"] = "Auto-embedding not attempted: missing session/user context"
+        return meta
+
+    try:
+        if isinstance(conversion_result, dict):
+            stats = conversion_result.get("stats") or {}
+            success_count = int(stats.get("success", 0) or 0)
+            failed_count = int(stats.get("failed", 0) or 0)
+            if failed_count > 0 and success_count == 0:
+                meta["message"] = "Auto-embedding skipped: conversion produced no successful outputs"
+                return meta
+
+        manager = get_session_ai_manager(session_id, user_id)
+
+        if not manager.is_configured():
+            meta.update(
+                {
+                    "status": "disabled",
+                    "attempted": True,
+                    "message": "AI service not configured",
+                }
+            )
+            return meta
+
+        inventory = _load_conversion_inventory_for_auto_embed(manager.session_dir)
+        if not inventory:
+            meta.update(
+                {
+                    "status": "no_inventory",
+                    "attempted": True,
+                    "message": "No conversion inventory available for auto-embedding",
+                }
+            )
+            return meta
+
+        try:
+            manager.auto_embedder.reload_admin_config()
+        except Exception as e:
+            logger.warning("Failed to reload admin config for auto-embed trigger: %s", e)
+
+        if not manager.auto_embedder.is_auto_embed_enabled:
+            meta.update(
+                {
+                    "attempted": True,
+                    "status": "disabled",
+                    "eligible_groups": [],
+                    "message": "Auto-embedding is disabled in admin configuration",
+                }
+            )
+            return meta
+
+        eligible = manager.auto_embedder.detect_eligible_groups(inventory)
+        meta["attempted"] = True
+        meta["eligible_groups"] = list(eligible)
+
+        if not eligible:
+            meta.update(
+                {
+                    "status": "no_eligible_groups",
+                    "message": "No groups matched admin auto-embed configuration",
+                }
+            )
+            return meta
+
+        try:
+            in_progress = str(getattr(manager.get_auto_embed_progress(), "status", "") or "").lower()
+            if in_progress in {"preparing", "embedding"}:
+                meta.update(
+                    {
+                        "status": "already_running",
+                        "message": "Auto-embedding is already running",
+                    }
+                )
+                return meta
+        except Exception:
+            # Non-fatal; continue with trigger checks.
+            pass
+
+        try:
+            existing = manager.get_embedding_status() or {}
+            if all(bool((existing.get(g) or {}).get("indexed")) for g in eligible):
+                meta.update(
+                    {
+                        "status": "already_indexed",
+                        "message": "Eligible groups are already indexed",
+                    }
+                )
+                return meta
+        except Exception as e:
+            logger.debug("Unable to verify existing embedding status before trigger: %s", e)
+
+        started = manager.start_auto_embed(inventory)
+        status = str(started.get("status", "not_attempted"))
+        meta.update(
+            {
+                "status": status,
+                "triggered": status == "started",
+                "eligible_groups": list(started.get("eligible_groups", eligible) or eligible),
+                "message": str(started.get("message", "")),
+            }
+        )
+        return meta
+
+    except Exception as e:
+        logger.warning("Auto-embed trigger failed for session %s: %s", session_id, e, exc_info=True)
+        meta.update(
+            {
+                "status": "failed",
+                "attempted": True,
+                "triggered": False,
+                "message": f"Auto-embedding trigger failed: {e}",
+            }
+        )
+        return meta
 
 
 # ============================================================

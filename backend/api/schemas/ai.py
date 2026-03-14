@@ -1,181 +1,172 @@
+
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Literal
 from enum import Enum
 
+
+# ============================================================
+# Embedding (Manual) Schemas
+# ============================================================
 
 class EmbeddingMode(str, Enum):
     """Embedding mode"""
     FAST = "fast"  # Quick embedding with smaller chunks
     FULL = "full"  # Full embedding with larger context
-    AUTO = "auto"  # Auto-detect based on size
+    AUTO = "auto"  # Auto-select strategy based on size (NOT auto-embedding)
 
 
 class EmbeddingRequest(BaseModel):
-    """Request to embed groups from a session"""
-    session_id: str
-    groups: Optional[List[str]] = None
-    mode: EmbeddingMode = EmbeddingMode.AUTO
+    """Request to embed groups from a session (manual indexing)"""
+    session_id: str = Field(..., description="Session ID")
+    groups: Optional[List[str]] = Field(None, description="Groups to embed (optional)")
+    mode: EmbeddingMode = Field(default=EmbeddingMode.AUTO, description="Embedding mode")
 
 
 class EmbeddingResponse(BaseModel):
     """Response from embedding operation"""
-    status: str
-    message: str
-    stats: Dict[str, Any]
+    status: Literal["success", "queued", "error"] = Field(..., description="Operation status")
+    message: str = Field(..., description="Human-readable message")
+    stats: Dict[str, Any] = Field(default_factory=dict, description="Embedding statistics and details")
 
+
+# ============================================================
+# Chat Schemas (Legacy / Compatibility)
+# ============================================================
 
 class ChatRequest(BaseModel):
     """Request for chat or query"""
-    session_id: str
-    question: Optional[str] = None
-    message: Optional[str] = None  # Alias for question (frontend compatibility)
-    messages: Optional[List[Dict[str, str]]] = None  # For conversation
-    instructions: Optional[str] = None  # Optional session instructions
-    use_rag: bool = True  # Enable RAG retrieval
-    top_k: int = Field(default=8, ge=1, le=50)
+    session_id: str = Field(..., description="Session ID")
+    question: Optional[str] = Field(None, description="User question")
+    message: Optional[str] = Field(None, description="Alias for question (frontend compatibility)")
+    messages: Optional[List[Dict[str, str]]] = Field(None, description="Conversation messages")
+    instructions: Optional[str] = Field(None, description="Optional session instructions")
+    use_rag: bool = Field(True, description="Enable RAG retrieval")
+    top_k: int = Field(default=8, ge=1, le=50, description="Top-K chunks to retrieve")
 
 
 class SourceDocument(BaseModel):
     """Source document citation"""
-    file: str
-    group: Optional[str] = None
-    snippet: str
-    score: Optional[float] = None
-    chunk_index: Optional[int] = None
+    file: str = Field(..., description="Source filename")
+    group: Optional[str] = Field(None, description="Group/category")
+    snippet: str = Field(..., description="Context snippet")
+    score: Optional[float] = Field(None, description="Retrieval score (if available)")
+    chunk_index: Optional[int] = Field(None, description="Chunk index in document")
 
 
 class VisualizationArtifact(BaseModel):
     """Static visualization artifact (e.g., chart image)"""
-    type: str = "chart"
-    format: str = "png"
-    data: str
-    title: Optional[str] = None
-    chart_type: Optional[str] = None
+    type: str = Field(default="chart", description="Artifact type")
+    format: str = Field(default="png", description="Artifact format/encoding")
+    data: str = Field(..., description="Encoded artifact data (e.g., base64)")
+    title: Optional[str] = Field(None, description="Title")
+    chart_type: Optional[str] = Field(None, description="Chart type (bar/line/etc.)")
 
 
 class RetrievalInfo(BaseModel):
     """Retrieval information for transparency"""
-    doc: str
-    score: float
-    snippet: str
-    method: Optional[str] = None  # vector, lexical, hybrid
+    doc: str = Field(..., description="Document identifier")
+    score: float = Field(..., description="Retrieval score")
+    snippet: str = Field(..., description="Snippet")
+    method: Optional[str] = Field(None, description="vector, lexical, hybrid")
 
 
 class ChatResponse(BaseModel):
-    """Response from chat/query"""
-    answer: str
-    sources: List[SourceDocument] = []
-    retrievals: List[RetrievalInfo] = []
-    query_plan: Optional[Dict[str, Any]] = None
+    """Response from chat/query (legacy)"""
+    answer: str = Field(..., description="Assistant answer")
+    sources: List[SourceDocument] = Field(default_factory=list, description="Cited sources")
+    retrievals: List[RetrievalInfo] = Field(default_factory=list, description="Retrieval debug info")
+    query_plan: Optional[Dict[str, Any]] = Field(None, description="Optional query plan")
 
 
 # ============================================================
 # ZIP Scanning Schemas
+# (Only keep if some AI-side flows still use them)
 # ============================================================
 
 class ZipScanRequest(BaseModel):
     """Request to scan a ZIP file"""
-    session_id: str
-    custom_prefixes: Optional[List[str]] = None
-    max_files: int = Field(default=10000, ge=1, le=50000)
-    max_depth: int = Field(default=50, ge=1, le=100)
+    session_id: str = Field(..., description="Session ID")
+    custom_prefixes: Optional[List[str]] = Field(None, description="Optional custom group prefixes")
+    max_files: int = Field(default=10000, ge=1, le=50000, description="Max files")
+    max_depth: int = Field(default=50, ge=1, le=100, description="Max nested zip depth")
 
 
 class ZipScanProgress(BaseModel):
     """ZIP scanning progress update"""
-    progress: float  # 0.0 to 1.0
-    label: str
-    entries_done: int
-    entries_total: int
-    xml_found: int
-    elapsed_seconds: float
+    progress: float = Field(..., ge=0.0, le=1.0, description="0.0 to 1.0")
+    label: str = Field(..., description="Progress label")
+    entries_done: int = Field(..., ge=0, description="Entries processed")
+    entries_total: int = Field(..., ge=0, description="Total entries")
+    xml_found: int = Field(..., ge=0, description="XML files found")
+    elapsed_seconds: float = Field(..., ge=0.0, description="Elapsed time")
 
 
 class GroupInfo(BaseModel):
     """Information about a detected group"""
-    name: str
-    file_count: int
-    total_size_bytes: int
+    name: str = Field(..., description="Group name")
+    file_count: int = Field(..., ge=0, description="File count")
+    total_size_bytes: int = Field(..., ge=0, description="Total size in bytes")
 
 
 class ZipScanResponse(BaseModel):
     """Response from ZIP scanning"""
-    status: str
-    message: str
-    xml_count: int
-    groups: List[GroupInfo]
-    total_extracted_bytes: int
-    elapsed_seconds: float
-    errors: List[str] = []
+    status: str = Field(..., description="success or error")
+    message: str = Field(..., description="Status message")
+    xml_count: int = Field(..., ge=0, description="Number of XMLs")
+    groups: List[GroupInfo] = Field(default_factory=list, description="Detected groups")
+    total_extracted_bytes: int = Field(..., ge=0, description="Total extracted bytes")
+    elapsed_seconds: float = Field(..., ge=0.0, description="Elapsed time")
+    errors: List[str] = Field(default_factory=list, description="Any errors")
 
 
 # ============================================================
-# Auto-Embedding Schemas
-# ============================================================
-
-class AutoEmbedRequest(BaseModel):
-    """Request for auto-embedding based on admin config"""
-    session_id: str
-    groups: List[str]  # Groups to embed
-    mode: EmbeddingMode = EmbeddingMode.AUTO
-
-
-class AutoEmbedStatus(BaseModel):
-    """Status of auto-embedding"""
-    session_id: str
-    status: str  # pending, in_progress, completed, failed
-    progress: float = 0.0
-    groups_embedded: List[str] = []
-    groups_pending: List[str] = []
-    error: Optional[str] = None
-
-
-# ============================================================
-# Comparison Schemas
+# Comparison Schemas (keep only if still used somewhere)
 # ============================================================
 
 class CompareZipsRequest(BaseModel):
     """Request to compare two ZIP files"""
-    session_id: str
-    left_filename: str
-    right_filename: str
-    selected_groups: Optional[List[str]] = None
-    max_files: int = Field(default=5000, ge=1, le=20000)
+    session_id: str = Field(..., description="Session ID")
+    left_filename: str = Field(..., description="Left ZIP filename")
+    right_filename: str = Field(..., description="Right ZIP filename")
+    selected_groups: Optional[List[str]] = Field(None, description="Optional selected groups")
+    max_files: int = Field(default=5000, ge=1, le=20000, description="Max files to compare")
 
 
 class FileComparisonInfo(BaseModel):
     """Comparison info for a single file"""
-    filename: str
-    logical_path: str
-    group: str
-    status: str  # added, removed, modified, same
-    left_row_count: int = 0
-    right_row_count: int = 0
-    rows_added: int = 0
-    rows_removed: int = 0
+    filename: str = Field(..., description="Filename")
+    logical_path: str = Field(..., description="Logical path")
+    group: str = Field(..., description="Group")
+    status: str = Field(..., description="added, removed, modified, same")
+    left_row_count: int = Field(default=0, ge=0)
+    right_row_count: int = Field(default=0, ge=0)
+    rows_added: int = Field(default=0, ge=0)
+    rows_removed: int = Field(default=0, ge=0)
 
 
 class GroupComparisonInfo(BaseModel):
     """Comparison info for a group"""
-    group: str
-    files_added: int = 0
-    files_removed: int = 0
-    files_modified: int = 0
-    files_unchanged: int = 0
-    rows_added: int = 0
-    rows_removed: int = 0
+    group: str = Field(..., description="Group")
+    files_added: int = Field(default=0, ge=0)
+    files_removed: int = Field(default=0, ge=0)
+    files_modified: int = Field(default=0, ge=0)
+    files_unchanged: int = Field(default=0, ge=0)
+    rows_added: int = Field(default=0, ge=0)
+    rows_removed: int = Field(default=0, ge=0)
 
 
 class CompareZipsResponse(BaseModel):
     """Response from ZIP comparison"""
-    status: str
-    left_zip_name: str
-    right_zip_name: str
-    summary: Dict[str, Any]
-    group_comparisons: List[GroupComparisonInfo]
-    file_comparisons: List[FileComparisonInfo]
-    elapsed_seconds: float
-    errors: List[str] = []
+    status: str = Field(..., description="success or error")
+    left_zip_name: str = Field(..., description="Left ZIP name")
+    right_zip_name: str = Field(..., description="Right ZIP name")
+    summary: Dict[str, Any] = Field(default_factory=dict, description="Summary")
+    group_comparisons: List[GroupComparisonInfo] = Field(default_factory=list)
+    file_comparisons: List[FileComparisonInfo] = Field(default_factory=list)
+    elapsed_seconds: float = Field(..., ge=0.0)
+    errors: List[str] = Field(default_factory=list)
 
 
 # ============================================================
@@ -184,23 +175,22 @@ class CompareZipsResponse(BaseModel):
 
 class RAGStatus(BaseModel):
     """Status of RAG system for a session"""
-    session_id: str
-    is_indexed: bool
-    collection_name: Optional[str] = None
-    document_count: int = 0
-    groups_indexed: List[str] = []
-    last_indexed: Optional[str] = None
-    embedding_mode: Optional[EmbeddingMode] = None
+    session_id: str = Field(..., description="Session ID")
+    is_indexed: bool = Field(..., description="Whether session has indexed chunks")
+    collection_name: Optional[str] = Field(None, description="Collection name")
+    document_count: int = Field(default=0, ge=0, description="Number of docs indexed")
+    groups_indexed: List[str] = Field(default_factory=list, description="Groups indexed")
+    last_indexed: Optional[str] = Field(None, description="ISO timestamp")
+    embedding_mode: Optional[EmbeddingMode] = Field(None, description="Last embedding mode used")
 
 
 class AdminAIConfig(BaseModel):
-    """AI configuration from admin panel"""
-    auto_embedded_groups: List[str] = []
-    default_collection: str = "documents"
-    chunk_size: int = Field(default=10000, ge=1000, le=50000)
-    retrieval_top_k: int = Field(default=16, ge=1, le=100)
-    hybrid_alpha: float = Field(default=0.70, ge=0.0, le=1.0)
-    hybrid_beta: float = Field(default=0.30, ge=0.0, le=1.0)
+    """AI configuration from admin panel (auto-embedding removed)"""
+    default_collection: str = Field(default="documents", description="Default collection")
+    chunk_size: int = Field(default=10000, ge=1000, le=50000, description="Chunk size")
+    retrieval_top_k: int = Field(default=16, ge=1, le=100, description="Top-k for retrieval")
+    hybrid_alpha: float = Field(default=0.70, ge=0.0, le=1.0, description="Hybrid alpha")
+    hybrid_beta: float = Field(default=0.30, ge=0.0, le=1.0, description="Hybrid beta")
 
 
 # ============================================================
@@ -209,64 +199,65 @@ class AdminAIConfig(BaseModel):
 
 class SessionMessage(BaseModel):
     """A single chat message in a session"""
-    role: str  # 'user' or 'assistant'
-    content: str
-    timestamp: Optional[str] = None
-    sources: Optional[List[SourceDocument]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    role: str = Field(..., description="user or assistant")
+    content: str = Field(..., description="Message content")
+    timestamp: Optional[str] = Field(None, description="ISO timestamp")
+    sources: Optional[List[SourceDocument]] = Field(None, description="Sources/citations")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
 
 
 class AISessionState(BaseModel):
     """State of an AI chat session"""
-    session_id: str
-    messages: List[SessionMessage] = []
-    instructions: str = ""
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    indexed_groups: List[str] = []
-    document_count: int = 0
+    session_id: str = Field(..., description="Session ID")
+    messages: List[SessionMessage] = Field(default_factory=list)
+    instructions: str = Field(default="", description="Session instructions")
+    created_at: Optional[str] = Field(None, description="Created timestamp")
+    updated_at: Optional[str] = Field(None, description="Updated timestamp")
+    indexed_groups: List[str] = Field(default_factory=list)
+    document_count: int = Field(default=0, ge=0)
 
 
 class CreateSessionRequest(BaseModel):
     """Request to create a new AI session"""
-    instructions: Optional[str] = ""
+    instructions: Optional[str] = Field(default="", description="Initial instructions")
 
 
 class CreateSessionResponse(BaseModel):
     """Response from creating an AI session"""
-    session_id: str
-    messages: List[SessionMessage] = []
-    instructions: str = ""
+    session_id: str = Field(..., description="Session ID")
+    messages: List[SessionMessage] = Field(default_factory=list)
+    instructions: str = Field(default="")
 
 
 class UpdateSessionRequest(BaseModel):
     """Request to update AI session instructions"""
-    instructions: str
+    instructions: str = Field(..., description="New instructions")
 
 
 class SessionListItem(BaseModel):
     """Summary info for listing sessions"""
-    session_id: str
-    message_count: int
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    session_id: str = Field(..., description="Session ID")
+    message_count: int = Field(..., ge=0, description="Message count")
+    created_at: Optional[str] = Field(None)
+    updated_at: Optional[str] = Field(None)
 
 
 # ============================================================
-# Enhanced RAG Chat Schemas
+# Enhanced RAG Chat Schemas (used by /v2/ai/chat)
 # ============================================================
 
 class RAGChatRequest(BaseModel):
     """Request for RAG-based chat"""
-    session_id: str
-    message: Optional[str] = None
-    question: Optional[str] = None  # Alias for message (frontend compatibility)
-    use_rag: bool = True
-    top_k: int = Field(default=16, ge=1, le=50)
-    group_filter: Optional[str] = None
-    file_filter: Optional[str] = None
-    history: Optional[List[Dict[str, str]]] = None
-    
+    session_id: str = Field(..., description="Session ID")
+    message: Optional[str] = Field(None, description="Message")
+    question: Optional[str] = Field(None, description="Alias for message (frontend compatibility)")
+    use_rag: bool = Field(True, description="Use retrieval")
+    top_k: int = Field(default=16, ge=1, le=50, description="Top-K")
+    group_filter: Optional[str] = Field(None, description="Group filter")
+    file_filter: Optional[str] = Field(None, description="File filter")
+    history: Optional[List[Dict[str, str]]] = Field(None, description="Optional history")
+    thread_id: Optional[str] = Field(None, description="Thread ID for conversation continuity and checkpointing")
+
     @property
     def query(self) -> str:
         """Get the query from either message or question field"""
@@ -275,90 +266,58 @@ class RAGChatRequest(BaseModel):
 
 class QueryTransformationInfo(BaseModel):
     """Information about query transformation (Advanced RAG)"""
-    original: str
-    transformed: str
-    intent: str = "factual"  # factual, analytical, summary, exploratory, specific
-    sub_queries: List[str] = []
-    keywords: List[str] = []
-    filters: Dict[str, str] = {}
+    original: str = Field(..., description="Original query")
+    transformed: str = Field(..., description="Transformed query")
+    intent: str = Field(default="factual", description="factual, analytical, summary, exploratory, specific")
+    sub_queries: List[str] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    filters: Dict[str, str] = Field(default_factory=dict)
 
 
 class RetrievalMetadata(BaseModel):
     """Metadata about the retrieval process"""
-    retrieval_strategy: str = "hybrid"  # vector, lexical, hybrid, summary, fusion
-    chunks_retrieved: int = 0
-    vector_results: int = 0
-    lexical_results: int = 0
-    summary_results: int = 0
-    timing: Optional[Dict[str, float]] = None
+    retrieval_strategy: str = Field(default="hybrid", description="vector, lexical, hybrid, summary, fusion")
+    chunks_retrieved: int = Field(default=0, ge=0)
+    vector_results: int = Field(default=0, ge=0)
+    lexical_results: int = Field(default=0, ge=0)
+    summary_results: int = Field(default=0, ge=0)
+    timing: Optional[Dict[str, float]] = Field(None, description="Timing breakdown")
 
 
 class SourceDocumentAdvanced(SourceDocument):
     """Enhanced source document with retrieval details"""
-    rank: int = 0
-    retrieval_method: str = "unknown"  # vector, lexical, summary, fusion
-    fusion_score: Optional[float] = None
+    rank: int = Field(default=0, ge=0)
+    retrieval_method: str = Field(default="unknown", description="vector, lexical, summary, fusion")
+    fusion_score: Optional[float] = Field(None)
 
 
 class RAGChatResponse(BaseModel):
     """Response from RAG chat with Advanced RAG metadata"""
-    answer: str
-    sources: List[SourceDocument] = []
-    citations: List[str] = []
-    query_time_ms: float
-    query_plan: Optional[Dict[str, Any]] = None
-    chunks_retrieved: int = 0
-    response_type: Optional[str] = None  # factual, analytical, comparison, trend, summary
-    visualizations: List[VisualizationArtifact] = []
+    answer: str = Field(..., description="Answer")
+    sources: List[SourceDocument] = Field(default_factory=list)
+    citations: List[str] = Field(default_factory=list)
+    query_time_ms: float = Field(..., ge=0.0)
+    query_plan: Optional[Dict[str, Any]] = Field(default=None)
+    chunks_retrieved: int = Field(default=0, ge=0)
+    response_type: Optional[str] = Field(default=None, description="factual, analytical, comparison, trend, summary")
+    visualizations: List[VisualizationArtifact] = Field(default_factory=list)
 
     # Advanced RAG metadata
-    query_transformation: Optional[QueryTransformationInfo] = None
-    retrieval_metadata: Optional[RetrievalMetadata] = None
+    query_transformation: Optional[QueryTransformationInfo] = Field(default=None)
+    retrieval_metadata: Optional[RetrievalMetadata] = Field(default=None)
 
 
 # ============================================================
-# Auto-Embedding Schemas (Advanced)
-# ============================================================
-
-class AutoEmbedProgress(BaseModel):
-    """Progress of auto-embedding operation"""
-    status: str  # idle, preparing, embedding, completed, failed, stopped
-    progress: float = Field(default=0.0, ge=0.0, le=1.0)
-    files_done: int = 0
-    files_total: int = 0
-    docs_done: int = 0
-    chunks_done: int = 0
-    current_file: str = ""
-    groups_done: List[str] = []
-    error: Optional[str] = None
-    elapsed_seconds: float = 0.0
-
-
-class StartAutoEmbedRequest(BaseModel):
-    """Request to start auto-embedding"""
-    session_id: str
-    groups: List[str]
-    xml_inventory: List[Dict[str, Any]]
-
-
-class AutoEmbedStatusResponse(BaseModel):
-    """Status response for auto-embedding"""
-    session_id: str
-    progress: AutoEmbedProgress
-    eligible_groups: List[str] = []
-
-
-# ============================================================
-# Group Selection Schemas
+# Group Selection Schemas (Manual Indexing)
 # ============================================================
 
 class GroupSelectionRequest(BaseModel):
     """Request to select groups for indexing"""
-    session_id: str
-    selected_groups: Optional[List[str]] = None
-    groups: Optional[List[str]] = None  # Alias for selected_groups (frontend compatibility)
-    background: bool = False  # If true, run embedding in background worker
-    
+    session_id: str = Field(..., description="Session ID")
+    selected_groups: Optional[List[str]] = Field(None, description="Selected groups")
+    groups: Optional[List[str]] = Field(None, description="Alias for selected_groups (frontend compatibility)")
+    background: bool = Field(False, description="Run embedding in background worker")
+
     @property
     def group_list(self) -> List[str]:
         """Get the group list from either field"""
@@ -366,11 +325,9 @@ class GroupSelectionRequest(BaseModel):
 
 
 class DetectedGroupsResponse(BaseModel):
-    """Response with detected groups from ZIP scan"""
-    session_id: str
-    groups: List[GroupInfo]
-    auto_embed_eligible: List[str] = []
-    auto_embed_status: str = "pending"  # pending, in_progress, completed
+    """Response with detected groups from ZIP scan (auto-embedding removed)"""
+    session_id: str = Field(..., description="Session ID")
+    groups: List[GroupInfo] = Field(default_factory=list)
 
 
 # ============================================================
@@ -386,9 +343,9 @@ class TranscriptFormat(str, Enum):
 
 class TranscriptRequest(BaseModel):
     """Request to download chat transcript"""
-    session_id: str
-    format: TranscriptFormat = TranscriptFormat.JSON
-    include_sources: bool = True
+    session_id: str = Field(..., description="Session ID")
+    format: TranscriptFormat = Field(default=TranscriptFormat.JSON, description="Export format")
+    include_sources: bool = Field(True, description="Include sources if available")
 
 
 # ============================================================
@@ -397,16 +354,16 @@ class TranscriptRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     """User feedback on a RAG answer (thumbs up/down)"""
-    session_id: str
-    message_index: int = Field(ge=0, description="Index within conversation history")
-    rating: int = Field(ge=-1, le=1, description="-1=bad, 0=neutral, 1=good")
+    session_id: str = Field(..., description="Session ID")
+    message_index: int = Field(..., ge=0, description="Index within conversation history")
+    rating: int = Field(..., ge=-1, le=1, description="-1=bad, 0=neutral, 1=good")
     comment: Optional[str] = Field(default=None, max_length=1000)
 
 
 class FeedbackResponse(BaseModel):
     """Acknowledgement of feedback submission"""
-    status: str = "ok"
-    message: str = "Feedback recorded"
+    status: str = Field(default="ok")
+    message: str = Field(default="Feedback recorded")
 
 
 # ============================================================
@@ -429,3 +386,32 @@ class RAGConfigResponse(BaseModel):
     enable_citation_repair: bool
     rrf_k: int
 
+
+# ============================================================
+# HITL (Human-in-the-Loop) Schemas
+# ============================================================
+
+class HITLResumeRequest(BaseModel):
+    """Resume a HITL-interrupted graph execution."""
+    thread_id: str = Field(..., description="Thread ID of the interrupted conversation")
+    session_id: str = Field(..., description="Session ID for ownership verification")
+    decision: str = Field(
+        "approve",
+        description="Review decision: 'approve', 'reject', or 'edit'",
+        pattern=r"^(approve|reject|edit)$",
+    )
+    edited_answer: Optional[str] = Field(
+        None,
+        description="Replacement answer text when decision is 'edit'",
+    )
+
+
+class HITLResumeResponse(BaseModel):
+    """Response after resuming a HITL-interrupted execution."""
+    answer: str = Field(..., description="Final answer (possibly edited)")
+    sources: List[SourceDocument] = Field(default_factory=list)
+    citations: List[str] = Field(default_factory=list)
+    query_time_ms: int = Field(0)
+    hitl_decision: Optional[str] = Field(None, description="The decision that was applied")
+    error: bool = Field(False)
+    response_type: Optional[str] = None

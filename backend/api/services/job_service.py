@@ -1,3 +1,4 @@
+
 """
 Job Service - Background job tracking and management.
 
@@ -5,15 +6,26 @@ Provides functions to create, update, and query background jobs.
 """
 from datetime import datetime, timezone
 from typing import Optional, List
-from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.models.job import Job, JobStatus, JobType
 
 
-def create_job(
-    db: Session, 
-    job_type: JobType, 
+def _utcnow() -> datetime:
+    """Return naive UTC timestamp for DB timestamp columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _normalize_job_type(job_type: JobType | str) -> JobType:
+    if isinstance(job_type, JobType):
+        return job_type
+    return JobType(str(job_type))
+
+
+async def create_job(
+    db: AsyncSession,
+    job_type: JobType | str,
     user_id: Optional[int] = None,
     session_id: Optional[str] = None,
     commit: bool = True,
@@ -32,7 +44,7 @@ def create_job(
         Created Job object with ID assigned
     """
     job = Job(
-        job_type=job_type,
+        job_type=_normalize_job_type(job_type),
         status=JobStatus.PENDING,
         user_id=user_id,
         session_id=session_id,
@@ -40,15 +52,15 @@ def create_job(
     db.add(job)
     
     if commit:
-        db.commit()
-        db.refresh(job)
+        await db.commit()
+        await db.refresh(job)
     else:
-        db.flush()
+        await db.flush()
     
     return job
 
 
-def get_job(db: Session, job_id: int) -> Optional[Job]:
+async def get_job(db: AsyncSession, job_id: int) -> Optional[Job]:
     """
     Get a job by ID.
     
@@ -61,11 +73,39 @@ def get_job(db: Session, job_id: int) -> Optional[Job]:
     Returns:
         Job object or None if not found
     """
-    return db.get(Job, job_id)
+    return await db.get(Job, job_id)
 
 
-def update_job_status(
-    db: Session,
+async def find_active_job(
+    db: AsyncSession,
+    user_id: int,
+    job_type: JobType | str,
+    session_id: Optional[str] = None,
+) -> Optional[Job]:
+    """
+    Find the most recent active job (PENDING/RUNNING) for a user and job type.
+
+    Useful for idempotent async endpoints to avoid creating duplicate heavy jobs
+    during retries or rapid repeated submits.
+    """
+    jt = _normalize_job_type(job_type)
+
+    stmt = select(Job).where(
+        Job.user_id == user_id,
+        Job.job_type == jt,
+        Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING]),
+    )
+
+    if session_id:
+        stmt = stmt.where(Job.session_id == session_id)
+
+    stmt = stmt.order_by(desc(Job.created_at)).limit(1)
+    res = await db.execute(stmt)
+    return res.scalar_one_or_none()
+
+
+async def update_job_status(
+    db: AsyncSession,
     job_id: int,
     status: JobStatus,
     progress: Optional[int] = None,
@@ -88,12 +128,12 @@ def update_job_status(
     Returns:
         Updated Job object or None if not found
     """
-    job = db.get(Job, job_id)
+    job = await db.get(Job, job_id)
     if not job:
         return None
     
     job.status = status
-    job.updated_at = datetime.now(timezone.utc)
+    job.updated_at = _utcnow()
     
     if progress is not None:
         job.progress = max(0, min(100, progress))
@@ -106,69 +146,69 @@ def update_job_status(
     
     # Set timestamps based on status
     if status == JobStatus.RUNNING and job.started_at is None:
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = _utcnow()
     elif status in (JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED):
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = _utcnow()
         if status == JobStatus.SUCCESS:
             job.progress = 100
     
     if commit:
-        db.commit()
-        db.refresh(job)
+        await db.commit()
+        await db.refresh(job)
     
     return job
 
 
-def mark_job_running(db: Session, job_id: int, commit: bool = True) -> Optional[Job]:
+async def mark_job_running(db: AsyncSession, job_id: int, commit: bool = True) -> Optional[Job]:
     """Mark a job as running."""
-    return update_job_status(db, job_id, JobStatus.RUNNING, progress=0, commit=commit)
+    return await update_job_status(db, job_id, JobStatus.RUNNING, progress=0, commit=commit)
 
 
-def mark_job_success(
-    db: Session, 
-    job_id: int, 
+async def mark_job_success(
+    db: AsyncSession,
+    job_id: int,
     result: Optional[dict] = None,
     commit: bool = True,
 ) -> Optional[Job]:
     """Mark a job as successful with optional result."""
-    return update_job_status(
+    return await update_job_status(
         db, job_id, JobStatus.SUCCESS, progress=100, result=result, commit=commit
     )
 
 
-def mark_job_failed(
-    db: Session, 
-    job_id: int, 
+async def mark_job_failed(
+    db: AsyncSession,
+    job_id: int,
     error: str,
     commit: bool = True,
 ) -> Optional[Job]:
     """Mark a job as failed with error message."""
-    return update_job_status(db, job_id, JobStatus.FAILED, error=error, commit=commit)
+    return await update_job_status(db, job_id, JobStatus.FAILED, error=error, commit=commit)
 
 
-def update_job_progress(
-    db: Session, 
-    job_id: int, 
+async def update_job_progress(
+    db: AsyncSession,
+    job_id: int,
     progress: int,
     commit: bool = True,
 ) -> Optional[Job]:
     """Update job progress (0-100)."""
-    job = db.get(Job, job_id)
+    job = await db.get(Job, job_id)
     if not job:
         return None
     
     job.progress = max(0, min(100, progress))
-    job.updated_at = datetime.now(timezone.utc)
+    job.updated_at = _utcnow()
     
     if commit:
-        db.commit()
-        db.refresh(job)
+        await db.commit()
+        await db.refresh(job)
     
     return job
 
 
-def get_user_jobs(
-    db: Session,
+async def get_user_jobs(
+    db: AsyncSession,
     user_id: int,
     limit: int = 50,
     status_filter: Optional[JobStatus] = None,
@@ -185,16 +225,18 @@ def get_user_jobs(
     Returns:
         List of Job objects, ordered by creation date (newest first)
     """
-    query = db.query(Job).filter(Job.user_id == user_id)
-    
+    stmt = select(Job).where(Job.user_id == user_id)
+
     if status_filter:
-        query = query.filter(Job.status == status_filter)
-    
-    return query.order_by(desc(Job.created_at)).limit(limit).all()
+        stmt = stmt.where(Job.status == status_filter)
+
+    stmt = stmt.order_by(desc(Job.created_at)).limit(limit)
+    res = await db.execute(stmt)
+    return list(res.scalars().all())
 
 
-def get_session_jobs(
-    db: Session,
+async def get_session_jobs(
+    db: AsyncSession,
     session_id: str,
     limit: int = 50,
 ) -> List[Job]:
@@ -209,16 +251,17 @@ def get_session_jobs(
     Returns:
         List of Job objects, ordered by creation date (newest first)
     """
-    return (
-        db.query(Job)
-        .filter(Job.session_id == session_id)
+    stmt = (
+        select(Job)
+        .where(Job.session_id == session_id)
         .order_by(desc(Job.created_at))
         .limit(limit)
-        .all()
     )
+    res = await db.execute(stmt)
+    return list(res.scalars().all())
 
 
-def cleanup_old_jobs(db: Session, days: int = 30, commit: bool = True) -> int:
+async def cleanup_old_jobs(db: AsyncSession, days: int = 30, commit: bool = True) -> int:
     """
     Delete jobs older than specified days.
     
@@ -232,11 +275,12 @@ def cleanup_old_jobs(db: Session, days: int = 30, commit: bool = True) -> int:
     """
     from datetime import timedelta
     
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = _utcnow() - timedelta(days=days)
     
-    count = db.query(Job).filter(Job.created_at < cutoff).delete()
+    res = await db.execute(delete(Job).where(Job.created_at < cutoff))
+    count = int(getattr(res, "rowcount", 0) or 0)
     
     if commit:
-        db.commit()
+        await db.commit()
     
     return count

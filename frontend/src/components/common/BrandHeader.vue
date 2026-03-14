@@ -1,7 +1,8 @@
+
 <template>
   <header class="brand-header" role="banner" aria-label="RETv4 header">
     <div>
-      <h1 class="brand-title"><span class="brand-accent">RET</span>v4 <small class="brand-subtitle">ZIP → XML</small></h1>
+      <h1 class="brand-title"><span class="brand-accent">RET</span>v4 <small class="brand-subtitle"></small></h1>
       <div class="brand-badge" aria-hidden="true">Secured</div>
     </div>
 
@@ -36,3 +37,6 @@ const initials = computed(() => {
   return auth.user.username.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase()
 })
 </script>
+
+
+

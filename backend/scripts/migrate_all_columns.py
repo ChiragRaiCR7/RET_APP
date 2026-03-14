@@ -1,3 +1,4 @@
+
 """
 Comprehensive migration script to add all missing columns to users table
 """

@@ -118,7 +118,7 @@
 <script setup>
 import { ref, reactive } from 'vue'
 import FileUploader from './FileUploader.vue'
-import api from '@/utils/api'
+import api, { pollJob } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 
 const toast = useToastStore()
@@ -197,8 +197,16 @@ async function convertGroup(group) {
     formData.append('groups', group.name)
     formData.append('output_format', workflow.outputFormat)
 
-    await api.post('/conversion/convert', formData, {
+    const started = await api.post('/conversion/convert-async', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
+    })
+
+    const jobId = started?.data?.job_id || started?.data?.jobId || started?.data?.id
+    if (!jobId) throw new Error('Async conversion start did not return job_id')
+
+    await pollJob(jobId, {
+      intervalMs: 1500,
+      timeoutMs: 60 * 60 * 1000
     })
 
     await downloadGroup(group)

@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 
 class UserCreateRequest(BaseModel):
@@ -80,7 +80,8 @@ class AgentRequest(BaseModel):
     command: str
 
 
+
 class AgentResponse(BaseModel):
     result: str
+    format: Optional[Literal['text', 'html', 'markdown']] = 'text'
     details: Optional[dict] = None
-

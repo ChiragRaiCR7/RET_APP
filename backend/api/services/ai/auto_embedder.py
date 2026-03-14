@@ -1,3 +1,4 @@
+
 """
 Auto-Embedder Service — Fast Background Embedding with Semantic Reranking
 
@@ -270,33 +271,111 @@ class AutoEmbedder:
         )
     
     def _load_admin_config(self) -> Dict[str, Any]:
-        """Load admin preferences for auto-embedding configuration"""
-        prefs_path = self.session_dir / self.ADMIN_PREFS_FILENAME
-        
-        if not prefs_path.exists():
-            logger.info(f"No admin config found at {prefs_path}, using defaults")
+        """Load admin preferences for auto-embedding configuration.
+
+        Priority:
+        1. global ``data/ai_config.json`` managed by admin panel
+        2. ``admin_prefs.json`` in the session directory (optional override)
+        3. ``conversion_index.json`` may contain ``admin_prefs`` key (optional override)
+        4. Default: disabled
+        """
+        def _normalize(cfg: Dict[str, Any]) -> Dict[str, Any]:
+            auto_groups = cfg.get("auto_embedded_groups", [])
+            excluded_groups = cfg.get("excluded_groups", [])
+
+            if not isinstance(auto_groups, list):
+                auto_groups = []
+            if not isinstance(excluded_groups, list):
+                excluded_groups = []
+
+            # Prefer canonical flag when present.
+            if "auto_embed_enabled" in cfg:
+                enabled = bool(cfg.get("auto_embed_enabled"))
+            else:
+                enabled = bool(cfg.get("enable_auto_embedding"))
+
             return {
-                "auto_embed_enabled": False,
-                "auto_embedded_groups": [],
+                "auto_embed_enabled": enabled,
+                "enable_auto_embedding": enabled,  # legacy alias
+                "auto_embedded_groups": sorted({str(g).strip().upper() for g in auto_groups if str(g).strip()}),
+                # legacy compatibility only (not used in eligibility policy)
+                "excluded_groups": sorted({str(g).strip().upper() for g in excluded_groups if str(g).strip()}),
             }
-        
+
+        # 1) Try global admin config first
         try:
-            with open(prefs_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-            
-            # Ensure required keys exist
-            if "auto_embed_enabled" not in config:
-                config["auto_embed_enabled"] = False
-            if "auto_embedded_groups" not in config:
-                config["auto_embedded_groups"] = []
-            
-            return config
+            from api.services.admin_service import get_ai_indexing_config_data
+
+            global_cfg = _normalize(get_ai_indexing_config_data() or {})
         except Exception as e:
-            logger.error(f"Failed to load admin config: {e}")
-            return {
-                "auto_embed_enabled": False,
-                "auto_embedded_groups": [],
-            }
+            logger.warning(f"Failed to load global admin config: {e}")
+            global_cfg = _normalize({})
+
+        config = dict(global_cfg)
+
+        # 1) Try dedicated admin prefs file
+        prefs_path = self.session_dir / self.ADMIN_PREFS_FILENAME
+        if prefs_path.exists():
+            try:
+                with open(prefs_path, "r", encoding="utf-8") as f:
+                    session_cfg = _normalize(json.load(f))
+                config.update(session_cfg)
+            except Exception as e:
+                logger.error(f"Failed to load admin config from {prefs_path}: {e}")
+
+        # 2) Try admin_prefs section inside conversion_index.json
+        index_path = self.session_dir / "conversion_index.json"
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    idx_data = json.load(f)
+                admin_prefs = idx_data.get("admin_prefs") or {}
+                if admin_prefs:
+                    idx_cfg = _normalize(admin_prefs)
+                    config.update(idx_cfg)
+            except Exception as e:
+                logger.warning(f"Failed to read admin_prefs from conversion_index.json: {e}")
+
+        logger.info(
+            "Effective admin config for session %s: enabled=%s auto=%s excluded=%s",
+            self.session_id,
+            config.get("auto_embed_enabled"),
+            config.get("auto_embedded_groups", []),
+            config.get("excluded_groups", []),
+        )
+        return config
+
+    def reload_admin_config(self) -> Dict[str, Any]:
+        """Reload effective admin config from configured sources."""
+        self.admin_config = self._load_admin_config()
+        return dict(self.admin_config)
+
+    def set_admin_config(self, config: Dict[str, Any]) -> None:
+        """Accept admin config externally (e.g., from admin router or DB).
+
+        This allows the admin panel to push config without relying on
+        file existence in the session directory.
+        """
+        auto_groups = config.get("auto_embedded_groups", []) if isinstance(config, dict) else []
+        excluded_groups = config.get("excluded_groups", []) if isinstance(config, dict) else []
+        enabled = bool(
+            (config or {}).get("auto_embed_enabled")
+            or (config or {}).get("enable_auto_embedding")
+        )
+
+        self.admin_config = {
+            "auto_embed_enabled": enabled,
+            "enable_auto_embedding": enabled,
+            "auto_embedded_groups": sorted({str(g).strip().upper() for g in (auto_groups or []) if str(g).strip()}),
+            # legacy compatibility only (not used in eligibility policy)
+            "excluded_groups": sorted({str(g).strip().upper() for g in (excluded_groups or []) if str(g).strip()}),
+        }
+        logger.info(
+            f"Admin config set externally: "
+            f"enabled={self.admin_config.get('auto_embed_enabled')}, "
+            f"groups={self.admin_config.get('auto_embedded_groups', [])}, "
+            f"excluded={self.admin_config.get('excluded_groups', [])}"
+        )
     
     @property
     def is_auto_embed_enabled(self) -> bool:
@@ -307,6 +386,14 @@ class AutoEmbedder:
     def configured_groups(self) -> List[str]:
         """Get list of admin-configured groups for auto-embedding"""
         groups = self.admin_config.get("auto_embedded_groups", [])
+        if isinstance(groups, list):
+            return [str(g).strip().upper() for g in groups if g]
+        return []
+
+    @property
+    def excluded_groups(self) -> List[str]:
+        """Get list of admin-excluded groups for auto-embedding."""
+        groups = self.admin_config.get("excluded_groups", [])
         if isinstance(groups, list):
             return [str(g).strip().upper() for g in groups if g]
         return []
@@ -369,13 +456,36 @@ class AutoEmbedder:
             if group and group != "UNKNOWN":
                 all_groups.add(group.upper())
         
-        # Filter to only admin-configured groups
+        # Eligibility policy: ONLY groups explicitly configured by admin,
+        # excluding any groups in the excluded_groups list.
         configured = set(self.configured_groups)
-        eligible = list(all_groups.intersection(configured))
+        excluded = set(self.excluded_groups)
+
+        eligible: List[str] = []
+        for group in sorted(all_groups):
+            if group in excluded:
+                logger.info("Group %s is excluded from auto-embedding (in excluded_groups)", group)
+                continue
+            if group in configured:
+                logger.info("Group %s is eligible for auto-embedding (configured by admin)", group)
+                eligible.append(group)
+            else:
+                logger.info(
+                    "Group %s is not eligible for auto-embedding (not in admin auto_embedded_groups)",
+                    group,
+                )
+
+        missing_from_inventory = sorted(configured - all_groups)
+        for group in missing_from_inventory:
+            logger.info(
+                "Group %s is configured for auto-embedding but not present in current inventory",
+                group,
+            )
         
         logger.info(
             f"Detected {len(all_groups)} groups in inventory. "
             f"Admin configured: {configured}. "
+            f"Excluded: {excluded}. "
             f"Eligible for auto-embedding: {eligible}"
         )
         
@@ -402,6 +512,7 @@ class AutoEmbedder:
         xml_inventory: List[Dict[str, Any]],
         groups_to_embed: List[str],
         callback: Optional[Callable[[EmbeddingProgress], None]] = None,
+        group_callback: Optional[Callable[[str, str, str], None]] = None,
     ):
         """
         Start background embedding for specified groups.
@@ -410,14 +521,19 @@ class AutoEmbedder:
             xml_inventory: List of XML file entries from conversion
             groups_to_embed: Groups to embed (must be in admin config)
             callback: Optional callback for progress updates
+            group_callback: Optional (group, status, detail) callback for per-group tracking
         """
         if self._thread and self._thread.is_alive():
             logger.warning("Auto-embedding already in progress")
             return
         
-        # Filter groups to only those in admin config
+        # Filter groups to only those in admin config and not excluded
         configured = set(self.configured_groups)
-        filtered_groups = [g for g in groups_to_embed if g.upper() in configured]
+        excluded = set(self.excluded_groups)
+        filtered_groups = [
+            g for g in groups_to_embed 
+            if g.upper() in configured and g.upper() not in excluded
+        ]
         
         if not filtered_groups:
             logger.warning(
@@ -436,7 +552,7 @@ class AutoEmbedder:
         self._stop_flag.clear()
         self._thread = threading.Thread(
             target=self._embed_worker,
-            args=(xml_inventory, filtered_groups, callback),
+            args=(xml_inventory, filtered_groups, callback, group_callback),
             daemon=True,
             name=f"AutoEmbedder-{self.session_id[:8]}"
         )
@@ -451,6 +567,7 @@ class AutoEmbedder:
         xml_inventory: List[Dict[str, Any]],
         groups_to_embed: List[str],
         callback: Optional[Callable[[EmbeddingProgress], None]],
+        group_callback: Optional[Callable[[str, str, str], None]] = None,
     ):
         """Background worker that performs the embedding"""
         import time
@@ -463,16 +580,61 @@ class AutoEmbedder:
             csv_dir = self.session_dir / "output"
             if not csv_dir.exists():
                 raise ValueError(f"Output directory not found: {csv_dir}")
-            
-            # Collect CSV files for each group
-            group_files: Dict[str, List[Path]] = {g: [] for g in groups_to_embed}
-            
-            for csv_path in csv_dir.glob("*.csv"):
-                # Try to match file to group
-                for group in groups_to_embed:
-                    if group.lower() in csv_path.stem.lower():
-                        group_files[group].append(csv_path)
-                        break
+
+            # Load conversion_index.json for accurate group-to-file mapping
+            conversion_index: Optional[Dict[str, Any]] = None
+            index_path = self.session_dir / "conversion_index.json"
+            if index_path.exists():
+                try:
+                    with open(index_path, "r", encoding="utf-8") as f:
+                        conversion_index = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Failed to load conversion_index.json: {e}")
+
+            # Collect CSV files for each group using conversion_index
+            normalized_groups = [str(g).strip().upper() for g in groups_to_embed if str(g).strip()]
+            group_files: Dict[str, List[Path]] = {g: [] for g in normalized_groups}
+
+            if conversion_index and "files" in conversion_index:
+                # Use accurate mapping from conversion index
+                for file_entry in conversion_index["files"]:
+                    if not isinstance(file_entry, dict):
+                        continue
+
+                    file_group = str(file_entry.get("group") or "").strip().upper()
+                    if file_group not in group_files:
+                        continue
+
+                    csv_name = (
+                        file_entry.get("csv_file")
+                        or file_entry.get("output_file")
+                        or file_entry.get("filename")
+                        or ""
+                    )
+                    if not csv_name:
+                        continue
+
+                    file_type = str(file_entry.get("file_type") or "").strip().lower()
+                    if file_type and file_type != "csv" and not str(csv_name).lower().endswith(".csv"):
+                        continue
+
+                    csv_path = csv_dir / str(csv_name)
+                    if csv_path.exists():
+                        group_files[file_group].append(csv_path)
+            else:
+                # Fallback: match files by group name in filename
+                for csv_path in csv_dir.iterdir():
+                    if not csv_path.is_file() or csv_path.suffix.lower() != ".csv":
+                        continue
+                    for group in normalized_groups:
+                        if group.lower() in csv_path.stem.lower():
+                            group_files[group].append(csv_path)
+                            break
+
+            # Deduplicate files per group while preserving order
+            for group_name, files in list(group_files.items()):
+                unique_files = list(dict.fromkeys(files))
+                group_files[group_name] = unique_files
             
             # Calculate total files
             total_files = sum(len(files) for files in group_files.values())
@@ -506,38 +668,77 @@ class AutoEmbedder:
                     continue
                 
                 logger.info(f"Embedding group: {group} ({len(files)} files)")
+
+                if group_callback:
+                    try:
+                        group_callback(group, "embedding", f"{len(files)} files")
+                    except Exception:
+                        pass
                 
-                # Use RAG service to embed this group
-                try:
-                    result = self.rag_service.embed_groups(
-                        groups=[group],
-                        csv_dir=csv_dir,
-                        conversion_index=None,  # Will scan CSV dir
-                    )
-                    
-                    files_processed += len(files)
-                    total_docs += result.indexed_docs
-                    total_chunks += result.indexed_chunks
-                    
-                    elapsed = time.time() - start_time
-                    progress = ((group_idx + 1) / len(groups_to_embed)) * 95.0 + 5.0
-                    
-                    self._update_progress(
-                        progress=progress,
-                        files_done=files_processed,
-                        docs_done=total_docs,
-                        chunks_done=total_chunks,
-                        group_done=group,
-                        elapsed_seconds=elapsed,
-                    )
-                    
-                    if callback:
-                        with self._lock:
-                            callback(self._progress)
-                    
-                except Exception as e:
-                    logger.error(f"Failed to embed group {group}: {e}")
-                    # Continue with next group
+                # Use RAG service to embed this group with retry logic
+                max_retries = 3
+                retry_delay = 2.0  # seconds, doubles on each retry
+                last_error: Optional[Exception] = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        result = self.rag_service.embed_groups(
+                            groups=[group],
+                            csv_dir=csv_dir,
+                            conversion_index=conversion_index,
+                        )
+                        
+                        files_processed += len(files)
+                        total_docs += result.indexed_docs
+                        total_chunks += result.indexed_chunks
+                        
+                        elapsed = time.time() - start_time
+                        progress = ((group_idx + 1) / len(groups_to_embed)) * 95.0 + 5.0
+                        
+                        self._update_progress(
+                            progress=progress,
+                            files_done=files_processed,
+                            docs_done=total_docs,
+                            chunks_done=total_chunks,
+                            group_done=group,
+                            elapsed_seconds=elapsed,
+                        )
+                        
+                        if callback:
+                            with self._lock:
+                                callback(self._progress)
+
+                        if group_callback:
+                            try:
+                                group_callback(group, "completed", f"{result.indexed_docs} docs, {result.indexed_chunks} chunks")
+                            except Exception:
+                                pass
+                        
+                        last_error = None
+                        break  # Success, exit retry loop
+                        
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (2 ** attempt)
+                            logger.warning(
+                                f"Embedding group {group} failed (attempt {attempt + 1}/{max_retries}). "
+                                f"Retrying in {wait_time:.1f}s: {e}"
+                            )
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(
+                                f"Failed to embed group {group} after {max_retries} attempts: {e}"
+                            )
+                
+                if last_error:
+                    # Log final failure but continue with next group
+                    logger.error(f"Skipping group {group} due to embedding failure: {last_error}")
+                    if group_callback:
+                        try:
+                            group_callback(group, "failed", str(last_error))
+                        except Exception:
+                            pass
             
             elapsed = time.time() - start_time
             self._update_progress(
@@ -553,6 +754,25 @@ class AutoEmbedder:
                 f"Auto-embedding completed: {files_processed} files, "
                 f"{total_docs} documents, {total_chunks} chunks in {elapsed:.1f}s"
             )
+
+            # Emit structured perf metric
+            try:
+                import logging as _logging
+                _perf_logger = _logging.getLogger("ret.metrics")
+                _perf_logger.info(
+                    "perf_metric: auto_embed_worker %.1fms",
+                    elapsed * 1000,
+                    extra={"extra_fields": {
+                        "op": "auto_embed_worker",
+                        "elapsed_ms": round(elapsed * 1000, 2),
+                        "items": files_processed,
+                        "groups": len(groups_to_embed),
+                        "docs": total_docs,
+                        "chunks": total_chunks,
+                    }},
+                )
+            except Exception:
+                pass
             
             if callback:
                 with self._lock:

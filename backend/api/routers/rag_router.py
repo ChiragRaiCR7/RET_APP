@@ -1,23 +1,28 @@
+
 """
 Unified AI Router — /api/v2/ai
 
 Single entry-point for all AI / RAG operations:
   - Status & configuration
   - Chat (with or without RAG retrieval)
-  - Embedding (manual group selection + auto-embed)
+  - Embedding (manual group selection)
   - Embedding status per group
   - Transcript download
   - Session cleanup
+
+NOTE: Manual embedding is primary. Legacy auto-embed endpoints are retained for
+frontend compatibility and map to SessionAIManager auto-embed controls.
 """
 
 import json
 import logging
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response, StreamingResponse
 
 from api.core.config import settings
 from api.core.dependencies import get_current_user_id
@@ -27,17 +32,16 @@ from api.services.storage_service import (
     save_session_metadata,
 )
 from api.schemas.ai import (
-    AutoEmbedProgress,
-    AutoEmbedStatusResponse,
     FeedbackRequest,
     FeedbackResponse,
     GroupSelectionRequest,
+    HITLResumeRequest,
+    HITLResumeResponse,
     QueryTransformationInfo,
     RAGChatRequest,
     RAGChatResponse,
     RAGConfigResponse,
     SourceDocument,
-    StartAutoEmbedRequest,
     TranscriptFormat,
     TranscriptRequest,
 )
@@ -51,12 +55,11 @@ router = APIRouter(prefix="/v2/ai", tags=["ai-v2"])
 # Helpers
 # ------------------------------------------------------------------
 
-
 def _verify_session_owner(session_id: str, current_user_id: str) -> dict:
     """Verify the current user owns the session. Returns metadata."""
     meta = get_session_metadata(session_id)
-    stored = meta.get("user_id", "")
-    if stored and stored != current_user_id:
+    stored = meta.get("user_id")
+    if not stored or stored != current_user_id:
         raise HTTPException(status_code=403, detail="Unauthorized")
     return meta
 
@@ -64,23 +67,45 @@ def _verify_session_owner(session_id: str, current_user_id: str) -> dict:
 def _get_manager(session_id: str, user_id: str):
     """Lazy import and return SessionAIManager."""
     from api.services.ai.session_manager import get_session_ai_manager
-
     return get_session_ai_manager(session_id, user_id)
+
+
+def _load_xml_inventory(session_dir: Path, fallback_raw: Any = None) -> List[Dict[str, Any]]:
+    """Load xml inventory from disk, with best-effort fallbacks."""
+    inventory_path = session_dir / "xml_inventory.json"
+
+    if inventory_path.exists():
+        try:
+            data = json.loads(inventory_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+            if isinstance(data, dict) and "files" in data and isinstance(data["files"], list):
+                return [x for x in data["files"] if isinstance(x, dict)]
+        except Exception:
+            pass
+
+    # Fallback from conversion index style payload
+    if isinstance(fallback_raw, dict):
+        files = fallback_raw.get("files")
+        if isinstance(files, list):
+            return [x for x in files if isinstance(x, dict)]
+
+    if isinstance(fallback_raw, list):
+        return [x for x in fallback_raw if isinstance(x, dict)]
+
+    return []
 
 
 # ==================================================================
 # Status
 # ==================================================================
 
-
 @router.get("/status")
-def get_ai_status(
+async def get_ai_status(
     current_user_id: str = Depends(get_current_user_id),
 ):
     """Check AI service availability and configuration."""
-    configured = bool(
-        settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT
-    )
+    configured = bool(settings.AZURE_OPENAI_API_KEY and settings.AZURE_OPENAI_ENDPOINT)
     return {
         "status": "available" if configured else "not_configured",
         "configured": configured,
@@ -98,7 +123,7 @@ def get_ai_status(
 
 
 @router.get("/config", response_model=RAGConfigResponse)
-def get_ai_config(
+async def get_ai_config(
     current_user_id: str = Depends(get_current_user_id),
 ):
     """Get AI configuration (chunk sizes, retrieval top-k, etc.)."""
@@ -123,7 +148,6 @@ def get_ai_config(
 # Chat
 # ==================================================================
 
-
 @router.post("/chat", response_model=RAGChatResponse)
 async def rag_chat(
     req: RAGChatRequest,
@@ -133,6 +157,110 @@ async def rag_chat(
     Send a message and get RAG-powered response.
 
     Uses hybrid retrieval (vector + lexical) with citation-aware generation.
+    """
+    from api.utils.metrics import timed_block
+
+    with timed_block("rag_chat_endpoint", extra={"session_id": req.session_id}):
+        _verify_session_owner(req.session_id, current_user_id)
+
+        query_text = req.message or req.question or ""
+        if not query_text.strip():
+            raise HTTPException(status_code=400, detail="No message provided")
+
+        manager = _get_manager(req.session_id, current_user_id)
+
+        if not manager.is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail="AI service not configured. Set Azure OpenAI credentials.",
+            )
+
+        try:
+            result = await manager.chat_async(
+                message=query_text,
+                use_rag=req.use_rag,
+                group_filter=req.group_filter,
+                top_k=req.top_k,
+                thread_id=req.thread_id or "",
+            )
+        except Exception as e:
+            logger.error("RAG chat failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
+
+        sources = [
+            SourceDocument(
+                file=src.get("file", src.get("source", "")),
+                group=src.get("group"),
+                snippet=(src.get("snippet", src.get("content", "")) or "")[:500],
+                score=src.get("score"),
+                chunk_index=src.get("chunk_index", i),
+            )
+            for i, src in enumerate(result.get("sources", []))
+        ]
+
+        qt = result.get("query_transformation")
+        qt_info = None
+        if qt and isinstance(qt, dict):
+            # Filter out None values from filters dict — Pydantic expects Dict[str, str]
+            raw_filters = qt.get("filters") or {}
+            if not isinstance(raw_filters, dict):
+                raw_filters = {}
+
+            sub_queries = qt.get("sub_queries", [])
+            if not isinstance(sub_queries, list):
+                sub_queries = []
+
+            keywords = qt.get("keywords", [])
+            if not isinstance(keywords, list):
+                keywords = []
+
+            clean_filters = {str(k): str(v) for k, v in raw_filters.items() if v is not None}
+            qt_info = QueryTransformationInfo(
+                original=result.get("original_query", qt.get("original", "")),
+                transformed=qt.get("transformed_query", ""),
+                intent=qt.get("intent", "factual"),
+                sub_queries=[str(x) for x in sub_queries if x is not None],
+                keywords=[str(x) for x in keywords if x is not None],
+                filters=clean_filters,
+            )
+
+        return RAGChatResponse(
+            answer=result.get("answer", ""),
+            sources=sources,
+            citations=result.get("citations", []),
+            query_time_ms=result.get("query_time_ms", 0),
+            query_plan=result.get("query_plan"),
+            chunks_retrieved=len(sources),
+            response_type=result.get("response_type"),
+            query_transformation=qt_info,
+            visualizations=result.get("visualizations", []),
+            retrieval_metadata=result.get("retrieval_metadata"),
+        )
+
+
+# ==================================================================
+# Streaming Chat
+# ==================================================================
+
+@router.post("/chat/stream")
+async def rag_chat_stream(
+    req: RAGChatRequest,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """
+    Streaming RAG chat endpoint via Server-Sent Events (SSE).
+
+    Requires ``FEATURE_CHAT_STREAMING=true``.  Falls back to a single
+    ``done`` event containing the full response when the flag is off.
+
+    SSE event types:
+    - ``node_start`` / ``node_end`` — pipeline progress
+    - ``token`` — incremental LLM output
+    - ``sources`` — retrieved source documents
+    - ``citations`` — citation references
+    - ``metadata`` — timing, query transform info
+    - ``done`` — final payload with complete answer
+    - ``error`` — on failure
     """
     _verify_session_owner(req.session_id, current_user_id)
 
@@ -148,18 +276,62 @@ async def rag_chat(
             detail="AI service not configured. Set Azure OpenAI credentials.",
         )
 
-    try:
-        result = manager.chat(
+    return StreamingResponse(
+        manager.chat_stream(
             message=query_text,
-            use_rag=req.use_rag,
             group_filter=req.group_filter,
             top_k=req.top_k,
+            thread_id=req.thread_id or "",
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ==================================================================
+# HITL Resume
+# ==================================================================
+
+@router.post("/chat/resume", response_model=HITLResumeResponse)
+async def rag_chat_resume(
+    req: HITLResumeRequest,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """
+    Resume a HITL-interrupted chat execution.
+
+    Requires ``FEATURE_HITL_ENABLED=true`` and active checkpointing.
+
+    The frontend calls this after receiving an ``hitl_required`` SSE event
+    and collecting the reviewer's decision.
+    """
+    _verify_session_owner(req.session_id, current_user_id)
+
+    if not getattr(settings, "FEATURE_HITL_ENABLED", False):
+        raise HTTPException(status_code=400, detail="HITL is not enabled")
+
+    manager = _get_manager(req.session_id, current_user_id)
+
+    if not manager.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="AI service not configured.",
+        )
+
+    try:
+        result = await manager.resume_hitl(
+            thread_id=req.thread_id,
+            decision=req.decision,
+            edited_answer=req.edited_answer or "",
         )
     except Exception as e:
-        logger.error("RAG chat failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Chat failed: {e}")
+        logger.error("HITL resume failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Resume failed: {e}")
 
-    # Build response
     sources = [
         SourceDocument(
             file=src.get("file", src.get("source", "")),
@@ -171,32 +343,19 @@ async def rag_chat(
         for i, src in enumerate(result.get("sources", []))
     ]
 
-    # Map query transformation if present
-    qt = result.get("query_transformation")
-    qt_info = None
-    if qt and isinstance(qt, dict):
-        qt_info = QueryTransformationInfo(
-            original=result.get("original_query", qt.get("original", "")),
-            transformed=qt.get("transformed_query", ""),
-            intent=qt.get("intent", "factual"),
-            sub_queries=qt.get("sub_queries", []),
-            keywords=qt.get("keywords", []),
-        )
-
-    return RAGChatResponse(
+    return HITLResumeResponse(
         answer=result.get("answer", ""),
         sources=sources,
         citations=result.get("citations", []),
         query_time_ms=result.get("query_time_ms", 0),
-        chunks_retrieved=len(sources),
+        hitl_decision=result.get("hitl_decision", req.decision),
+        error=result.get("error", False),
         response_type=result.get("response_type"),
-        query_transformation=qt_info,
-        visualizations=result.get("visualizations", []),
     )
 
 
 @router.get("/chat/history/{session_id}")
-def get_chat_history(
+async def get_chat_history(
     session_id: str,
     limit: int = 50,
     current_user_id: str = Depends(get_current_user_id),
@@ -206,10 +365,11 @@ def get_chat_history(
 
     try:
         manager = _get_manager(session_id, current_user_id)
-        history = manager.get_chat_history(limit=limit)
+        history = await asyncio.to_thread(manager.get_chat_history, limit=limit)
         return {
             "session_id": session_id,
             "messages": history,
+            "history": history,
             "count": len(history),
         }
     except Exception as e:
@@ -218,7 +378,7 @@ def get_chat_history(
 
 
 @router.delete("/chat/history/{session_id}")
-def clear_chat_history(
+async def clear_chat_history(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -227,62 +387,51 @@ def clear_chat_history(
 
     try:
         manager = _get_manager(session_id, current_user_id)
-        manager.clear_chat_history()
+        await asyncio.to_thread(manager.clear_chat_history)
         return {"status": "success", "message": "Chat history cleared"}
     except Exception as e:
         logger.error("Failed to clear chat history: %s", e)
-        raise HTTPException(
-            status_code=500, detail="Failed to clear chat history"
-        )
+        raise HTTPException(status_code=500, detail="Failed to clear chat history")
 
 
 # ==================================================================
-# Indexing
+# Indexing (Manual Embedding Only)
 # ==================================================================
-
 
 @router.get("/embedding/groups")
-def get_available_groups(
+async def get_available_groups(
     session_id: str,
+    eligible_only: bool = Query(False, description="Return only auto-embed eligible groups"),
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    List groups available for **manual** embedding by the user.
+    List groups available for manual embedding by the user.
 
-    Groups that have already been auto-embedded by the admin configuration
-    are excluded from the returned list so the user only sees the ones
-    they still need to choose from.
-
-    Reads the conversion_index.json to find which groups have been
-    converted to CSV.  Merges with embedding status from the vector store.
+    Reads conversion_index.json (post-conversion) or xml_inventory.json (pre-conversion)
+    and merges with embedding status from the vector store.
     """
     _verify_session_owner(session_id, current_user_id)
-
     session_dir = get_session_dir(session_id)
 
-    # Try conversion_index first (post-conversion groups with CSVs)
     index_path = session_dir / "conversion_index.json"
     if not index_path.exists():
-        # Fall back to xml_inventory (pre-conversion)
         index_path = session_dir / "xml_inventory.json"
 
     if not index_path.exists():
         return {
             "status": "no_inventory",
             "groups": [],
-            "auto_embedded_groups": [],
             "message": "No data found. Upload and scan a ZIP first.",
         }
 
     try:
         raw = json.loads(index_path.read_text(encoding="utf-8"))
     except Exception:
-        return {"status": "error", "groups": [], "auto_embedded_groups": [], "message": "Failed to read inventory."}
+        return {"status": "error", "groups": [], "message": "Failed to read inventory."}
 
-    # Extract unique groups and file counts from conversion_index.json
     group_counts: Dict[str, int] = {}
+
     if isinstance(raw, dict):
-        # Standard conversion_index.json format: {"groups": {"GRP": [...], ...}, "files": [...]}
         if "groups" in raw and isinstance(raw["groups"], dict):
             for grp_name, files_list in raw["groups"].items():
                 group_counts[grp_name] = len(files_list) if isinstance(files_list, list) else 0
@@ -292,47 +441,58 @@ def get_available_groups(
                     grp = item.get("group", "MISC")
                     group_counts[grp] = group_counts.get(grp, 0) + 1
         else:
-            # Legacy format: {filename: {group, ...}, ...}
             for _fname, info in raw.items():
                 if isinstance(info, dict) and "group" in info:
                     grp = info["group"]
                     group_counts[grp] = group_counts.get(grp, 0) + 1
     elif isinstance(raw, list):
-        # xml_inventory format: [{group, filename, ...}, ...]
         for item in raw:
             grp = item.get("group", "MISC") if isinstance(item, dict) else "MISC"
             group_counts[grp] = group_counts.get(grp, 0) + 1
 
-    # Get embedding status from the vector store (if manager exists)
     embedding_status: Dict[str, Dict[str, Any]] = {}
-    auto_embedded: List[str] = []
+    manager = None
     try:
         manager = _get_manager(session_id, current_user_id)
         embedding_status = manager.get_embedding_status()
-        auto_embedded = [g.upper() for g in manager.auto_embedded_groups]
     except Exception:
-        pass  # No manager yet — that's fine
+        pass
+
+    auto_embedded_groups: List[str] = []
+    eligible_set = None
+    try:
+        if manager:
+            auto_embedded_groups = manager.auto_embedded_groups
+            if eligible_only:
+                xml_inventory = _load_xml_inventory(session_dir, raw)
+                eligible = manager.auto_embedder.detect_eligible_groups(xml_inventory)
+                eligible_set = {g.upper() for g in eligible}
+    except Exception:
+        # keep response resilient when auto-embed metadata isn't available
+        pass
 
     groups_info = []
     for grp in sorted(group_counts):
+        if eligible_set is not None and grp.upper() not in eligible_set:
+            continue
         es = embedding_status.get(grp, {})
-        is_auto = grp.upper() in auto_embedded
         groups_info.append({
             "name": grp,
             "file_count": group_counts[grp],
+            "fileCount": group_counts[grp],
             "indexed": es.get("indexed", False),
             "chunk_count": es.get("chunk_count", 0),
-            "auto_embedded": is_auto,
+            # Backward-compatible field retained as neutral value.
+            "excluded_by_admin": False,
         })
-
-    # For the user selection UI, filter out auto-embedded groups
-    user_selectable = [g for g in groups_info if not g["auto_embedded"]]
 
     return {
         "status": "success",
-        "groups": user_selectable,
+        "groups": groups_info,
         "all_groups": groups_info,
-        "auto_embedded_groups": auto_embedded,
+        "auto_embedded_groups": auto_embedded_groups,
+        # Backward-compatible field retained as neutral value.
+        "excluded_groups": [],
         "total_groups": len(groups_info),
     }
 
@@ -343,13 +503,12 @@ async def embed_selected_groups(
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    Embed user-selected groups.
-
-    Groups that were already auto-embedded by the admin configuration are
-    silently skipped so they are not re-embedded.
+    Embed user-selected groups (manual embedding).
 
     Reads converted CSV files from the session output directory and embeds
-    them into ChromaDB for RAG retrieval.
+    them into the vector store for RAG retrieval.
+
+    Supports background embedding via embedding_worker when req.background=True.
     """
     _verify_session_owner(req.session_id, current_user_id)
 
@@ -362,23 +521,6 @@ async def embed_selected_groups(
     if not manager.is_configured():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
-    # Filter out groups that were already auto-embedded
-    auto_embedded = {g.upper() for g in manager.auto_embedded_groups}
-    groups_to_embed = [g for g in groups if g.upper() not in auto_embedded]
-    skipped = [g for g in groups if g.upper() in auto_embedded]
-
-    if not groups_to_embed:
-        return {
-            "status": "success",
-            "message": "All selected groups are already auto-embedded.",
-            "embedded_groups": [],
-            "skipped_groups": skipped,
-            "files_embedded": 0,
-            "embedded_count": 0,
-            "chunks_embedded": 0,
-            "errors": [],
-        }
-
     # Background mode: queue a task and return immediately
     if req.background:
         try:
@@ -389,12 +531,12 @@ async def embed_selected_groups(
             session_dir = get_session_dir(req.session_id)
             csv_dir = session_dir / "output"
 
-            worker = get_embedding_worker()
-            task = worker.submit_task(
+            worker = await get_embedding_worker()
+            task = await worker.submit_task(
                 task_id=f"manual_embed_{req.session_id}_{uuid.uuid4().hex[:8]}",
                 session_id=req.session_id,
                 user_id=current_user_id,
-                groups=groups_to_embed,
+                groups=groups,
                 csv_dir=csv_dir,
                 rag_service=manager.rag_service,
                 admin_config=None,
@@ -406,15 +548,14 @@ async def embed_selected_groups(
                 "status": "queued",
                 "message": "Embedding task queued",
                 "task_id": task.task_id,
-                "queued_groups": list(groups_to_embed),
-                "skipped_groups": skipped,
+                "queued_groups": list(groups),
             }
         except Exception as e:
             logger.error("Failed to queue embedding task: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to queue embedding task: {e}")
 
     try:
-        stats = manager.embed_groups(groups=groups_to_embed)
+        stats = manager.embed_groups(groups=groups)
 
         return {
             "status": "success",
@@ -424,7 +565,6 @@ async def embed_selected_groups(
                 f"{stats.indexed_docs} documents"
             ),
             "embedded_groups": list(stats.groups_processed),
-            "skipped_groups": skipped,
             "files_embedded": stats.indexed_files,
             "embedded_count": stats.indexed_files,
             "docs_embedded": stats.indexed_docs,
@@ -437,7 +577,7 @@ async def embed_selected_groups(
 
 
 @router.get("/embedding/tasks/{task_id}")
-def get_embedding_task_status(
+async def get_embedding_task_status(
     task_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -445,12 +585,11 @@ def get_embedding_task_status(
     try:
         from api.workers.embedding_worker import get_embedding_worker
 
-        worker = get_embedding_worker()
-        task = worker.get_task(task_id)
+        worker = await get_embedding_worker()
+        task = await worker.get_task(task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        # Security: only allow the owner to view the task
         if task.user_id != current_user_id:
             raise HTTPException(status_code=403, detail="Unauthorized")
 
@@ -463,7 +602,7 @@ def get_embedding_task_status(
 
 
 @router.get("/embedding/tasks")
-def list_embedding_tasks(
+async def list_embedding_tasks(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -471,30 +610,23 @@ def list_embedding_tasks(
     try:
         from api.workers.embedding_worker import get_embedding_worker
 
-        worker = get_embedding_worker()
-        tasks = worker.get_session_tasks(session_id)
-
-        # Filter by user ownership
+        worker = await get_embedding_worker()
+        tasks = await worker.get_session_tasks(session_id)
         visible = [t.to_dict() for t in tasks if t.user_id == current_user_id]
 
-        return {
-            "session_id": session_id,
-            "count": len(visible),
-            "tasks": visible,
-        }
+        return {"session_id": session_id, "count": len(visible), "tasks": visible}
     except Exception as e:
         logger.error("Failed to list embedding tasks: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list tasks")
 
 
 @router.get("/embedding/status/{session_id}")
-def get_embedding_status(
+async def get_embedding_status(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
     Get per-group embedding status from the vector store.
-
     Returns which groups are indexed and their chunk counts.
     """
     _verify_session_owner(session_id, current_user_id)
@@ -507,9 +639,8 @@ def get_embedding_status(
             stats = manager.get_index_stats()
         except AttributeError as e:
             logger.error(
-                "Method missing in SessionAIManager: %s. "
-                "This indicates a code version mismatch.",
-                str(e)
+                "Method missing in SessionAIManager: %s. Code version mismatch.",
+                str(e),
             )
             return {
                 "session_id": session_id,
@@ -521,10 +652,7 @@ def get_embedding_status(
                 "message": "AI service initialization error. Please restart the application.",
             }
         except Exception as e:
-            logger.warning(
-                "Error retrieving embedding status for %s: %s",
-                session_id, str(e),
-            )
+            logger.warning("Error retrieving embedding status for %s: %s", session_id, str(e))
             return {
                 "session_id": session_id,
                 "groups": {},
@@ -535,12 +663,16 @@ def get_embedding_status(
                 "message": "Status check encountered a temporary issue. Try again.",
             }
 
+        total_chunks = stats.get("total_chunks", 0)
+        total_documents = stats.get("documents", 0)
         return {
             "session_id": session_id,
             "groups": status,
-            "total_chunks": stats.get("total_chunks", 0),
+            "total_chunks": total_chunks,
+            "total_documents": total_documents,
+            "documents": total_documents,
             "total_groups": stats.get("total_groups", 0),
-            "is_indexed": stats.get("total_chunks", 0) > 0,
+            "is_indexed": total_chunks > 0,
         }
     except Exception as e:
         logger.error("Failed to get embedding status: %s", e)
@@ -548,6 +680,8 @@ def get_embedding_status(
             "session_id": session_id,
             "groups": {},
             "total_chunks": 0,
+            "total_documents": 0,
+            "documents": 0,
             "total_groups": 0,
             "is_indexed": False,
             "status_error": "critical",
@@ -556,7 +690,7 @@ def get_embedding_status(
 
 
 @router.get("/embedding/stats/{session_id}")
-def get_index_stats(
+async def get_index_stats(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -566,16 +700,17 @@ def get_index_stats(
     try:
         manager = _get_manager(session_id, current_user_id)
         stats = manager.get_index_stats()
-        return {"session_id": session_id, **stats}
+        payload = {"session_id": session_id, **stats}
+        if "documents" in payload and "total_documents" not in payload:
+            payload["total_documents"] = payload["documents"]
+        return payload
     except Exception as e:
         logger.error("Failed to get index stats: %s", e)
-        raise HTTPException(
-            status_code=500, detail="Failed to get index stats"
-        )
+        raise HTTPException(status_code=500, detail="Failed to get index stats")
 
 
 @router.delete("/embedding/{session_id}")
-def clear_index(
+async def clear_index(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -592,146 +727,291 @@ def clear_index(
 
 
 # ==================================================================
-# Auto-Embedding
+# Auto-Embedding (Compatibility Endpoints)
 # ==================================================================
 
-
 @router.post("/auto-embed/start")
-async def start_auto_embedding(
-    req: StartAutoEmbedRequest,
+async def start_auto_embed(
+    body: Dict[str, Any],
     current_user_id: str = Depends(get_current_user_id),
 ):
     """
-    Start auto-embedding for admin-configured groups.
+    Compatibility endpoint for legacy auto-embed UI flows.
 
-    Called automatically after ZIP scan when auto-embedding is enabled.
+    Request body supports:
+      - session_id (required)
+      - xml_inventory (optional)
     """
-    _verify_session_owner(req.session_id, current_user_id)
+    session_id = str(body.get("session_id", "")).strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
 
-    manager = _get_manager(req.session_id, current_user_id)
+    _verify_session_owner(session_id, current_user_id)
 
+    manager = _get_manager(session_id, current_user_id)
     if not manager.is_configured():
-        return {
-            "status": "not_configured",
-            "message": "AI not configured — auto-embedding skipped",
-            "eligible_groups": [],
-        }
+        raise HTTPException(status_code=503, detail="AI service not configured")
 
-    try:
-        result = manager.start_auto_embed(xml_inventory=req.xml_inventory)
-        return result
-    except Exception as e:
-        logger.error("Auto-embedding start failed: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Auto-embedding failed: {e}"
-        )
+    session_dir = get_session_dir(session_id)
+    xml_inventory = body.get("xml_inventory")
+    if not isinstance(xml_inventory, list):
+        xml_inventory = _load_xml_inventory(session_dir)
+
+    result = await asyncio.to_thread(manager.start_auto_embed, xml_inventory)
+    started = result.get("status") == "started"
+
+    return {
+        "started": started,
+        "status": result.get("status", "idle"),
+        "eligible_groups": result.get("eligible_groups", []),
+        "message": result.get("message", ""),
+    }
 
 
-@router.get(
-    "/auto-embed/progress/{session_id}",
-    response_model=AutoEmbedStatusResponse,
-)
-def get_auto_embed_progress(
+@router.get("/auto-embed/progress/{session_id}")
+async def get_auto_embed_progress(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Get current auto-embedding progress."""
+    """Compatibility endpoint for auto-embed progress polling."""
     _verify_session_owner(session_id, current_user_id)
 
-    try:
-        manager = _get_manager(session_id, current_user_id)
-        progress = manager.get_auto_embed_progress()
+    manager = _get_manager(session_id, current_user_id)
+    progress = await asyncio.to_thread(manager.get_auto_embed_progress)
 
-        return AutoEmbedStatusResponse(
-            session_id=session_id,
-            progress=AutoEmbedProgress(
-                status=progress.status,
-                progress=progress.progress,
-                files_done=progress.files_done,
-                files_total=progress.files_total,
-                docs_done=progress.docs_done,
-                current_file=progress.current_file,
-                groups_done=progress.groups_done,
-                error=progress.error,
-            ),
-            eligible_groups=progress.groups_done,
-        )
-    except Exception as e:
-        logger.error("Failed to get auto-embed progress: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to get progress")
+    raw_status = getattr(progress, "status", "idle") or "idle"
+    status = "embedding" if raw_status in ("preparing", "embedding") else raw_status
+
+    files_done = int(getattr(progress, "files_done", 0) or 0)
+    files_total = int(getattr(progress, "files_total", 0) or 0)
+    docs_done = int(getattr(progress, "docs_done", 0) or 0)
+    chunks_done = int(getattr(progress, "chunks_done", 0) or 0)
+    groups_done = list(getattr(progress, "groups_done", []) or [])
+    elapsed_seconds = float(getattr(progress, "elapsed_seconds", 0.0) or 0.0)
+
+    # Per-group persistent status from Phase 2.5 callback
+    group_status = await asyncio.to_thread(manager.get_embed_group_status)
+
+    return {
+        "status": status,
+        "processed": files_done,
+        "total": files_total,
+        "current_file": getattr(progress, "current_file", "") or "",
+        "current_group_index": len(groups_done),
+        "groups": manager.auto_embedded_groups or groups_done,
+        "group_status": group_status,
+        "stats": {
+            "totalDocuments": docs_done,
+            "totalChunks": chunks_done,
+        },
+        "error": getattr(progress, "error", None),
+        "duration": int(elapsed_seconds * 1000),
+    }
+
+
+@router.get("/embedding/group-status/{session_id}")
+async def get_embedding_group_status(
+    session_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """
+    Return per-group embedding status (queued / embedding / completed / failed).
+
+    Reads persistent metadata written by auto-embedder group callbacks.
+    """
+    _verify_session_owner(session_id, current_user_id)
+
+    manager = _get_manager(session_id, current_user_id)
+    group_status = await asyncio.to_thread(manager.get_embed_group_status)
+
+    return {
+        "session_id": session_id,
+        "group_status": group_status,
+        "total_groups": len(group_status),
+        "completed": sum(1 for g in group_status.values() if g.get("status") == "completed"),
+        "failed": sum(1 for g in group_status.values() if g.get("status") == "failed"),
+    }
 
 
 @router.post("/auto-embed/stop/{session_id}")
-def stop_auto_embedding(
+async def stop_auto_embed(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Stop ongoing auto-embedding."""
+    """Compatibility endpoint to stop auto-embedding."""
     _verify_session_owner(session_id, current_user_id)
 
-    try:
-        manager = _get_manager(session_id, current_user_id)
-        manager.stop_auto_embed()
-        return {"status": "success", "message": "Stop requested"}
-    except Exception as e:
-        logger.error("Failed to stop auto-embedding: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to stop")
+    manager = _get_manager(session_id, current_user_id)
+    await asyncio.to_thread(manager.stop_auto_embed)
+
+    return {
+        "stopped": True,
+        "status": "idle",
+        "message": "Auto-embedding stopped",
+    }
 
 
 # ==================================================================
-# Admin
+# SSE Progress Streams (replaces polling for real-time progress)
 # ==================================================================
 
 
-@router.get("/admin/auto-embed-groups")
-def get_admin_auto_embed_groups(
+@router.get("/auto-embed/progress/{session_id}/stream")
+async def stream_auto_embed_progress(
+    session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Get admin-configured auto-embed groups."""
-    # Check admin_prefs.json (used by AutoEmbedder)
-    prefs_path = Path(settings.RET_RUNTIME_ROOT) / "admin_prefs.json"
-    if prefs_path.exists():
-        try:
-            data = json.loads(prefs_path.read_text(encoding="utf-8"))
-            groups = data.get("auto_embedded_groups", [])
-            return {"count": len(groups), "configured": len(groups) > 0, "groups": groups}
-        except Exception:
-            pass
+    """
+    SSE stream that pushes auto-embed progress until completion.
 
-    # Also check AI config (used by conversion auto-embed)
-    try:
-        from api.services.admin_service import get_ai_indexing_config_data
-        ai_config = get_ai_indexing_config_data()
-        groups = ai_config.get("auto_indexed_groups", [])
-        enabled = ai_config.get("enable_auto_indexing", False)
-        return {"count": len(groups), "configured": enabled and len(groups) > 0, "groups": groups}
-    except Exception:
-        pass
+    Replaces the 1.5 s polling pattern in AutoEmbedProgress.vue.
+    Clients should fall back to the polling GET endpoint if SSE
+    is not supported or the connection drops.
 
-    return {"count": 0, "configured": False, "groups": []}
+    Event types:
+      - ``progress`` — full progress snapshot (same shape as polling response)
+      - ``done`` — terminal event when embedding finishes or fails
+    """
+    import json as _json
 
+    _verify_session_owner(session_id, current_user_id)
+
+    async def _generator():
+        manager = _get_manager(session_id, current_user_id)
+        terminal = {"completed", "failed", "idle", "stopped"}
+        max_ticks = 600  # ~5 min at 500 ms
+
+        for _ in range(max_ticks):
+            try:
+                progress = await asyncio.to_thread(manager.get_auto_embed_progress)
+                raw_status = getattr(progress, "status", "idle") or "idle"
+                status = "embedding" if raw_status in ("preparing", "embedding") else raw_status
+
+                files_done = int(getattr(progress, "files_done", 0) or 0)
+                files_total = int(getattr(progress, "files_total", 0) or 0)
+                docs_done = int(getattr(progress, "docs_done", 0) or 0)
+                chunks_done = int(getattr(progress, "chunks_done", 0) or 0)
+                groups_done = list(getattr(progress, "groups_done", []) or [])
+                elapsed = float(getattr(progress, "elapsed_seconds", 0.0) or 0.0)
+
+                group_status = await asyncio.to_thread(manager.get_embed_group_status)
+
+                payload = {
+                    "status": status,
+                    "processed": files_done,
+                    "total": files_total,
+                    "current_file": getattr(progress, "current_file", "") or "",
+                    "current_group_index": len(groups_done),
+                    "groups": manager.auto_embedded_groups or groups_done,
+                    "group_status": group_status,
+                    "stats": {
+                        "totalDocuments": docs_done,
+                        "totalChunks": chunks_done,
+                    },
+                    "error": getattr(progress, "error", None),
+                    "duration": int(elapsed * 1000),
+                }
+
+                event_name = "done" if status in terminal else "progress"
+                yield f"event: {event_name}\ndata: {_json.dumps(payload, default=str)}\n\n"
+
+                if status in terminal:
+                    return
+
+            except Exception as exc:
+                yield f"event: error\ndata: {_json.dumps({'detail': str(exc)})}\n\n"
+                return
+
+            await asyncio.sleep(0.5)
+
+        # Max ticks reached
+        yield 'event: done\ndata: {"status":"timeout"}\n\n'
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/embedding/tasks/{task_id}/stream")
+async def stream_embedding_task_progress(
+    task_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """
+    SSE stream for a specific embedding task's progress.
+
+    Replaces the 2.5 s polling pattern in MainView.vue.
+
+    Event types:
+      - ``progress`` — task snapshot (same shape as GET /embedding/tasks/{task_id})
+      - ``done``     — terminal event
+    """
+    import json as _json
+
+    async def _generator():
+        from api.workers.embedding_worker import get_embedding_worker
+
+        worker = await get_embedding_worker()
+        terminal = {"completed", "failed", "cancelled"}
+        max_ticks = 600
+
+        for _ in range(max_ticks):
+            try:
+                task = await worker.get_task(task_id)
+                if not task:
+                    yield f'event: error\ndata: {{"detail":"Task not found"}}\n\n'
+                    return
+
+                if task.user_id != current_user_id:
+                    yield f'event: error\ndata: {{"detail":"Unauthorized"}}\n\n'
+                    return
+
+                payload = task.to_dict()
+                event_name = "done" if payload.get("status") in terminal else "progress"
+                yield f"event: {event_name}\ndata: {_json.dumps(payload, default=str)}\n\n"
+
+                if payload.get("status") in terminal:
+                    return
+
+            except Exception as exc:
+                yield f"event: error\ndata: {_json.dumps({'detail': str(exc)})}\n\n"
+                return
+
+            await asyncio.sleep(0.5)
+
+        yield 'event: done\ndata: {"status":"timeout"}\n\n'
+
+    return StreamingResponse(
+        _generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ==================================================================
+# Admin (Worker Diagnostics Only)
+# ==================================================================
 
 @router.get("/admin/worker-status")
-def get_worker_status(
+async def get_worker_status(
     current_user_id: str = Depends(get_current_user_id),
 ):
     """Get embedding worker status for debugging and monitoring."""
     try:
         from api.workers.embedding_worker import get_embedding_worker
 
-        worker = get_embedding_worker()
-        
-        # Check if worker thread is running
-        is_running = worker._worker_thread is not None and worker._worker_thread.is_alive()
-        
-        # Get task statistics
-        with worker._lock:
+        worker = await get_embedding_worker()
+        is_running = worker._consumer_task is not None and not worker._consumer_task.done()
+
+        async with worker._lock:
             tasks = list(worker._tasks.values())
             pending = sum(1 for t in tasks if t.status == "pending")
             running = sum(1 for t in tasks if t.status == "running")
             completed = sum(1 for t in tasks if t.status == "completed")
             failed = sum(1 for t in tasks if t.status == "failed")
-        
+
         return {
             "worker_running": is_running,
             "total_tasks": len(tasks),
@@ -745,19 +1025,15 @@ def get_worker_status(
         }
     except Exception as e:
         logger.error("Failed to get worker status: %s", e)
-        return {
-            "worker_running": False,
-            "error": str(e),
-        }
+        return {"worker_running": False, "error": str(e)}
 
 
 # ==================================================================
 # Transcript Download
 # ==================================================================
 
-
 @router.post("/transcript/download")
-def download_transcript(
+async def download_transcript(
     req: TranscriptRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -808,7 +1084,10 @@ def download_transcript(
                 if req.include_sources and msg.get("sources"):
                     lines.append("**Sources:**")
                     for src in msg["sources"][:5]:
-                        lines.append(f"- {src.get('source', 'unknown')}")
+                        if isinstance(src, dict):
+                            lines.append(f"- {src.get('source', src.get('file', 'unknown'))}")
+                        else:
+                            lines.append(f"- {str(src)}")
                     lines.append("")
                 lines.append("---")
                 lines.append("")
@@ -819,24 +1098,19 @@ def download_transcript(
         return Response(
             content=content.encode("utf-8"),
             media_type=media_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            },
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
         logger.error("Failed to generate transcript: %s", e)
-        raise HTTPException(
-            status_code=500, detail="Failed to generate transcript"
-        )
+        raise HTTPException(status_code=500, detail="Failed to generate transcript")
 
 
 # ==================================================================
 # Feedback
 # ==================================================================
 
-
 @router.post("/feedback", response_model=FeedbackResponse)
-def submit_feedback(
+async def submit_feedback(
     req: FeedbackRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -844,8 +1118,6 @@ def submit_feedback(
     _verify_session_owner(req.session_id, current_user_id)
 
     try:
-        manager = _get_manager(req.session_id, current_user_id)
-        # Store feedback in session metadata for analytics
         meta = get_session_metadata(req.session_id)
         feedback_log = meta.get("feedback", [])
         feedback_log.append({
@@ -868,9 +1140,8 @@ def submit_feedback(
 # Session Cleanup
 # ==================================================================
 
-
 @router.post("/cleanup/{session_id}")
-def cleanup_ai_session(
+async def cleanup_ai_session(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
@@ -884,4 +1155,4 @@ def cleanup_ai_session(
         return {"status": "success", "message": "AI session cleaned up"}
     except Exception as e:
         logger.error("Failed to cleanup AI session: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to cleanup")
+        raise HTTPException(status_code=500, detail="Failed to cleanup AI session")

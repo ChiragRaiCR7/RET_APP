@@ -1,37 +1,40 @@
 <template>
   <div>
-    <div 
-      class="file-upload-zone" 
-      @dragover.prevent="dragging = true" 
-      @dragleave.prevent="dragging = false" 
-      @drop.prevent="onDrop" 
-      :class="{ dragging }" 
+    <div
+      class="file-upload-zone"
+      @dragover.prevent="dragging = true"
+      @dragleave.prevent="dragging = false"
+      @drop.prevent="onDrop"
+      :class="{ dragging }"
       @click="open"
     >
       <div class="file-upload-icon" aria-hidden="true">📦</div>
-      <div><strong>Drop ZIP or XML files here, or click to upload</strong></div>
-      <div class="form-hint">Supports ZIP archives and individual XML files. Max 200MB. We'll scan and show a preview.</div>
+      <div><strong>Drop ZIP / XML / CSV / XLSX / XLS here, or click to upload</strong></div>
+      <div class="form-hint">
+        Supports ZIP archives and individual XML/XML.GZ/CSV/XLSX/XLS files.
+        Scans nested ZIPs and groups by module prefix. Large archives may take a few minutes.
+      </div>
     </div>
-    
-    <input 
-      ref="input" 
-      type="file" 
-      multiple 
-      @change="onFiles" 
-      style="display:none" 
-      accept=".zip,.xml,application/zip,text/xml,application/xml" 
+
+    <input
+      ref="input"
+      type="file"
+      multiple
+      @change="onFiles"
+      style="display:none"
+      accept=".zip,.xml,.xml.gz,.csv,.xlsx,.xls,application/zip,text/xml,application/xml,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
     />
-    
+
     <div v-if="files.length" style="margin-top: var(--space-md)">
       <div v-for="(f, i) in files" :key="i" class="info-item">
         <div style="display:flex; justify-content:space-between;">
           <div>
             <div style="font-weight:800">{{ f.name }}</div>
-            <div class="form-hint">{{ prettySize(f.size) }} • {{ f.type || 'zip' }}</div>
+            <div class="form-hint">{{ prettySize(f.size) }} • {{ f.type || 'file' }}</div>
           </div>
           <div style="display:flex; gap:8px; align-items:center">
-            <button 
-              class="btn btn-sm btn-primary" 
+            <button
+              class="btn btn-sm btn-primary"
               @click.stop="scanFile(f)"
               :disabled="scanning"
             >
@@ -41,6 +44,13 @@
             <button class="btn btn-sm" @click.stop="remove(i)">Remove</button>
           </div>
         </div>
+
+        <!-- Optional: show scan parameters in UI (nice for debugging) -->
+        <div class="form-hint" style="margin-top:6px" v-if="showLimitsHint">
+          Scan limits: max_unzipped_mb={{ scanLimits.max_unzipped_mb }},
+          max_files={{ scanLimits.max_files }},
+          max_depth={{ scanLimits.max_depth }}
+        </div>
       </div>
     </div>
 
@@ -48,19 +58,40 @@
     <div v-if="scanResults" style="margin-top: var(--space-lg)">
       <div class="enterprise-card">
         <h4 class="card-title">📊 Scan Results</h4>
-        
+
         <div class="metric-container">
           <div class="metric-card">
-            <div class="metric-value">{{ scanResults.xml_count }}</div>
+            <div class="metric-value">{{ scanResults.file_count ?? scanResults.summary?.totalFiles ?? 0 }}</div>
+            <div class="metric-label">Total Files</div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-value">{{ scanResults.xml_count ?? 0 }}</div>
             <div class="metric-label">XML Files</div>
           </div>
+
           <div class="metric-card">
-            <div class="metric-value">{{ scanResults.group_count }}</div>
+            <div class="metric-value">{{ scanResults.group_count ?? 0 }}</div>
             <div class="metric-label">Groups Found</div>
           </div>
+
           <div class="metric-card">
-            <div class="metric-value">{{ prettySize(scanResults.summary.totalSize) }}</div>
+            <div class="metric-value">{{ prettySize(scanResults.summary?.totalSize) }}</div>
             <div class="metric-label">Total Size</div>
+          </div>
+        </div>
+
+        <!-- ✅ NEW: Type counts summary -->
+        <div v-if="scanResults.summary?.typeCounts" class="typecounts">
+          <div class="typecounts-title">File types</div>
+          <div class="typecounts-badges">
+            <span
+              v-for="(count, typ) in scanResults.summary.typeCounts"
+              :key="typ"
+              class="type-badge"
+            >
+              {{ String(typ).toUpperCase() }}: <strong>{{ count }}</strong>
+            </span>
           </div>
         </div>
 
@@ -84,13 +115,24 @@
             </tbody>
           </table>
         </div>
+
+        <!-- Optional: show scan warnings -->
+        <div v-if="scanResults.warnings?.length" class="warn-box">
+          <div class="warn-title">Warnings</div>
+          <ul class="warn-list">
+            <li v-for="(w, idx) in scanResults.warnings" :key="idx">{{ w }}</li>
+          </ul>
+        </div>
       </div>
     </div>
 
     <!-- Error Display -->
-    <div v-if="error" style="margin-top: var(--space-md); padding: var(--space-md); background: #fee; color: #c33; border-radius: 4px;">
+    <div
+      v-if="error"
+      style="margin-top: var(--space-md); padding: var(--space-md); background: #fee; color: #c33; border-radius: 4px;"
+    >
       <strong>Error:</strong> {{ error }}
-      <button 
+      <button
         @click="error = ''"
         style="float: right; background: none; border: none; cursor: pointer; font-size: 16px;"
       >
@@ -102,7 +144,7 @@
 
 <script setup>
 import { ref } from 'vue'
-import api from '@/utils/api'
+import api, { longApi } from '@/utils/api'
 
 const input = ref(null)
 const files = ref([])
@@ -110,6 +152,17 @@ const dragging = ref(false)
 const scanning = ref(false)
 const scanResults = ref(null)
 const error = ref('')
+
+// You can flip this on/off if you want to show limits under each file row
+const showLimitsHint = false
+
+// ✅ Default scan limits (prevents max bytes stopping)
+const scanLimits = {
+  max_unzipped_mb: 5000, // 5 GB
+  max_files: 200000,
+  max_depth: 25,
+  group_mode: 'zip'
+}
 
 // Define emits - 'files-added' for raw files, 'uploaded'/'scanned' for scan results
 const emit = defineEmits(['uploaded', 'scanned', 'files-added'])
@@ -122,7 +175,6 @@ function onFiles(e) {
   const list = Array.from(e.target.files || [])
   files.value.push(...list)
   error.value = ''
-  // Emit raw files immediately so parent can track them
   emit('files-added', list)
 }
 
@@ -131,7 +183,6 @@ function onDrop(e) {
   const list = Array.from(e.dataTransfer.files || [])
   files.value.push(...list)
   error.value = ''
-  // Emit raw files immediately so parent can track them
   emit('files-added', list)
 }
 
@@ -140,32 +191,54 @@ function remove(i) {
 }
 
 function prettySize(n) {
-  if (!n) return '-'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n === null || n === undefined) return '-'
+  const num = Number(n)
+  if (!Number.isFinite(num) || num <= 0) return '-'
+  if (num < 1024) return `${num} B`
+  if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`
+  if (num < 1024 * 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB`
+  return `${(num / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 async function scanFile(file) {
   const data = new FormData()
   data.append('file', file)
+
   scanning.value = true
   error.value = ''
-  
+
   try {
-    const resp = await api.post('/conversion/scan', data, { 
-      headers: { 'Content-Type': 'multipart/form-data' } 
+    // ✅ Use longApi + pass query params to avoid scan budget truncation
+    const resp = await longApi.post('/conversion/scan', data, {
+      params: {
+        group_mode: scanLimits.group_mode,
+        max_unzipped_mb: scanLimits.max_unzipped_mb,
+        max_files: scanLimits.max_files,
+        max_depth: scanLimits.max_depth
+      },
+      timeout: 15 * 60 * 1000 // 15 min
     })
-    
+
     scanResults.value = resp.data
     emit('scanned', resp.data)
+
+    // ✅ Emit a richer payload so MainView can build exclusion UI
     emit('uploaded', {
       sessionId: resp.data.session_id,
+      session_id: resp.data.session_id,
       groups: resp.data.groups,
       xmlCount: resp.data.xml_count,
+      xml_count: resp.data.xml_count,
+      file_count: resp.data.file_count,
+      files: resp.data.files,
+      summary: resp.data.summary
     })
   } catch (e) {
-    error.value = e.response?.data?.detail || e.response?.data?.message || e.message || 'Unknown error'
+    error.value =
+      e.response?.data?.detail ||
+      e.response?.data?.message ||
+      e.message ||
+      'Unknown error'
     console.error('Scan error:', e)
   } finally {
     scanning.value = false
@@ -235,6 +308,49 @@ async function scanFile(file) {
   margin-top: var(--space-xs);
 }
 
+.typecounts {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+}
+
+.typecounts-title {
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.typecounts-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.warn-box {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid #f2c94c;
+  background: #fff7db;
+  color: #6b4f00;
+}
+.warn-title { font-weight: 900; margin-bottom: 6px; }
+.warn-list { margin: 0; padding-left: 18px; }
+
 .spinner {
   display: inline-block;
   width: 14px;
@@ -247,20 +363,5 @@ async function scanFile(file) {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
-}
-
-.spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 2px solid #f3f3f3;
-  border-top: 2px solid #007bff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
 }
 </style>

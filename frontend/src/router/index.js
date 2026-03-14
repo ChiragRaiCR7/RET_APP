@@ -1,12 +1,27 @@
+
+/**
+ * Vue Router configuration for RET v4
+ *
+ * Routes:
+ *   /       — Login (guest only)
+ *   /app    — Main workspace (auth required)
+ *   /admin  — Admin console (admin role required)
+ *
+ * MainView and AdminView are lazy-loaded to keep the initial bundle small.
+ */
 import { createRouter, createWebHistory } from 'vue-router'
 import LoginView from '@/views/LoginView.vue'
-import MainView from '@/views/MainView.vue'
-import AdminView from '@/views/AdminView.vue'
 import { useAuthStore } from '@/stores/authStore'
+
+/* Lazy-load heavy views — only the login page is eagerly loaded */
+const MainView  = () => import('@/views/MainView.vue')
+const AdminView = () => import('@/views/AdminView.vue')
+const ComparisonDrilldownView = () => import('@/views/ComparisonDrilldownView.vue')
 
 const routes = [
   { path: '/', name: 'login', component: LoginView, meta: { requiresGuest: true } },
   { path: '/app', name: 'main', component: MainView, meta: { requiresAuth: true } },
+  { path: '/compare/drilldown', name: 'compare-drilldown', component: ComparisonDrilldownView, meta: { requiresAuth: true } },
   { path: '/admin', name: 'admin', component: AdminView, meta: { requiresAuth: true, requiresAdmin: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' }, // Catch-all redirect to login
 ]

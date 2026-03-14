@@ -1,3 +1,4 @@
+
 """
 Quick validation script for the new parallel conversion system.
 Run this to verify the implementation is correct.

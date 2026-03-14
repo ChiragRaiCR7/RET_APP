@@ -1,9 +1,15 @@
-from sqlalchemy.orm import Session
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 import secrets
 import json
 from pathlib import Path
 import logging
+from typing import Any, Dict, Optional, List
+
+from sqlalchemy import delete, desc, func, select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from api.models.models import (
     User,
@@ -12,6 +18,7 @@ from api.models.models import (
     LoginSession,
     PasswordResetToken,
     PasswordResetRequest,
+    RequestStatus,
 )
 from api.core.security import hash_password
 from api.core.exceptions import NotFound, Forbidden
@@ -21,183 +28,326 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path("data")
 AI_CONFIG_FILE = DATA_DIR / "ai_config.json"
 
-def ensure_data_dir():
+# Centralized role policy — extend here if roles evolve
+_ALLOWED_ROLES = {"user", "admin", "super_admin", "guest"}
+
+
+# ---------------------------------------------------------------------------
+# Small utilities
+# ---------------------------------------------------------------------------
+
+def _utcnow() -> datetime:
+    """Return naive UTC timestamp for DB timestamp columns (SQL-friendly)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def ensure_data_dir() -> None:
+    """Ensure `data/` directory exists for AI config persistence."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _normalize_role(role: Optional[str]) -> str:
+    """Normalize role input to a valid, lower-cased role with a safe default."""
+    if not role:
+        return "user"
+    r = role.strip().lower()
+    return r if r in _ALLOWED_ROLES else "user"
+
+
+def _normalize_group_list(values: Any) -> List[str]:
+    """Normalize incoming list-like group values to uppercase, unique, sorted list."""
+    if not isinstance(values, list):
+        return []
+    cleaned = {
+        str(v).strip().upper()
+        for v in values
+        if str(v).strip()
+    }
+    return sorted(cleaned)
+
+
+def _status_value(name: str, fallback: str) -> Any:
+    """
+    Safely resolve a RequestStatus attr if enum is used; fall back to raw string.
+
+    e.g. _status_value("PENDING", "pending")
+    """
+    try:
+        return getattr(RequestStatus, name)
+    except Exception:
+        return fallback
+
+
+def _normalize_ai_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalize AI indexing config:
+    - Keep canonical flag `auto_embed_enabled`
+    - Maintain legacy alias `enable_auto_embedding`
+    - Clean list fields and preserve defaults
+    """
+    defaults = {
+        "auto_embedded_groups": [],
+        # legacy compatibility only (not used for eligibility policy)
+        "excluded_groups": [],
+        "default_collection": "documents",
+        "chunk_size": 10000,
+        "retrieval_top_k": 16,
+        "hybrid_alpha": 0.70,
+        "hybrid_beta": 0.30,
+        "max_zip_size_mb": 10000,
+        "max_nested_depth": 50,
+        # canonical flag
+        "auto_embed_enabled": False,
+        # legacy alias maintained for older clients
+        "enable_auto_embedding": False,
+    }
+
+    cfg = {**defaults, **(raw or {})}
+
+    # Harmonize old/new flag names.
+    source = raw or {}
+    if "auto_embed_enabled" in source:
+        enabled = bool(source.get("auto_embed_enabled"))
+    elif "enable_auto_embedding" in source:
+        enabled = bool(source.get("enable_auto_embedding"))
+    else:
+        enabled = bool(cfg.get("auto_embed_enabled") or cfg.get("enable_auto_embedding"))
+
+    cfg["auto_embed_enabled"] = enabled
+    cfg["enable_auto_embedding"] = enabled
+
+    cfg["auto_embedded_groups"] = _normalize_group_list(cfg.get("auto_embedded_groups"))
+    # Keep excluded_groups for backward-compatible payload roundtrips only.
+    cfg["excluded_groups"] = _normalize_group_list(cfg.get("excluded_groups"))
+
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Audit / Ops logs
+# ---------------------------------------------------------------------------
+
 def write_audit_log(
-    db: Session,
-    username: str | None,
+    db: AsyncSession,
+    username: Optional[str],
     action: str,
     area: str,
     message: str,
-):
-    """Write an entry to the audit log"""
+) -> None:
+    """Write an entry to the audit log (deferred commit)."""
     try:
         log = AuditLog(
             username=username,
             action=action,
             area=area,
             message=message,
-            created_at=datetime.now(timezone.utc),
+            created_at=_utcnow(),
         )
         db.add(log)
-        # We don't commit here to allow the caller to commit in transaction
     except Exception as e:
-        logger.error(f"Failed to write audit log: {e}")
+        logger.error("Failed to write audit log: %s", e)
+
 
 def write_ops_log(
-    db: Session,
-    username: str | None,
+    db: AsyncSession,
+    username: Optional[str],
     action: str,
     area: str,
     message: str,
-):
-    """Write an entry to the ops log"""
+) -> None:
+    """Write an entry to the ops log (deferred commit)."""
     try:
         log = OpsLog(
             username=username,
             action=action,
             area=area,
             message=message,
-            created_at=datetime.now(timezone.utc),
+            created_at=_utcnow(),
         )
         db.add(log)
     except Exception as e:
-        logger.error(f"Failed to write ops log: {e}")
+        logger.error("Failed to write ops log: %s", e)
 
-def create_user(
-    db: Session, 
-    username: str, 
-    password: str = None, 
-    role: str = "user", 
-    admin_username: str = None,
+
+# ---------------------------------------------------------------------------
+# User management
+# ---------------------------------------------------------------------------
+
+async def create_user(
+    db: AsyncSession,
+    username: str,
+    password: Optional[str] = None,
+    role: str = "user",
+    admin_username: Optional[str] = None,
     token_ttl_minutes: int = 60,
 ):
     """
-    Create new user with given credentials.
-    Supports token-first onboarding when password is None.
-    Returns (user, token) tuple where token is only provided for token-first onboarding.
+    Create a new user.
+    - If password is None, creates a placeholder password and issues a reset token
+      (token-first onboarding).
+    - Returns (user, token) where token is only provided for token-first onboarding.
     """
-    if db.query(User).filter(User.username == username).first():
+    # Uniqueness check
+    res = await db.execute(select(User).where(User.username == username))
+    if res.scalar_one_or_none():
         raise Forbidden("User already exists")
 
-    # Normalize role to lowercase
-    role = role.lower().strip()
-    if role not in ["user", "admin", "super_admin", "guest"]:
-        role = "user"
+    norm_role = _normalize_role(role)
 
-    # For token-first onboarding, create user with placeholder password hash
-    # User will set password via reset token
+    # Compute password hash (placeholder if token-first)
     if password:
         password_hash = hash_password(password)
     else:
-        # Create a random placeholder that can't be used to log in
         password_hash = hash_password(secrets.token_urlsafe(32))
 
     user = User(
         username=username,
         password_hash=password_hash,
-        role=role,
+        role=norm_role,
     )
     db.add(user)
-    db.flush()  # Get the user ID
-    
-    # For token-first onboarding, generate a reset token
-    token = None
-    if not password:
-        token = secrets.token_urlsafe(32)
-        token_hash = hash_password(token)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=token_ttl_minutes)
-        
-        reset_token = PasswordResetToken(
-            user_id=user.id,
-            token_hash=token_hash,
-            expires_at=expires_at,
+
+    try:
+        await db.flush()  # allocate user.id
+
+        token: Optional[str] = None
+        if not password:
+            # Token-first onboarding: generate token and persist its hash
+            token = secrets.token_urlsafe(32)
+            token_hash = hash_password(token)
+            expires_at = _utcnow() + timedelta(minutes=token_ttl_minutes)
+            db.add(
+                PasswordResetToken(
+                    user_id=user.id,
+                    token_hash=token_hash,
+                    expires_at=expires_at,
+                )
+            )
+
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="CREATE_USER",
+            area="AUTH",
+            message=f"Created user {user.username} with role {norm_role}" + (" (token-first)" if not password else ""),
         )
-        db.add(reset_token)
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="CREATE_USER", 
-        area="AUTH", 
-        message=f"Created user {username} with role {role}" + (" (token-first)" if not password else "")
-    )
-    
-    db.commit()
-    db.refresh(user)
-    return user, token
+
+        await db.commit()
+        await db.refresh(user)
+        return user, token
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to create user '%s'", username)
+        raise
 
 
-def update_user(db: Session, user_id: int, updates: dict, admin_username: str = None):
-    """Update user fields"""
-    user = db.query(User).get(user_id)
+async def update_user(
+    db: AsyncSession,
+    user_id: int,
+    updates: dict,
+    admin_username: Optional[str] = None
+):
+    """
+    Update user attributes (only existing attributes will be applied).
+    """
+    user = await db.get(User, user_id)
     if not user:
         raise NotFound("User not found")
 
-    for k, v in updates.items():
-        if v is not None and hasattr(user, k):
-            setattr(user, k, v)
+    try:
+        # Normalize role via policy if included
+        if "role" in updates and updates["role"] is not None:
+            updates["role"] = _normalize_role(updates["role"])
 
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="UPDATE_USER", 
-        area="AUTH", 
-        message=f"Updated user {user.username}: {updates}"
-    )
+        for k, v in updates.items():
+            if v is not None and hasattr(user, k):
+                setattr(user, k, v)
 
-    db.commit()
-    db.refresh(user)
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="UPDATE_USER",
+            area="AUTH",
+            message=f"Updated user {user.username}: {updates}",
+        )
+
+        await db.commit()
+        await db.refresh(user)
+        return user
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to update user_id=%s", user_id)
+        raise
+
+
+async def get_user(db: AsyncSession, user_id: int):
+    """Get user by ID or raise NotFound."""
+    user = await db.get(User, user_id)
+    if not user:
+        raise NotFound("User not found")
     return user
 
 
-def get_user(db: Session, user_id: int):
-    """Get user by ID"""
-    user = db.query(User).get(user_id)
+async def delete_user(
+    db: AsyncSession,
+    user_id: int,
+    admin_username: Optional[str] = None
+) -> None:
+    """
+    Delete a user and associated sessions/tokens.
+    """
+    user = await db.get(User, user_id)
     if not user:
         raise NotFound("User not found")
-    return user
 
-
-def delete_user(db: Session, user_id: int, admin_username: str = None):
-    """Delete user and all associated data"""
-    user = db.query(User).get(user_id)
-    if not user:
-        raise NotFound("User not found")
-    
     username = user.username
-    
-    # Delete sessions
-    db.query(LoginSession).filter(LoginSession.user_id == user_id).delete()
-    # Delete reset tokens
-    db.query(PasswordResetToken).filter(PasswordResetToken.user_id == user_id).delete()
-    # Delete user
-    db.delete(user)
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="DELETE_USER", 
-        area="AUTH", 
-        message=f"Deleted user {username}"
+
+    try:
+        # Delete sessions first
+        await db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
+        # Delete reset tokens
+        await db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == user_id))
+        # Delete user
+        await db.delete(user)
+
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="DELETE_USER",
+            area="AUTH",
+            message=f"Deleted user {username}",
+        )
+
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to delete user_id=%s", user_id)
+        raise
+
+
+async def list_users(db: AsyncSession) -> List[User]:
+    """List all users ordered by creation timestamp (descending)."""
+    res = await db.execute(select(User).order_by(desc(User.created_at)))
+    return list(res.scalars().all())
+
+
+async def get_admin_stats(db: AsyncSession) -> Dict[str, int]:
+    """Return aggregate admin dashboard statistics."""
+    total_users = int((await db.execute(select(func.count()).select_from(User))).scalar_one() or 0)
+    admins = int(
+        (await db.execute(
+            select(func.count()).select_from(User).where(User.role == "admin")
+        )).scalar_one() or 0
     )
-    
-    db.commit()
+    regular = int(
+        (await db.execute(
+            select(func.count()).select_from(User).where(User.role == "user")
+        )).scalar_one() or 0
+    )
+    active_sessions = int(
+        (await db.execute(select(func.count()).select_from(LoginSession))).scalar_one() or 0
+    )
 
-
-def list_users(db: Session):
-    """List all users ordered by creation"""
-    return db.query(User).order_by(User.created_at.desc()).all()
-
-
-def get_admin_stats(db: Session):
-    """Get admin dashboard statistics"""
-    total_users = db.query(User).count()
-    admins = db.query(User).filter(User.role == "admin").count()
-    regular = db.query(User).filter(User.role == "user").count()
-    active_sessions = db.query(LoginSession).count()
-    
     return {
         "totalUsers": total_users,
         "admins": admins,
@@ -206,224 +356,303 @@ def get_admin_stats(db: Session):
     }
 
 
-def update_user_role(db: Session, user_id: int, new_role: str, admin_username: str = None):
-    """Update user role"""
-    user = get_user(db, user_id)
+async def update_user_role(
+    db: AsyncSession,
+    user_id: int,
+    new_role: str,
+    admin_username: Optional[str] = None
+):
+    """Update only the role of a user; validates against allowed set."""
+    user = await get_user(db, user_id)
     old_role = user.role
-    # Normalize role to lowercase
-    new_role = new_role.lower().strip()
-    if new_role not in ["user", "admin", "super_admin", "guest"]:
+    norm_role = _normalize_role(new_role)
+    if norm_role not in _ALLOWED_ROLES:
         raise ValueError(f"Invalid role: {new_role}")
-    user.role = new_role
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="UPDATE_ROLE", 
-        area="AUTH", 
-        message=f"Changed role for {user.username} from {old_role} to {new_role}"
-    )
-    
-    db.commit()
-    db.refresh(user)
-    return user
 
-
-def unlock_user_account(db: Session, user_id: int, admin_username: str = None):
-    """Unlock user account after failed login attempts"""
-    user = get_user(db, user_id)
-    user.is_locked = False
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="UNLOCK_ACCOUNT", 
-        area="AUTH", 
-        message=f"Unlocked account for {user.username}"
-    )
-    
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-def generate_reset_token(db: Session, user_id: int, admin_username: str = None):
-    """Generate password reset token for user"""
-    user = get_user(db, user_id)
-    
-    # Delete old unused tokens
-    db.query(PasswordResetToken).filter(
-        PasswordResetToken.user_id == user_id,
-        ~PasswordResetToken.used
-    ).delete()
-    
-    # Create new token (valid for 24 hours)
-    token = secrets.token_urlsafe(32)
-    token_hash = hash_password(token)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-    
-    reset_token = PasswordResetToken(
-        user_id=user_id,
-        token_hash=token_hash,
-        expires_at=expires_at,
-    )
-    db.add(reset_token)
-
-    # Mark latest pending reset request (if any) as approved
-    pending_req = (
-        db.query(PasswordResetRequest)
-        .filter(
-            PasswordResetRequest.username == user.username,
-            PasswordResetRequest.status == "pending",
+    try:
+        user.role = norm_role
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="UPDATE_ROLE",
+            area="AUTH",
+            message=f"Changed role for {user.username} from {old_role} to {norm_role}",
         )
-        .order_by(PasswordResetRequest.created_at.desc())
-        .first()
-    )
-    if pending_req:
-        pending_req.status = "approved"
-        pending_req.decided_at = datetime.now(timezone.utc)
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="GENERATE_RESET_TOKEN", 
-        area="AUTH", 
-        message=f"Generated reset token for {user.username}"
-    )
-    
-    db.commit()
-    
-    # Return the unhashed token (only shown once)
-    return token
+        await db.commit()
+        await db.refresh(user)
+        return user
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to update role for user_id=%s", user_id)
+        raise
 
 
-def list_reset_requests(db: Session):
-    """List password reset requests"""
-    return (
-        db.query(PasswordResetRequest)
-        .order_by(PasswordResetRequest.created_at.desc())
+async def unlock_user_account(
+    db: AsyncSession,
+    user_id: int,
+    admin_username: Optional[str] = None
+):
+    """Unlock a user account after failed login attempts."""
+    user = await get_user(db, user_id)
+
+    try:
+        user.is_locked = False
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="UNLOCK_ACCOUNT",
+            area="AUTH",
+            message=f"Unlocked account for {user.username}",
+        )
+        await db.commit()
+        await db.refresh(user)
+        return user
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to unlock account for user_id=%s", user_id)
+        raise
+
+
+async def generate_reset_token(
+    db: AsyncSession,
+    user_id: int,
+    admin_username: Optional[str] = None
+) -> str:
+    """
+    Generate a password reset token (valid for 24 hours), remove old unused ones,
+    and approve latest pending reset request if it exists.
+    """
+    user = await get_user(db, user_id)
+
+    try:
+        # Delete old unused tokens
+        await db.execute(
+            delete(PasswordResetToken).where(
+                and_(
+                    PasswordResetToken.user_id == user_id,
+                    PasswordResetToken.used.is_(False),
+                )
+            )
+        )
+
+        # Create new token (valid for 24 hours)
+        token = secrets.token_urlsafe(32)
+        token_hash = hash_password(token)
+        expires_at = _utcnow() + timedelta(hours=24)
+
+        db.add(
+            PasswordResetToken(
+                user_id=user_id,
+                token_hash=token_hash,
+                expires_at=expires_at,
+            )
+        )
+
+        # Approve latest pending reset request (if any)
+        pending_status = _status_value("PENDING", "pending")
+        res = await db.execute(
+            select(PasswordResetRequest)
+            .where(
+                and_(
+                    PasswordResetRequest.username == user.username,
+                    PasswordResetRequest.status == pending_status,
+                )
+            )
+            .order_by(desc(PasswordResetRequest.created_at))
+            .limit(1)
+        )
+        pending_req = res.scalar_one_or_none()
+        if pending_req:
+            approved = _status_value("APPROVED", "approved")
+            pending_req.status = approved
+            pending_req.decided_at = _utcnow()
+
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="GENERATE_RESET_TOKEN",
+            area="AUTH",
+            message=f"Generated reset token for {user.username}",
+        )
+
+        await db.commit()
+        # Return the unhashed token (only shown once)
+        return token
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to generate reset token for user_id=%s", user_id)
+        raise
+
+
+async def list_reset_requests(db: AsyncSession) -> List[PasswordResetRequest]:
+    """List latest password reset requests (up to 100)."""
+    res = await db.execute(
+        select(PasswordResetRequest)
+        .order_by(desc(PasswordResetRequest.created_at))
         .limit(100)
-        .all()
     )
+    return list(res.scalars().all())
 
 
-def list_sessions(db: Session):
-    """List all active sessions with user info"""
-    sessions = (
-        db.query(LoginSession)
+# ---------------------------------------------------------------------------
+# Session management
+# ---------------------------------------------------------------------------
+
+async def list_sessions(db: AsyncSession) -> List[Dict[str, str]]:
+    """List all active sessions with user info (latest 200)."""
+    res = await db.execute(
+        select(LoginSession)
         .join(User)
-        .order_by(LoginSession.created_at.desc())
+        .options(selectinload(LoginSession.user))
+        .order_by(desc(LoginSession.created_at))
         .limit(200)
-        .all()
     )
-    
-    result = []
+    sessions = list(res.scalars().all())
+
+    result: List[Dict[str, str]] = []
     for session in sessions:
         result.append({
             "session_id": str(session.id),
-            "username": session.user.username,
-            "created_at": session.created_at.isoformat(),
-            "last_activity": session.last_used_at.isoformat(),
-            "size": "—"  # Could be enhanced to track session size
+            "username": session.user.username if session.user else "",
+            "created_at": session.created_at.isoformat() if session.created_at else "",
+            "last_activity": session.last_used_at.isoformat() if session.last_used_at else "",
+            "size": "—"  # Placeholder: hook for future metrics
         })
-    
     return result
 
 
-def cleanup_old_sessions(db: Session, hours: int = 24, admin_username: str = None):
-    """Delete sessions older than specified hours"""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-    deleted = db.query(LoginSession).filter(
-        LoginSession.last_used_at < cutoff
-    ).delete()
-    
-    if deleted > 0 and admin_username:
-        write_audit_log(
-            db, 
-            username=admin_username, 
-            action="CLEANUP_SESSIONS", 
-            area="CLEANUP", 
-            message=f"Cleaned up {deleted} old sessions"
+async def count_old_sessions(db: AsyncSession, hours: int = 24) -> int:
+    """
+    Count sessions older than the specified hours (dry run helper).
+    Non-breaking addition to support 'dry-run' UX in the agent/UI.
+    """
+    cutoff = _utcnow() - timedelta(hours=hours)
+    # SQLAlchemy Core count across a filtered selectable:
+    res = await db.execute(
+        select(func.count()).select_from(LoginSession).where(LoginSession.last_used_at < cutoff)
+    )
+    return int(res.scalar_one() or 0)
+
+
+async def cleanup_old_sessions(
+    db: AsyncSession,
+    hours: int = 24,
+    admin_username: Optional[str] = None
+) -> int:
+    """Delete sessions older than the specified hours. Returns number deleted."""
+    cutoff = _utcnow() - timedelta(hours=hours)
+
+    try:
+        deleted_res = await db.execute(
+            delete(LoginSession).where(LoginSession.last_used_at < cutoff)
         )
-    
-    db.commit()
-    return deleted
+        # rowcount may not be present in stubs; guard defensively
+        deleted = int(getattr(deleted_res, "rowcount", 0) or 0)
+
+        if deleted > 0 and admin_username:
+            write_audit_log(
+                db,
+                username=admin_username,
+                action="CLEANUP_SESSIONS",
+                area="CLEANUP",
+                message=f"Cleaned up {deleted} old sessions (>{hours}h)",
+            )
+
+        await db.commit()
+        return deleted
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to cleanup old sessions (>%sh)", hours)
+        raise
 
 
-def force_logout_user(db: Session, user_id: int, admin_username: str = None):
-    db.query(LoginSession).filter(LoginSession.user_id == user_id).delete()
-    
-    write_audit_log(
-        db, 
-        username=admin_username, 
-        action="FORCE_LOGOUT", 
-        area="AUTH", 
-        message=f"Forced logout for user_id {user_id}"
-    )
-    
-    db.commit()
+async def force_logout_user(
+    db: AsyncSession,
+    user_id: int,
+    admin_username: Optional[str] = None
+) -> None:
+    """Force logout a specific user by deleting all their sessions."""
+    try:
+        await db.execute(delete(LoginSession).where(LoginSession.user_id == user_id))
+        write_audit_log(
+            db,
+            username=admin_username,
+            action="FORCE_LOGOUT",
+            area="AUTH",
+            message=f"Forced logout for user_id {user_id}",
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        logger.exception("Failed to force logout for user_id=%s", user_id)
+        raise
 
 
-def list_audit_logs(db: Session, limit: int = 200):
-    return (
-        db.query(AuditLog)
-        .order_by(AuditLog.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+
+async def list_audit_logs(db: AsyncSession, limit: int = 200) -> List[AuditLog]:
+    """List latest audit logs."""
+    res = await db.execute(select(AuditLog).order_by(desc(AuditLog.created_at)).limit(limit))
+    return list(res.scalars().all())
 
 
-def list_ops_logs(db: Session, limit: int = 200):
-    return (
-        db.query(OpsLog)
-        .order_by(OpsLog.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+async def list_ops_logs(db: AsyncSession, limit: int = 200) -> List[OpsLog]:
+    """List latest operational logs."""
+    res = await db.execute(select(OpsLog).order_by(desc(OpsLog.created_at)).limit(limit))
+    return list(res.scalars().all())
 
-# ==========================================
+
+# ---------------------------------------------------------------------------
 # AI CONFIG PERSISTENCE
-# ==========================================
+# ---------------------------------------------------------------------------
+
 def get_ai_indexing_config_data() -> dict:
-    """Get AI indexing configuration"""
-    defaults = {
-        "auto_embedded_groups": [],
-        "default_collection": "documents",
-        "chunk_size": 10000,
-        "retrieval_top_k": 16,
-        "hybrid_alpha": 0.70,
-        "hybrid_beta": 0.30,
-        "max_zip_size_mb": 10000,
-        "max_nested_depth": 50,
-        "enable_auto_embedding": False,
-    }
-    
+    """Load AI indexing configuration (normalized)."""
     if AI_CONFIG_FILE.exists():
         try:
-            with open(AI_CONFIG_FILE, "r") as f:
+            with open(AI_CONFIG_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                # Merge with defaults to ensure new keys are present
-                return {**defaults, **loaded}
+                return _normalize_ai_config(loaded)
         except Exception as e:
-            logger.error(f"Failed to load AI config: {e}")
-            return defaults
-    return defaults
+            logger.error("Failed to load AI config: %s", e)
+            return _normalize_ai_config({})
+    return _normalize_ai_config({})
 
-def save_ai_indexing_config_data(config: dict):
-    """Save AI indexing configuration"""
+
+def save_ai_indexing_config_data(config: dict) -> bool:
+    """
+    Save AI indexing configuration with alias preservation rules.
+    - Merges incoming payload into current file
+    - Maintains both canonical and legacy flags consistently
+    """
     ensure_data_dir()
     try:
+        incoming = config or {}
         current = get_ai_indexing_config_data()
-        current.update(config)
-        with open(AI_CONFIG_FILE, "w") as f:
+        current.update(incoming)
+
+        # Preserve backward-compatible updates when only one flag alias is sent.
+        if "auto_embed_enabled" not in incoming and "enable_auto_embedding" in incoming:
+            current.pop("auto_embed_enabled", None)
+        if "enable_auto_embedding" not in incoming and "auto_embed_enabled" in incoming:
+            current.pop("enable_auto_embedding", None)
+
+        current = _normalize_ai_config(current)
+        with open(AI_CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(current, f, indent=2)
         return True
     except Exception as e:
-        logger.error(f"Failed to save AI config: {e}")
+        logger.error("Failed to save AI config: %s", e)
         return False
 
-def get_user_by_username(db: Session, username: str):
-    """Get user by username"""
-    return db.query(User).filter(User.username == username).first()
 
+# ---------------------------------------------------------------------------
+# Query helpers
+# ---------------------------------------------------------------------------
 
+async def get_user_by_username(db: AsyncSession, username: str) -> Optional[User]:
+    """Get user by username (exact match), or None."""
+    res = await db.execute(select(User).where(User.username == username))
+    return res.scalar_one_or_none()

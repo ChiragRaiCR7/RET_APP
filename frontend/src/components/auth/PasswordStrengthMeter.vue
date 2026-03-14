@@ -1,3 +1,4 @@
+
 <template>
   <div>
     <div class="password-strength-meter" aria-hidden="true">

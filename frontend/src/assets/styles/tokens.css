@@ -1,73 +1,139 @@
+
+
 /* =========================================================
-   RETv4 Design System Tokens
+   RETv4 Design System Tokens — Enterprise Edition
+   ---------------------------------------------------------
+   Goals:
+   - Strong, scalable token structure (foundation → semantic → component)
+   - Better contrast + “on-color” tokens for accessible UI
+   - More consistent elevation/surfaces across light/dark
+   - Reduced duplication for theme definitions
    ========================================================= */
 
+/* -------------------------
+   1) FOUNDATION: Brand + Neutral Palette
+------------------------- */
 :root {
   color-scheme: light;
 
-  /* Brand Identity (RETv4) */
-  --brand-primary: #FFC000;
-  --brand-secondary: #E6AC00;
-  --brand-light: #FFD147;
-  --brand-glow: rgba(255, 192, 0, 0.2);
-  --brand-subtle: rgba(255, 192, 0, 0.08);
+  /* Brand identity (kept) */
+  --brand-primary: #FFC000;     /* RET Gold */
+  --brand-secondary: #E6AC00;   /* deeper gold */
+  --brand-light: #FFD147;       /* highlight gold */
 
-  /* Surface Layers */
-  --bg-primary: #f5f7fa;
-  --bg-secondary: #e8ecf1;
-  --surface-base: #ffffff;
-  --surface-elevated: #ffffff;
-  --surface-hover: #f8f9fc;
-  --surface-active: #f0f3f7;
-  --surface-overlay: rgba(0, 0, 0, 0.02);
+  /* Text color on brand surfaces (important for contrast) */
+  --brand-on: #0b0b0b;
+  --brand-on-muted: rgba(11, 11, 11, 0.78);
 
-  /* Text Hierarchy */
-  --text-heading: #1a202c;
-  --text-body: #2d3748;
-  --text-secondary: #4a5568;
-  --text-tertiary: #718096;
-  --text-placeholder: #a0aec0;
-  --text-disabled: #cbd5e0;
+  /* Brand tints (use for subtle backgrounds/borders) */
+  --brand-glow: rgba(255, 192, 0, 0.24);
+  --brand-subtle: rgba(255, 192, 0, 0.10);
+  --brand-subtle-2: rgba(255, 192, 0, 0.06);
+
+  /* Neutral palette (enterprise calm) */
+  --neutral-0:  #ffffff;
+  --neutral-50: #f7f8fb;
+  --neutral-100:#eef1f6;
+  --neutral-200:#e3e8f1;
+  --neutral-300:#d3dbe8;
+  --neutral-400:#a8b3c4;
+  --neutral-500:#76839a;
+  --neutral-600:#556179;
+  --neutral-700:#3d475b;
+  --neutral-800:#242b3a;
+  --neutral-900:#111827;
+
+  /* -------------------------
+     2) SURFACES: Layering System
+  ------------------------- */
+  --bg-primary: var(--neutral-50);
+  --bg-secondary: var(--neutral-100);
+
+  /* Typical enterprise surface stack */
+  --surface-base: var(--neutral-0);
+  --surface-elevated: var(--neutral-0);
+  --surface-raised: color-mix(in srgb, var(--neutral-0), var(--neutral-50) 20%);
+  --surface-sunken: color-mix(in srgb, var(--neutral-100), var(--neutral-0) 18%);
+
+  /* Interactions */
+  --surface-hover: color-mix(in srgb, var(--neutral-0), var(--neutral-100) 35%);
+  --surface-active: color-mix(in srgb, var(--neutral-100), var(--neutral-0) 12%);
+  --surface-selected: var(--brand-subtle-2);
+
+  /* Overlays */
+  --surface-overlay: rgba(17, 24, 39, 0.035); /* subtle overlay for panels */
+  --scrim: rgba(17, 24, 39, 0.50);            /* for modals */
+  --scrim-soft: rgba(17, 24, 39, 0.35);       /* for drawers/popovers */
+
+  /* -------------------------
+     3) TEXT: Hierarchy
+  ------------------------- */
+  --text-heading: var(--neutral-900);
+  --text-body: var(--neutral-800);
+  --text-secondary: var(--neutral-700);
+  --text-tertiary: var(--neutral-600);
+  --text-placeholder: color-mix(in srgb, var(--neutral-500), #ffffff 20%);
+  --text-disabled: color-mix(in srgb, var(--neutral-400), #ffffff 18%);
   --text-inverse: #ffffff;
 
-  /* Semantic Colors */
-  --success: #10b981;
-  --success-bg: #d1fae5;
-  --success-border: #6ee7b7;
-  --warning: #f59e0b;
-  --warning-bg: #fef3c7;
-  --warning-border: #fcd34d;
-  --error: #ef4444;
-  --error-bg: #fee2e2;
-  --error-border: #fca5a5;
-  --info: #3b82f6;
-  --info-bg: #dbeafe;
-  --info-border: #93c5fd;
+  /* Links */
+  --link: #1d4ed8;
+  --link-hover: #1e40af;
 
-  /* Borders & Dividers */
-  --border-light: rgba(0, 0, 0, 0.06);
-  --border-medium: rgba(0, 0, 0, 0.10);
-  --border-strong: rgba(0, 0, 0, 0.15);
-  --border-accent: var(--brand-primary);
+  /* -------------------------
+     4) SEMANTIC COLORS (tuned for enterprise)
+  ------------------------- */
+  --success: #118a5a;
+  --success-bg: rgba(17, 138, 90, 0.12);
+  --success-border: rgba(17, 138, 90, 0.28);
 
-  /* Shadows (Elevation System) */
-  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  --shadow-brand: 0 10px 30px -5px var(--brand-glow);
+  --warning: #b45309;
+  --warning-bg: rgba(180, 83, 9, 0.12);
+  --warning-border: rgba(180, 83, 9, 0.28);
 
-  /* Border Radius */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --radius-2xl: 24px;
+  --error: #dc2626;
+  --error-bg: rgba(220, 38, 38, 0.12);
+  --error-border: rgba(220, 38, 38, 0.28);
+
+  --info: #2563eb;
+  --info-bg: rgba(37, 99, 235, 0.12);
+  --info-border: rgba(37, 99, 235, 0.28);
+
+  /* -------------------------
+     5) BORDERS & DIVIDERS
+  ------------------------- */
+  --border-light: rgba(17, 24, 39, 0.08);
+  --border-medium: rgba(17, 24, 39, 0.12);
+  --border-strong: rgba(17, 24, 39, 0.18);
+  --border-accent: color-mix(in srgb, var(--brand-primary), #000 8%);
+
+  /* -------------------------
+     6) SHADOWS (enterprise elevation, less “floaty”)
+  ------------------------- */
+  --shadow-xs: 0 1px 1px rgba(17, 24, 39, 0.05);
+  --shadow-sm: 0 2px 6px rgba(17, 24, 39, 0.08);
+  --shadow-md: 0 10px 24px rgba(17, 24, 39, 0.10);
+  --shadow-lg: 0 18px 40px rgba(17, 24, 39, 0.14);
+  --shadow-xl: 0 28px 70px rgba(17, 24, 39, 0.16);
+  --shadow-2xl: 0 40px 100px rgba(17, 24, 39, 0.20);
+
+  /* Brand glow (use sparingly) */
+  --shadow-brand: 0 18px 45px rgba(255, 192, 0, 0.18);
+
+  /* -------------------------
+     7) RADIUS (modern enterprise, consistent)
+  ------------------------- */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
   --radius-full: 9999px;
 
-  /* Spacing Scale */
+  /* -------------------------
+     8) SPACING SCALE (adds more granularity)
+  ------------------------- */
+  --space-2xs: 6px;
   --space-xs: 8px;
   --space-sm: 12px;
   --space-md: 16px;
@@ -76,12 +142,13 @@
   --space-2xl: 48px;
   --space-3xl: 64px;
 
-  /* Typography */
+  /* -------------------------
+     9) TYPOGRAPHY
+  ------------------------- */
   --font-display: "Verdana Pro Black", "Verdana", -apple-system, system-ui, sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "SF Mono", "Monaco", "Inconsolata", "Fira Code", "Courier New", monospace;
+  --font-mono: ui-monospace, "SF Mono", "Monaco", "Consolas", "Fira Code", "Courier New", monospace;
 
-  /* Font Sizes */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-base: 1rem;
@@ -91,21 +158,30 @@
   --text-3xl: 1.875rem;
   --text-4xl: 2.25rem;
 
-  /* Line Heights */
   --leading-tight: 1.25;
   --leading-normal: 1.5;
-  --leading-relaxed: 1.75;
+  --leading-relaxed: 1.7;
 
-  /* Transitions */
-  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* -------------------------
+     10) MOTION
+  ------------------------- */
+  --transition-fast: 150ms cubic-bezier(0.2, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.2, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.2, 0, 0.2, 1);
 
-  /* Focus Ring */
-  --focus-ring: 0 0 0 3px var(--brand-glow);
-  --focus-ring-error: 0 0 0 3px rgba(239, 68, 68, 0.2);
+  /* -------------------------
+     11) FOCUS & SELECTION
+  ------------------------- */
+  /* Stronger, enterprise-like halo + crisp edge */
+  --focus-ring: 0 0 0 2px var(--bg-primary), 0 0 0 5px rgba(255, 192, 0, 0.35);
+  --focus-ring-error: 0 0 0 2px var(--bg-primary), 0 0 0 5px rgba(220, 38, 38, 0.28);
 
-  /* Z-Index Scale */
+  --selection-bg: color-mix(in srgb, var(--brand-primary), #ffffff 35%);
+  --selection-text: #0b0b0b;
+
+  /* -------------------------
+     12) Z-INDEX SCALE
+  ------------------------- */
   --z-dropdown: 1000;
   --z-sticky: 1020;
   --z-fixed: 1030;
@@ -113,76 +189,172 @@
   --z-modal: 1050;
   --z-popover: 1060;
   --z-tooltip: 1070;
+
+  /* -------------------------
+     13) CHAT TOKENS (aligned with system surfaces)
+  ------------------------- */
+  --chat-bg: var(--surface-sunken);
+  --chat-msg-user: var(--brand-subtle);
+  --chat-msg-assistant: var(--surface-elevated);
+  --chat-msg-border: var(--border-light);
+
+  --chat-code-bg: var(--surface-active);
+  --chat-code-block-bg: #0f172a;
+  --chat-code-color: #c2410c;
+
+  --chat-table-header-bg: var(--surface-active);
+  --chat-table-border: var(--border-light);
+  --chat-table-text: var(--text-body);
+  --chat-table-hover: var(--brand-subtle-2);
+
+  --chat-blockquote-color: var(--text-secondary);
+  --chat-link-color: var(--link);
 }
 
-/* Dark Mode Tokens */
+
+/* =========================================================
+   THEME: Dark (system preference)
+   - We override only what's necessary.
+   ========================================================= */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
 
-    --bg-primary: #0d1117;
-    --bg-secondary: #161b22;
-    --surface-base: #161b22;
-    --surface-elevated: #1c2128;
-    --surface-hover: #21262d;
-    --surface-active: #2d333b;
-    --surface-overlay: rgba(255, 255, 255, 0.04);
+    /* Neutral re-map for dark */
+    --neutral-0:  #0b0f14;
+    --neutral-50: #0d1117;
+    --neutral-100:#111827;
+    --neutral-200:#161b22;
+    --neutral-300:#21262d;
+    --neutral-400:#30363d;
+    --neutral-500:#556179;
+    --neutral-600:#8b98ad;
+    --neutral-700:#adbac7;
+    --neutral-800:#e6edf3;
+    --neutral-900:#f0f6fc;
 
+    /* Surfaces */
+    --bg-primary: #0d1117;
+    --bg-secondary: #111827;
+
+    --surface-base: #111827;
+    --surface-elevated: #161b22;
+    --surface-raised: #1b2230;
+    --surface-sunken: #0d1117;
+
+    --surface-hover: rgba(255, 255, 255, 0.06);
+    --surface-active: rgba(255, 255, 255, 0.09);
+    --surface-selected: rgba(255, 192, 0, 0.10);
+
+    --surface-overlay: rgba(255, 255, 255, 0.04);
+    --scrim: rgba(0, 0, 0, 0.62);
+    --scrim-soft: rgba(0, 0, 0, 0.48);
+
+    /* Text */
     --text-heading: #f0f6fc;
     --text-body: #e6edf3;
     --text-secondary: #adbac7;
-    --text-tertiary: #768390;
-    --text-placeholder: #636e7b;
-    --text-disabled: #545d68;
+    --text-tertiary: #7f8ea3;
+    --text-placeholder: #5b6778;
+    --text-disabled: #485466;
 
+    /* Borders */
     --border-light: rgba(255, 255, 255, 0.08);
     --border-medium: rgba(255, 255, 255, 0.12);
     --border-strong: rgba(255, 255, 255, 0.18);
 
-    --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
-    --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.6), 0 1px 2px -1px rgba(0, 0, 0, 0.6);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.7), 0 2px 4px -2px rgba(0, 0, 0, 0.7);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.8), 0 4px 6px -4px rgba(0, 0, 0, 0.8);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.9), 0 8px 10px -6px rgba(0, 0, 0, 0.9);
-    
-    --success-bg: rgba(16, 185, 129, 0.15);
-    --warning-bg: rgba(245, 158, 11, 0.15);
-    --error-bg: rgba(239, 68, 68, 0.15);
-    --info-bg: rgba(59, 130, 246, 0.15);
+    /* Shadows (stronger in dark, but still controlled) */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.55);
+    --shadow-sm: 0 6px 16px rgba(0, 0, 0, 0.50);
+    --shadow-md: 0 14px 30px rgba(0, 0, 0, 0.60);
+    --shadow-lg: 0 22px 46px rgba(0, 0, 0, 0.65);
+    --shadow-xl: 0 30px 70px rgba(0, 0, 0, 0.72);
+    --shadow-2xl: 0 44px 110px rgba(0, 0, 0, 0.78);
+
+    /* Semantic backgrounds (more subtle in dark) */
+    --success-bg: rgba(17, 138, 90, 0.18);
+    --warning-bg: rgba(180, 83, 9, 0.18);
+    --error-bg: rgba(220, 38, 38, 0.18);
+    --info-bg: rgba(37, 99, 235, 0.18);
+
+    /* Links */
+    --link: #66b5f5;
+    --link-hover: #93c5fd;
+
+    /* Chat */
+    --chat-code-color: var(--brand-primary);
+    --chat-code-block-bg: #0b0f14;
+    --chat-msg-assistant: var(--surface-elevated);
+    --chat-msg-border: var(--border-light);
   }
 }
 
-/* Manual Dark Mode (data-theme attribute) */
+
+/* =========================================================
+   THEME: Manual Dark Mode
+   - Use this for a theme toggle: <html data-theme="dark">
+   - Mirrors the media-query dark overrides.
+   ========================================================= */
+:root[data-theme="dark"],
 [data-theme="dark"] {
   color-scheme: dark;
 
+  --neutral-0:  #0b0f14;
+  --neutral-50: #0d1117;
+  --neutral-100:#111827;
+  --neutral-200:#161b22;
+  --neutral-300:#21262d;
+  --neutral-400:#30363d;
+  --neutral-500:#556179;
+  --neutral-600:#8b98ad;
+  --neutral-700:#adbac7;
+  --neutral-800:#e6edf3;
+  --neutral-900:#f0f6fc;
+
   --bg-primary: #0d1117;
-  --bg-secondary: #161b22;
-  --surface-base: #161b22;
-  --surface-elevated: #1c2128;
-  --surface-hover: #21262d;
-  --surface-active: #2d333b;
+  --bg-secondary: #111827;
+
+  --surface-base: #111827;
+  --surface-elevated: #161b22;
+  --surface-raised: #1b2230;
+  --surface-sunken: #0d1117;
+
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --surface-active: rgba(255, 255, 255, 0.09);
+  --surface-selected: rgba(255, 192, 0, 0.10);
+
   --surface-overlay: rgba(255, 255, 255, 0.04);
+  --scrim: rgba(0, 0, 0, 0.62);
+  --scrim-soft: rgba(0, 0, 0, 0.48);
 
   --text-heading: #f0f6fc;
   --text-body: #e6edf3;
   --text-secondary: #adbac7;
-  --text-tertiary: #768390;
-  --text-placeholder: #636e7b;
-  --text-disabled: #545d68;
+  --text-tertiary: #7f8ea3;
+  --text-placeholder: #5b6778;
+  --text-disabled: #485466;
 
   --border-light: rgba(255, 255, 255, 0.08);
   --border-medium: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.18);
 
-  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.6), 0 1px 2px -1px rgba(0, 0, 0, 0.6);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.7), 0 2px 4px -2px rgba(0, 0, 0, 0.7);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.8), 0 4px 6px -4px rgba(0, 0, 0, 0.8);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.9), 0 8px 10px -6px rgba(0, 0, 0, 0.9);
-  
-  --success-bg: rgba(16, 185, 129, 0.15);
-  --warning-bg: rgba(245, 158, 11, 0.15);
-  --error-bg: rgba(239, 68, 68, 0.15);
-  --info-bg: rgba(59, 130, 246, 0.15);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 6px 16px rgba(0, 0, 0, 0.50);
+  --shadow-md: 0 14px 30px rgba(0, 0, 0, 0.60);
+  --shadow-lg: 0 22px 46px rgba(0, 0, 0, 0.65);
+  --shadow-xl: 0 30px 70px rgba(0, 0, 0, 0.72);
+  --shadow-2xl: 0 44px 110px rgba(0, 0, 0, 0.78);
+
+  --success-bg: rgba(17, 138, 90, 0.18);
+  --warning-bg: rgba(180, 83, 9, 0.18);
+  --error-bg: rgba(220, 38, 38, 0.18);
+  --info-bg: rgba(37, 99, 235, 0.18);
+
+  --link: #66b5f5;
+  --link-hover: #93c5fd;
+
+  --chat-code-color: var(--brand-primary);
+  --chat-code-block-bg: #0b0f14;
+  --chat-msg-assistant: var(--surface-elevated);
+  --chat-msg-border: var(--border-light);
 }

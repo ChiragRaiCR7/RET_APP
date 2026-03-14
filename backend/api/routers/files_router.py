@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Literal, Optional
 
 from api.core.dependencies import get_current_user, get_current_user_id
@@ -23,7 +23,7 @@ async def scan_files(
     max_files: int = Query(20000, ge=100, le=200000),
     max_unzipped_mb: int = Query(300, ge=1, le=50000),
     current_user_id: str = Depends(get_current_user_id),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Scan a ZIP (recursively, including nested ZIPs) or XML file.
@@ -63,7 +63,7 @@ async def get_session(session_id: str, current_user_id: str = Depends(get_curren
 async def delete_session(session_id: str, current_user_id: str = Depends(get_current_user_id)):
     """Delete a session and clean up all associated data"""
     try:
-        cleanup_session(session_id)
+        await cleanup_session(session_id)
         return MessageResponse(success=True, message=f"Session {session_id} deleted")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to delete session: {str(e)}")

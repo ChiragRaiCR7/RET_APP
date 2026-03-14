@@ -1,8 +1,12 @@
+from __future__ import annotations
+
+import shlex
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from api.core.config import settings
 from api.core.rbac import require_role
 from api.core.database import get_db
-from api.core.dependencies import get_current_user, get_current_user_id
 from api.schemas.admin import (
     UserCreateRequest,
     UserUpdateRequest,
@@ -32,6 +36,10 @@ from api.services.admin_service import (
     save_ai_indexing_config_data,
     get_user_by_username,
 )
+from api.services.ai.async_azure_openai_service import (
+    generate_admin_agent_reply,
+    is_async_azure_chat_configured,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -40,25 +48,25 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # STATS ENDPOINTS
 # ============================================================
 @router.get("/stats")
-def stats_ep(
-    db: Session = Depends(get_db),
+async def stats_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Get admin dashboard statistics"""
-    return get_admin_stats(db)
+    return await get_admin_stats(db)
 
 
 # ============================================================
 # USER MANAGEMENT ENDPOINTS
 # ============================================================
 @router.post("/users")
-def create_user_ep(
+async def create_user_ep(
     req: UserCreateRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Create new user with token-first onboarding support"""
-    user, token = create_user(
+    user, token = await create_user(
         db, 
         req.username, 
         password=req.password,  # None for token-first
@@ -80,51 +88,52 @@ def create_user_ep(
 
 
 @router.get("/users", response_model=list[UserInfo])
-def list_users_ep(
-    db: Session = Depends(get_db),
+async def list_users_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """List all users"""
-    return list_users(db)
+    return await list_users(db)
 
 
 @router.get("/users/{user_id}", response_model=UserInfo)
-def get_user_ep(
+async def get_user_ep(
     user_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Get user details"""
-    return get_user(db, user_id)
+    return await get_user(db, user_id)
 
 
 @router.put("/users/{user_id}", response_model=UserInfo)
-def update_user_ep(
+async def update_user_ep(
     user_id: int,
     req: UserUpdateRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Update user fields"""
-    return update_user(
+    updates = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
+    return await update_user(
         db, 
         user_id, 
-        req.dict(exclude_unset=True), 
+        updates, 
         admin_username=admin_user.username
     )
 
 
 @router.put("/users/{user_id}/role", response_model=UserInfo)
-def update_user_role_ep(
+async def update_user_role_ep(
     user_id: int,
     body: dict,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Update user role"""
     if "role" not in body:
         raise HTTPException(status_code=400, detail="Missing 'role' field")
-    return update_user_role(
+    return await update_user_role(
         db, 
         user_id, 
         body["role"], 
@@ -133,14 +142,14 @@ def update_user_role_ep(
 
 
 @router.delete("/users/{user_id}", response_model=MessageResponse)
-def delete_user_ep(
+async def delete_user_ep(
     user_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Delete user and all associated data"""
-    force_logout_user(db, user_id, admin_username=admin_user.username)
-    delete_user(db, user_id, admin_username=admin_user.username)
+    await force_logout_user(db, user_id, admin_username=admin_user.username)
+    await delete_user(db, user_id, admin_username=admin_user.username)
     return {"success": True, "message": "User deleted"}
 
 
@@ -148,33 +157,33 @@ def delete_user_ep(
 # PASSWORD RESET ENDPOINTS
 # ============================================================
 @router.get("/reset-requests")
-def reset_requests_ep(
-    db: Session = Depends(get_db),
+async def reset_requests_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """List password reset requests"""
-    return list_reset_requests(db)
+    return await list_reset_requests(db)
 
 
 @router.post("/users/{user_id}/reset-token")
-def generate_reset_token_ep(
+async def generate_reset_token_ep(
     user_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Generate password reset token for user"""
-    token = generate_reset_token(db, user_id, admin_username=admin_user.username)
+    token = await generate_reset_token(db, user_id, admin_username=admin_user.username)
     return {"token": token}
 
 
 @router.post("/users/{user_id}/unlock")
-def unlock_account_ep(
+async def unlock_account_ep(
     user_id: int,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Unlock user account"""
-    user = unlock_user_account(db, user_id, admin_username=admin_user.username)
+    user = await unlock_user_account(db, user_id, admin_username=admin_user.username)
     return user
 
 
@@ -182,21 +191,21 @@ def unlock_account_ep(
 # SESSION MANAGEMENT ENDPOINTS
 # ============================================================
 @router.get("/sessions")
-def sessions_ep(
-    db: Session = Depends(get_db),
+async def sessions_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """List all active sessions"""
-    return list_sessions(db)
+    return await list_sessions(db)
 
 
 @router.post("/sessions/cleanup", response_model=MessageResponse)
-def cleanup_sessions_ep(
-    db: Session = Depends(get_db),
+async def cleanup_sessions_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Clean up old sessions (older than 24 hours)"""
-    deleted = cleanup_old_sessions(db, hours=24, admin_username=admin_user.username)
+    deleted = await cleanup_old_sessions(db, hours=24, admin_username=admin_user.username)
     return {"success": True, "message": f"Cleaned up {deleted} old sessions"}
 
 
@@ -204,30 +213,30 @@ def cleanup_sessions_ep(
 # AUDIT LOG ENDPOINTS
 # ============================================================
 @router.get("/audit-logs", response_model=list[AuditLogEntry])
-def audit_logs_ep(
-    db: Session = Depends(get_db),
+async def audit_logs_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """List audit logs"""
-    return list_audit_logs(db)
+    return await list_audit_logs(db)
 
 
 @router.get("/ops-logs")
-def ops_logs_ep(
-    db: Session = Depends(get_db),
+async def ops_logs_ep(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """List operational logs"""
-    return list_ops_logs(db)
+    return await list_ops_logs(db)
 
 
 # ============================================================
 # AI INDEXING CONFIGURATION
 # ============================================================
 @router.post("/ai-indexing-config")
-def save_ai_indexing_config(
+async def save_ai_indexing_config(
     body: dict,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """Save AI indexing configuration"""
@@ -240,123 +249,193 @@ def save_ai_indexing_config(
 
 
 @router.get("/ai-indexing-config")
-def get_ai_indexing_config(
-    db: Session = Depends(get_db),
+async def get_ai_indexing_config(
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
-    """Get AI indexing configuration"""
-    return get_ai_indexing_config_data()
+    """Get AI indexing configuration (includes read-only feature flags)."""
+    data = get_ai_indexing_config_data()
+    # Expose read-only feature flags so the admin UI can display status
+    data["hitl_enabled"] = getattr(settings, "FEATURE_HITL_ENABLED", False)
+    data["hitl_confidence_threshold"] = getattr(
+        settings, "RAG_HITL_CONFIDENCE_THRESHOLD", 0.35
+    )
+    return data
 
 
 # ============================================================
 # ADMIN AI AGENT & TOOLS
 # ============================================================
 @router.post("/agent", response_model=AgentResponse)
-def admin_agent_ep(
+async def admin_agent_ep(
     req: AgentRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     admin_user=Depends(require_role("admin")),
 ):
     """
     Execute admin commands via natural language (Enhanced Tool-Use)
     """
-    command = req.command.strip().lower()
-    
+    # Keep original text for LLM fallback; use lowered for routing
+    raw_command = (req.command or "").strip()
+    command = raw_command.lower()
+
+    # Helper: robust tokenization (supports quotes, escaped spaces)
+    def split_words(cmd: str) -> list[str]:
+        try:
+            return shlex.split(cmd)
+        except Exception:
+            return cmd.split()
+
     # --- TOOL: Create User ---
     # Syntax: "create user <username> <password> [role]"
     if command.startswith("create user"):
-        parts = command.split()
+        parts = split_words(raw_command)  # use raw for correct casing if needed
         if len(parts) < 4:
-            return AgentResponse(result="Usage: <code>create user &lt;username&gt; &lt;password&gt; [role]</code>")
-        
+            return AgentResponse(
+                result="Usage: `create user <username> <password> [role]`",
+                format="markdown",
+            )
+
+        # parts[0]='create', parts[1]='user', parts[2]=username, parts[3]=password
         username = parts[2]
         password = parts[3]
         role = parts[4] if len(parts) > 4 else "user"
-        
+
         try:
-            create_user(db, username, password, role, admin_username=admin_user.username)
-            return AgentResponse(result=f"✅ User <b>{username}</b> created successfully with role <code>{role}</code>.")
+            await create_user(db, username, password, role, admin_username=admin_user.username)
+            return AgentResponse(
+                result=f"✅ User **{username}** created with role `{role}`.",
+                format="markdown",
+                details={"username": username, "role": role},
+            )
         except Exception as e:
-            return AgentResponse(result=f"❌ Failed to create user: {str(e)}")
+            return AgentResponse(result=f"❌ Failed to create user: {str(e)}", format="markdown")
 
     # --- TOOL: Reset Password (Generate Token) ---
     # Syntax: "reset password <username>" or "reset token <username>"
     if command.startswith("reset password") or command.startswith("reset token"):
-        parts = command.split()
+        parts = split_words(raw_command)
         if len(parts) < 3:
-            return AgentResponse(result="Usage: <code>reset password &lt;username&gt;</code>")
-        
+            return AgentResponse(result="Usage: `reset password <username>`", format="markdown")
+
         target_user = parts[2]
-        user = get_user_by_username(db, target_user)
+        user = await get_user_by_username(db, target_user)
         if not user:
-            return AgentResponse(result=f"❌ User <b>{target_user}</b> not found.")
-        
+            return AgentResponse(result=f"❌ User **{target_user}** not found.", format="markdown")
+
         try:
-            token = generate_reset_token(db, user.id, admin_username=admin_user.username)
-            return AgentResponse(result=f"✅ Reset token for <b>{target_user}</b>:<br><br><pre>{token}</pre>")
+            token = await generate_reset_token(db, user.id, admin_username=admin_user.username)
+            return AgentResponse(
+                result=f"**Reset token for `{target_user}`**\n\n```\n{token}\n```",
+                format="markdown",
+                details={"username": target_user},
+            )
         except Exception as e:
-            return AgentResponse(result=f"❌ Failed to generate token: {str(e)}")
+            return AgentResponse(result=f"❌ Failed to generate token: {str(e)}", format="markdown")
 
     # --- TOOL: Unlock User ---
     # Syntax: "unlock user <username>"
     if command.startswith("unlock user") or command.startswith("unlock account"):
-        parts = command.split()
+        parts = split_words(raw_command)
         if len(parts) < 3:
-            return AgentResponse(result="Usage: <code>unlock user &lt;username&gt;</code>")
-            
+            return AgentResponse(result="Usage: `unlock user <username>`", format="markdown")
+
         target_user = parts[2]
-        user = get_user_by_username(db, target_user)
+        user = await get_user_by_username(db, target_user)
         if not user:
-            return AgentResponse(result=f"❌ User <b>{target_user}</b> not found.")
-            
+            return AgentResponse(result=f"❌ User **{target_user}** not found.", format="markdown")
+
         try:
-            unlock_user_account(db, user.id, admin_username=admin_user.username)
-            return AgentResponse(result=f"✅ Account for <b>{target_user}</b> unlocked.")
+            await unlock_user_account(db, user.id, admin_username=admin_user.username)
+            return AgentResponse(result=f"✅ Account for **{target_user}** unlocked.", format="markdown")
         except Exception as e:
-            return AgentResponse(result=f"❌ Failed to unlock: {str(e)}")
+            return AgentResponse(result=f"❌ Failed to unlock: {str(e)}", format="markdown")
 
     # --- TOOL: Cleanup Sessions ---
     if "cleanup sessions" in command or "clean sessions" in command:
         try:
-            count = cleanup_old_sessions(db, hours=24, admin_username=admin_user.username)
-            return AgentResponse(result=f"✅ Cleanup complete. Removed <b>{count}</b> old sessions.")
+            # keep default 24h as before
+            count = await cleanup_old_sessions(db, hours=24, admin_username=admin_user.username)
+            return AgentResponse(
+                result=f"✅ Cleanup complete. Removed **{count}** old sessions.",
+                format="markdown",
+                details={"deleted": count, "hours": 24},
+            )
         except Exception as e:
-            return AgentResponse(result=f"❌ Cleanup failed: {str(e)}")
+            return AgentResponse(result=f"❌ Cleanup failed: {str(e)}", format="markdown")
 
     # --- INFO: Users ---
     if "users" in command or "list user" in command:
-        users = list_users(db)
-        items = "".join([f"<li>{u.username} ({u.role})</li>" for u in users[:10]])
+        users = await list_users(db)
+        lines = [f"- {u.username} ({u.role})" for u in users[:10]]
         if len(users) > 10:
-            items += f"<li>...and {len(users)-10} more.</li>"
-        return AgentResponse(result=f"Here are the users:<ul style='margin-top:8px'>{items}</ul>")
-    
+            lines.append(f"- …and {len(users)-10} more.")
+        return AgentResponse(
+            result="**Users**\n\n" + "\n".join(lines),
+            format="markdown",
+            details={"count": len(users)},
+        )
+
     # --- INFO: Stats ---
     if "stats" in command or "status" in command:
-        stats = get_admin_stats(db)
-        res = (
-            f"<b>System Status</b>:<br>"
-            f"<ul>"
-            f"<li>Users: {stats['totalUsers']}</li>"
-            f"<li>Active Sessions: {stats['activeSessions']}</li>"
-            f"</ul>"
+        stats = await get_admin_stats(db)
+        md = (
+            f"**System Status**\n\n"
+            f"- Users: {stats['totalUsers']}\n"
+            f"- Active Sessions: {stats['activeSessions']}\n"
         )
-        return AgentResponse(result=res)
+        return AgentResponse(result=md, format="markdown", details=stats)
 
     # --- INFO: Audit Logs ---
     if "audit" in command or "log" in command:
-        logs = list_audit_logs(db, limit=5)
-        items = "".join([f"<li>{l.created_at.strftime('%H:%M:%S')} [{l.username}] {l.action}</li>" for l in logs])
-        return AgentResponse(result=f"Recent Audit Logs:<br><ul style='margin-top:8px'>{items}</ul>")
+        logs = await list_audit_logs(db, limit=5)
+        # keep markdown; concise bullets
+        lines = [f"- {l.created_at.strftime('%H:%M:%S')} [{l.username}] {l.action}" for l in logs]
+        return AgentResponse(
+            result="**Recent Audit Logs**\n\n" + "\n".join(lines),
+            format="markdown",
+            details={"count": len(lines)},
+        )
 
-    return AgentResponse(result=f"""I didn't understand the command: '<code>{req.command}</code>'.<br><br>
-    
-<b>Available Tools:</b>
-<ul>
-<li><code>create user &lt;name&gt; &lt;pass&gt; [role]</code></li>
-<li><code>reset password &lt;name&gt;</code></li>
-<li><code>unlock user &lt;name&gt;</code></li>
-<li><code>cleanup sessions</code></li>
-<li><code>stats</code>, <code>users</code>, <code>audit logs</code></li>
-</ul>
-""")
+    # --- INFO: Help ---
+    if command in ("help", "?", "commands", "tools"):
+        return AgentResponse(
+            result=(
+                "**Available Admin Commands:**\n\n"
+                "- `create user <name> <pass> [role]` — Create a new user\n"
+                "- `reset password <name>` — Generate a password reset token\n"
+                "- `unlock user <name>` — Unlock a locked account\n"
+                "- `cleanup sessions` — Remove sessions older than 24h\n"
+                "- `users` / `list users` — List all users\n"
+                "- `stats` / `status` — System statistics\n"
+                "- `audit` / `logs` — Recent audit logs\n\n"
+                "For anything else, just ask in natural language."
+            ),
+            format="markdown",
+        )
+
+    # Optional LLM fallback (unchanged)
+    if is_async_azure_chat_configured():
+        try:
+            ai_result = await generate_admin_agent_reply(req.command, admin_user.username)
+            if ai_result:
+                # If your LLM returns Markdown, you can set format='markdown' here.
+                return AgentResponse(result=ai_result, format="markdown")
+        except Exception:
+            # Fall back to static help to keep the endpoint resilient
+            pass
+
+    # Default: didn’t understand
+    return AgentResponse(
+        result=(
+            f"I didn't understand the command: `{raw_command}`.\n\n"
+            "**Available Tools:**\n"
+            "- `create user <name> <pass> [role]`\n"
+            "- `reset password <name>`\n"
+            "- `unlock user <name>`\n"
+            "- `cleanup sessions`\n"
+            "- `stats`, `users`, `audit logs`\n"
+        ),
+        format="markdown",
+    )
+

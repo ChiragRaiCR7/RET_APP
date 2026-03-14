@@ -1,3 +1,4 @@
+
 from fastapi import HTTPException, status
 
 
@@ -55,3 +56,28 @@ class RateLimitExceeded(HTTPException):
             detail=detail,
             headers={"Retry-After": str(retry_after)},
         )
+
+
+class ServiceUnavailableError(HTTPException):
+    """Raised when a downstream service (e.g. Azure OpenAI) is unavailable."""
+    def __init__(self, detail="Service temporarily unavailable"):
+        super().__init__(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+            headers={"Retry-After": "30"},
+        )
+
+
+class TaskCancelledError(Exception):
+    """Raised when a background task is cancelled."""
+    def __init__(self, detail="Task was cancelled"):
+        self.detail = detail
+        super().__init__(detail)
+
+
+class EmbeddingError(Exception):
+    """Raised when an embedding operation fails."""
+    def __init__(self, detail="Embedding operation failed", group: str | None = None):
+        self.detail = detail
+        self.group = group
+        super().__init__(detail)

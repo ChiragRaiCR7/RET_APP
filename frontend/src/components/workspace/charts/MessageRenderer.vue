@@ -24,20 +24,20 @@ const rootEl = ref(null)
 let mermaidInitialized = false
 
 const renderedContent = computed(() => {
-  let content = props.content
-  
-  // Extract and process data blocks
-  content = processDataBlocks(content)
-  
-  // Process markdown
+  let content = props.content || ''
+  const blockMap = {}
+
+  // Extract structured blocks BEFORE markdown so fenced blocks are not lost
+  content = processDataBlocks(content, blockMap)
+  content = processMermaid(content, blockMap)
+
+  // Render markdown text around placeholders
   content = processMarkdown(content)
-  
-  // Enhance citations
+  content = restoreBlockPlaceholders(content, blockMap)
+
+  // Enhance citations in final html
   content = enhanceCitations(content)
-  
-  // Process mermaid diagrams
-  content = processMermaid(content)
-  
+
   return content
 })
 
@@ -49,7 +49,7 @@ function initMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     theme: isDark ? 'dark' : 'default',
-    securityLevel: 'strict'
+    securityLevel: 'loose'
   })
   mermaidInitialized = true
 }
@@ -76,41 +76,41 @@ onUpdated(() => {
   renderMermaidDiagrams()
 })
 
-function processDataBlocks(content) {
+function processDataBlocks(content, blockMap) {
   // Extract JSON chart definitions
-  const chartRegex = /```chart\n([\s\S]*?)\n```/g
-  content = content.replace(chartRegex, (match, jsonContent) => {
+  const chartRegex = /```(?:chart|chart-data|graph|plot)\s*\n?([\s\S]*?)```/gi
+  content = content.replace(chartRegex, (match, jsonContent, offset) => {
     try {
-      const chartConfig = JSON.parse(jsonContent)
-      const id = `chart-${Math.random().toString(36).substr(2, 9)}`
+      const chartConfig = parseJsonLoose(jsonContent)
+      const id = buildStableId('chart', jsonContent, offset)
       setTimeout(() => emit('render-chart', { id, config: chartConfig }), 0)
-      return `<div id="${id}" class="chart-placeholder">Loading chart...</div>`
+      return createBlockPlaceholder(blockMap, `<div id="${id}" class="chart-placeholder">Loading chart...</div>`)
     } catch (e) {
       return `<div class="error-block">Invalid chart definition</div>`
     }
   })
   
   // Extract table data
-  const tableRegex = /```table\n([\s\S]*?)\n```/g
-  content = content.replace(tableRegex, (match, jsonContent) => {
+  const tableRegex = /```(?:table|data-table|datatable)\s*\n?([\s\S]*?)```/gi
+  content = content.replace(tableRegex, (match, jsonContent, offset) => {
     try {
-      const tableConfig = JSON.parse(jsonContent)
-      const id = `table-${Math.random().toString(36).substr(2, 9)}`
+      const tableConfig = parseJsonLoose(jsonContent)
+      const id = buildStableId('table', jsonContent, offset)
       setTimeout(() => emit('render-table', { id, config: tableConfig }), 0)
-      return `<div id="${id}" class="table-placeholder">Loading table...</div>`
+      return createBlockPlaceholder(blockMap, `<div id="${id}" class="table-placeholder">Loading table...</div>`)
     } catch (e) {
       return `<div class="error-block">Invalid table definition</div>`
     }
   })
   
   // Extract stats
-  const statsRegex = /```stats\n([\s\S]*?)\n```/g
-  content = content.replace(statsRegex, (match, jsonContent) => {
+  const statsRegex = /```(?:stats|statistics|kpi|summary-stats)\s*\n?([\s\S]*?)```/gi
+  content = content.replace(statsRegex, (match, jsonContent, offset) => {
     try {
-      const statsConfig = JSON.parse(jsonContent)
-      const id = `stats-${Math.random().toString(36).substr(2, 9)}`
+      const statsConfig = parseJsonLoose(jsonContent)
+      const id = buildStableId('stats', jsonContent, offset)
       setTimeout(() => emit('render-stats', { id, config: statsConfig }), 0)
-      return `<div id="${id}" class="stats-placeholder">Loading statistics...</div>`
+      return createBlockPlaceholder(blockMap, `<div id="${id}" class="stats-placeholder">Loading statistics...</div>`)
     } catch (e) {
       return `<div class="error-block">Invalid stats definition</div>`
     }
@@ -122,13 +122,10 @@ function processDataBlocks(content) {
 function processMarkdown(content) {
   // Configure marked
   marked.setOptions({
+    async: false,
     breaks: true,
     gfm: true,
-    tables: true,
-    smartLists: true,
-    highlight: (code, lang) => {
-      return `<pre><code class="language-${lang}">${escapeHtml(code)}</code></pre>`
-    }
+    tables: true
   })
   
   try {
@@ -148,15 +145,61 @@ function enhanceCitations(content) {
   })
 }
 
-function processMermaid(content) {
+function processMermaid(content, blockMap) {
   // Mark mermaid blocks for rendering
-  const mermaidRegex = /```mermaid\n([\s\S]*?)\n```/g
-  return content.replace(mermaidRegex, (match, diagram) => {
-    const id = `mermaid-${Math.random().toString(36).substr(2, 9)}`
-    return `<div class="mermaid-diagram" data-diagram="${encodeURIComponent(diagram)}">
-      <pre class="mermaid">${escapeHtml(diagram)}</pre>
-    </div>`
+  const mermaidRegex = /```mermaid\s*\n?([\s\S]*?)```/gi
+  return content.replace(mermaidRegex, (match, diagram, offset) => {
+    const id = buildStableId('mermaid', diagram, offset)
+    return createBlockPlaceholder(blockMap, `<div class="mermaid-diagram" data-mermaid-id="${id}">
+      <pre class="mermaid">${escapeHtml((diagram || '').trim())}</pre>
+    </div>`)
   })
+}
+
+function restoreBlockPlaceholders(content, blockMap) {
+  let html = content
+  for (const [token, blockHtml] of Object.entries(blockMap)) {
+    html = html.replaceAll(`<ret-block data-token="${token}"></ret-block>`, blockHtml)
+  }
+  return html
+}
+
+function createBlockPlaceholder(blockMap, html) {
+  const token = `block_${Object.keys(blockMap).length}`
+  blockMap[token] = html
+  return `<ret-block data-token="${token}"></ret-block>`
+}
+
+function buildStableId(prefix, seed, index) {
+  return `${prefix}-${hashString(`${prefix}:${index}:${seed || ''}`)}`
+}
+
+function hashString(value) {
+  let hash = 0
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
+function parseJsonLoose(input) {
+  if (typeof input !== 'string') {
+    throw new Error('Expected JSON string')
+  }
+
+  const normalized = input
+    .trim()
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+
+  try {
+    return JSON.parse(normalized)
+  } catch {
+    // Try common LLM issue: trailing commas before } or ]
+    const noTrailingCommas = normalized.replace(/,\s*([}\]])/g, '$1')
+    return JSON.parse(noTrailingCommas)
+  }
 }
 
 function escapeHtml(text) {

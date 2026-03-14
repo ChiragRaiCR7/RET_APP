@@ -1,13 +1,22 @@
+
 """
 Security Headers Middleware
 
 Adds security headers to all HTTP responses to protect against common web vulnerabilities.
 Uses config-driven HSTS max-age and conditionally skips headers in development.
+
+Non-breaking improvements:
+- Adds X-Content-Type-Options: nosniff
+- Adds Cross-Origin-* isolation headers (COOP/CORP, optional COEP in production)
+- Uses settings.API_PREFIX (instead of hardcoded '/api/') when disabling cache
 """
+
+from __future__ import annotations
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
 from api.core.config import settings
 
 
@@ -21,27 +30,45 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         response = await call_next(request)
 
+        # Skip entirely when disabled (commonly for development)
         if not settings.ENABLE_SECURITY_HEADERS:
             return response
 
-        # Prevent MIME type sniffing
-        response.headers["X-Content-Type-Options"] = "nosniff"
+        # -------------------------
+        # Basic hardening headers
+        # -------------------------
 
         # Prevent clickjacking attacks
         response.headers["X-Frame-Options"] = "DENY"
 
-        # Enable XSS filter (legacy browsers)
+        # Enable XSS filter (legacy browsers; modern Chromium ignores it)
         response.headers["X-XSS-Protection"] = "1; mode=block"
 
-        # HSTS — only when not in debug mode
-        if not settings.DEBUG:
-            max_age = settings.HSTS_MAX_AGE
-            response.headers["Strict-Transport-Security"] = (
-                f"max-age={max_age}; includeSubDomains; preload"
-            )
+        # Prevent MIME-sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
 
-        # Content Security Policy
-        if settings.is_production:
+        # -------------------------
+        # HSTS (HTTPS only)
+        # -------------------------
+        # HSTS should only be enabled when you're sure you're serving HTTPS.
+        # We keep your existing behavior (not DEBUG) and add an extra safety guard:
+        # - in production OR when COOKIE_SECURE is True (if setting exists)
+        if not settings.DEBUG:
+            cookie_secure = getattr(settings, "COOKIE_SECURE", None)
+            should_set_hsts = settings.is_production if hasattr(settings, "is_production") else True
+            if cookie_secure is not None:
+                should_set_hsts = should_set_hsts or bool(cookie_secure)
+
+            if should_set_hsts:
+                max_age = settings.HSTS_MAX_AGE
+                response.headers["Strict-Transport-Security"] = (
+                    f"max-age={max_age}; includeSubDomains; preload"
+                )
+
+        # -------------------------
+        # Content Security Policy (CSP)
+        # -------------------------
+        if getattr(settings, "is_production", False):
             # Tighter CSP for production (no unsafe-eval)
             csp_directives = [
                 "default-src 'self'",
@@ -70,10 +97,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             ]
         response.headers["Content-Security-Policy"] = "; ".join(csp_directives)
 
-        # Control referrer information
+        # -------------------------
+        # Referrer + Permissions
+        # -------------------------
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
 
-        # Control browser features
         permissions_policy = [
             "accelerometer=()",
             "camera=()",
@@ -86,11 +114,23 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         ]
         response.headers["Permissions-Policy"] = ", ".join(permissions_policy)
 
-        # Prevent caching of sensitive data for API responses
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = (
-                "no-store, no-cache, must-revalidate, private"
-            )
+        # -------------------------
+        # Cross-Origin isolation headers
+        # -------------------------
+        # Safe defaults for APIs. COEP can break some integrations; enable only in production.
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+
+        if getattr(settings, "is_production", False):
+            # Optional: enforce embedder policy in production
+            response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+
+        # -------------------------
+        # Prevent caching of sensitive API responses
+        # -------------------------
+        api_prefix = getattr(settings, "API_PREFIX", "/api")
+        if request.url.path.startswith(api_prefix):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
             response.headers["Pragma"] = "no-cache"
 
         return response

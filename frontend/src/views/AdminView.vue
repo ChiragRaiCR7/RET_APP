@@ -1,30 +1,40 @@
 <template>
-  <div>
-    <!-- Admin Header -->
-    <div class="admin-header">
-      <div class="header-grid">
-        <div>
-          <h2 class="card-title">Admin Console</h2>
-          <p class="card-description">User management • AI agent • Sessions • Audit</p>
+  <div class="admin-shell">
+    <!-- Header -->
+    <header class="admin-header" role="banner">
+      <div class="header-left">
+        <h2 class="page-title">Admin Console</h2>
+        <p class="page-subtitle">
+          Manage users, AI configuration, sessions, and security logs in one place.
+        </p>
+      </div>
+
+      <div class="header-right">
+        <div class="user-pill" aria-label="Signed in user">
+          <div class="avatar" aria-hidden="true">{{ userInitials }}</div>
+          <div class="user-meta">
+            <div class="user-name">{{ auth.user?.username || 'Admin' }}</div>
+            <div class="user-role">Administrator</div>
+          </div>
         </div>
-        <div class="user-info">
-          <div class="user-avatar">{{ userInitials }}</div>
-          <div>{{ auth.user?.username }}</div>
-        </div>
-        <div style="display:flex; gap:8px">
-          <button class="btn btn-secondary btn-sm" @click="$router.push({ name: 'main' })">
-            Back to Workspace
+
+        <div class="header-actions">
+          <button class="btn btn-secondary" @click="router.push({ name: 'main' })">
+            Back to workspace
           </button>
-          <button class="btn btn-primary btn-sm" @click="refresh">Refresh</button>
+          <button class="btn btn-primary" @click="refresh" :disabled="refreshing">
+            <span v-if="refreshing" class="spinner" aria-hidden="true"></span>
+            {{ refreshing ? 'Refreshing…' : 'Refresh' }}
+          </button>
         </div>
       </div>
-    </div>
+    </header>
 
-    <!-- Quick Stats -->
-    <div class="metric-container">
+    <!-- Metrics -->
+    <section class="metrics" aria-label="Quick metrics">
       <div class="metric-card">
         <div class="metric-value">{{ stats.totalUsers }}</div>
-        <div class="metric-label">Total Users</div>
+        <div class="metric-label">Total users</div>
       </div>
       <div class="metric-card">
         <div class="metric-value">{{ stats.admins }}</div>
@@ -32,461 +42,893 @@
       </div>
       <div class="metric-card">
         <div class="metric-value">{{ stats.regular }}</div>
-        <div class="metric-label">Regular Users</div>
+        <div class="metric-label">Regular users</div>
       </div>
-    </div>
+      <div class="metric-card metric-soft">
+        <div class="metric-value">{{ sessions?.length || 0 }}</div>
+        <div class="metric-label">Active sessions</div>
+      </div>
+    </section>
 
-    <!-- Admin Tabs -->
-    <div class="tab-list" role="tablist">
-      <button 
-        v-for="(tab, idx) in tabs" 
-        :key="idx"
-        class="tab-button"
+    <!-- Tabs -->
+    <nav class="tabs" role="tablist" aria-label="Admin sections">
+      <button
+        v-for="(t, idx) in tabs"
+        :key="t.key"
+        class="tab"
+        role="tab"
+        :id="`admin-tab-${t.key}`"
+        :aria-controls="`admin-panel-${t.key}`"
+        :aria-selected="activeTab === idx"
+        :tabindex="activeTab === idx ? 0 : -1"
         :class="{ active: activeTab === idx }"
-        @click="activeTab = idx"
+        @click="setTab(idx)"
+        @keydown="onTabKeydown($event, idx)"
+        type="button"
       >
-        {{ tab }}
+        <span class="tab-icon" aria-hidden="true">{{ t.icon }}</span>
+        <span class="tab-label">{{ t.label }}</span>
       </button>
-    </div>
+    </nav>
 
-    <!-- TAB 0: AI Agent -->
-    <div v-show="activeTab === 0" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">🤖 Admin AI Agent</h3>
-        <p class="card-description">Execute admin commands via natural language</p>
-      </div>
-      <AIAgentChat />
-    </div>
-
-    <!-- TAB 1: AI Indexing Config -->
-    <div v-show="activeTab === 1" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">🗂️ AI Indexing Configuration</h3>
-        <p class="card-description">Configure which groups are automatically embedded for AI</p>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Auto-Embedded Groups</label>
-        <p class="form-hint">These groups will be automatically embedded when detected during ZIP scanning</p>
-      </div>
-
-      <!-- Two-sided selector -->
-      <div style="display:grid; grid-template-columns:1fr 100px 1fr; gap:var(--space-lg); margin-top:var(--space-lg); align-items:start">
-        <!-- Available Groups (Left) -->
-        <div class="group-selector-box">
-          <h4 class="box-title">Available Groups</h4>
-          <div style="display:flex; gap:8px; margin-bottom:8px">
-            <input v-model="newGroup" placeholder="New Group" class="form-input" style="padding:4px 8px; font-size:0.85rem" @keyup.enter="addGroup" />
-            <button class="btn btn-sm btn-secondary" @click="addGroup" :disabled="!newGroup">+</button>
-          </div>
-          <div class="group-list">
-            <label v-for="group in availableGroupsList" :key="group" class="group-item">
-              <input 
-                type="checkbox" 
-                :value="group" 
-                v-model="selectedLeftGroups"
-              />
-              <span>{{ group }}</span>
-            </label>
+    <!-- Panels -->
+    <section class="panel-stack">
+      <!-- 0: AI Agent -->
+      <section
+        v-show="activeTab === 0"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-ai-agent'"
+        :aria-labelledby="'admin-tab-ai-agent'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Admin Assistant</h3>
+            <p class="card-subtitle">
+              Run administrative actions using natural language. Review responses before applying changes.
+            </p>
           </div>
         </div>
 
-        <!-- Control Buttons (Center) -->
-        <div class="button-column">
-          <button 
-            class="btn btn-primary btn-sm" 
-            @click="moveToRight" 
-            :disabled="!selectedLeftGroups.length"
-            title="Add selected groups"
-          >
-            >>
-          </button>
-          <button 
-            class="btn btn-secondary btn-sm" 
-            @click="moveToLeft" 
-            :disabled="!selectedRightGroups.length"
-            title="Remove selected groups"
-          >
-            <<
-          </button>
+        <div class="card-body">
+          <AIAgentChat />
         </div>
+      </section>
 
-        <!-- Auto-Embedded Groups (Right) -->
-        <div class="group-selector-box">
-          <h4 class="box-title">Auto-Embedded</h4>
-          <div class="group-list">
-            <label v-for="group in autoEmbeddedGroups" :key="group" class="group-item">
-              <input 
-                type="checkbox" 
-                :value="group" 
-                v-model="selectedRightGroups"
-              />
-              <span>{{ group }}</span>
-            </label>
+      <!-- 1: AI Indexing Config -->
+      <section
+        v-show="activeTab === 1"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-ai-indexing'"
+        :aria-labelledby="'admin-tab-ai-indexing'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">AI Indexing Configuration</h3>
+            <p class="card-subtitle">
+              Choose which groups should be automatically prepared for AI search and chat.
+            </p>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-secondary" @click="reloadAIConfig" :disabled="aiConfigLoading">
+              <span v-if="aiConfigLoading" class="spinner" aria-hidden="true"></span>
+              {{ aiConfigLoading ? 'Loading…' : 'Reload' }}
+            </button>
           </div>
         </div>
-      </div>
 
-      <!-- Save Button -->
-      <div style="margin-top:var(--space-lg); display:flex; gap:8px">
-        <button class="btn btn-primary" @click="saveEmbeddingConfig" :disabled="saving">
-          <span v-if="saving" class="spinner" style="margin-right:8px"></span>
-          {{ saving ? 'Saving...' : 'Save Configuration' }}
-        </button>
-      </div>
-
-      <!-- Status Messages -->
-      <div v-if="configStatus" class="alert" :class="configStatus.type === 'success' ? 'alert-success' : 'alert-error'" style="margin-top:var(--space-lg)">
-        <div class="alert-content">{{ configStatus.message }}</div>
-      </div>
-    </div>
-
-    <!-- TAB 2: Add User -->
-    <div v-show="activeTab === 2" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">➕ Add User</h3>
-        <p class="card-description">Create new user and generate auth token</p>
-      </div>
-
-      <form @submit.prevent="createUser">
-        <div class="form-group">
-          <label class="form-label">Username</label>
-          <input v-model="newUser.username" class="form-input" required placeholder="john.doe" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Role</label>
-          <select v-model="newUser.role" class="form-select">
-            <option value="user">Regular User</option>
-            <option value="admin">Admin</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Token TTL (minutes)</label>
-          <input v-model.number="newUser.tokenTTL" type="number" class="form-input" placeholder="60" />
-          <div class="form-hint">How long the auth token will remain valid</div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Note (Optional)</label>
-          <textarea v-model="newUser.note" class="form-textarea" rows="3" placeholder="Admin notes..."></textarea>
-        </div>
-        <button class="btn btn-primary" :disabled="creating" type="submit">
-          <span v-if="creating" class="spinner" style="margin-right:8px"></span>
-          {{ creating ? 'Creating...' : 'Create User + Generate Token' }}
-        </button>
-      </form>
-
-      <div v-if="createdToken" class="alert alert-success" style="margin-top:var(--space-lg)">
-        <div class="alert-content">
-          <div class="alert-title">✅ User Created Successfully!</div>
-          <div style="margin-top:var(--space-sm)">
-            <strong>Auth Token (save this, won't be shown again):</strong>
-            <pre style="margin-top:var(--space-xs); background:var(--surface-base); padding:var(--space-sm); border-radius:var(--radius-sm); overflow-x:auto">{{ createdToken }}</pre>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB 3: Manage User -->
-    <div v-show="activeTab === 3" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">⚙️ Manage User</h3>
-        <p class="card-description">Update roles, unlock accounts, generate reset tokens</p>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Select User</label>
-        <select v-model="selectedUserId" @change="loadUserDetails" class="form-select">
-          <option value="">-- Choose User --</option>
-          <option v-for="u in users" :key="u.id" :value="u.id">
-            {{ u.username }} ({{ u.role }})
-          </option>
-        </select>
-      </div>
-
-      <div v-if="selectedUser" style="margin-top:var(--space-lg)">
-        <!-- User Info Grid -->
-        <div class="info-grid">
-          <div class="info-item">
-            <div class="info-label">Username</div>
-            <div class="info-value">{{ selectedUser.username }}</div>
-          </div>
-          <div class="info-item">
-            <div class="info-label">Role</div>
-            <div class="info-value">
-              <span class="status-badge" :class="selectedUser.role === 'admin' ? 'badge-warning' : 'badge-info'">
-                {{ selectedUser.role }}
-              </span>
+        <div class="card-body">
+          <div class="summary-strip" role="status" aria-live="polite">
+            <div class="summary-pill" :class="autoEmbedEnabled ? 'summary-on' : 'summary-off'">
+              Auto-embed: <strong>{{ autoEmbedEnabled ? 'Enabled' : 'Disabled' }}</strong>
+            </div>
+            <div class="summary-pill">
+              Enabled groups: <strong>{{ autoEmbeddedGroups.length }}</strong>
             </div>
           </div>
-          <div class="info-item">
-            <div class="info-label">Created At</div>
-            <div class="info-value">{{ formatDate(selectedUser.created_at) }}</div>
+
+          <div class="info-banner" role="note">
+            <div class="info-title">How it works</div>
+            <div class="info-text">
+              Enable auto-embed to prepare selected groups during scan. Use the dual list to control which groups are included.
+            </div>
           </div>
-          <div class="info-item">
-            <div class="info-label">Updated At</div>
-            <div class="info-value">{{ formatDate(selectedUser.updated_at) }}</div>
+
+          <div class="config-top-row">
+            <label class="toggle-inline" aria-label="Enable auto-embedding">
+              <input type="checkbox" v-model="autoEmbedEnabled" />
+              <span>Enable automatic embedding for selected groups</span>
+            </label>
+            <p class="help">When disabled, selected groups remain configured but no auto-embed job is started after scan.</p>
           </div>
-          <div class="info-item">
-            <div class="info-label">Account Status</div>
-            <div class="info-value">
-              <span
-                class="status-badge"
-                :class="selectedUser.is_locked ? 'badge-error' : (selectedUser.is_active ? 'badge-success' : 'badge-warning')"
+
+          <div class="dual-selector">
+            <!-- Available -->
+            <div class="selector">
+              <div class="selector-head">
+                <h4 class="selector-title">Available</h4>
+                <p class="selector-subtitle">Select groups to enable.</p>
+              </div>
+
+              <div class="selector-tools">
+                <input
+                  v-model="availableSearch"
+                  class="input"
+                  type="text"
+                  placeholder="Search available…"
+                  aria-label="Search available groups"
+                />
+              </div>
+
+              <div class="selector-add">
+                <input
+                  v-model="newGroup"
+                  class="input"
+                  type="text"
+                  placeholder="Add new group (e.g., REPORT)"
+                  @keyup.enter="addGroup"
+                  aria-label="Add new group"
+                />
+                <button class="btn btn-secondary btn-sm" @click="addGroup" :disabled="!newGroup">
+                  Add
+                </button>
+              </div>
+
+              <div class="selector-list" role="group" aria-label="Available groups">
+                <label v-for="g in filteredAvailableGroups" :key="g" class="check-row">
+                  <input type="checkbox" :value="g" v-model="selectedLeftGroups" />
+                  <span class="check-label">{{ g }}</span>
+                </label>
+
+                <div v-if="filteredAvailableGroups.length === 0" class="empty-small">
+                  No groups found.
+                </div>
+              </div>
+            </div>
+
+            <!-- Middle controls -->
+            <div class="selector-controls" aria-label="Move controls">
+              <button
+                class="btn btn-primary btn-sm"
+                @click="moveToRight"
+                :disabled="!selectedLeftGroups.length"
+                title="Enable selected"
               >
-                {{ selectedUser.is_locked ? 'Locked' : (selectedUser.is_active ? 'Active' : 'Disabled') }}
-              </span>
+                Enable →
+              </button>
+              <button
+                class="btn btn-secondary btn-sm"
+                @click="moveToLeft"
+                :disabled="!selectedRightGroups.length"
+                title="Disable selected"
+              >
+                ← Disable
+              </button>
+              <p class="muted selector-hint">
+                Select items in either list, then move.
+              </p>
             </div>
+
+            <!-- Enabled -->
+            <div class="selector">
+              <div class="selector-head">
+                <h4 class="selector-title">Auto-enabled</h4>
+                <p class="selector-subtitle">Prepared automatically during scanning.</p>
+              </div>
+
+              <div class="selector-tools">
+                <input
+                  v-model="enabledSearch"
+                  class="input"
+                  type="text"
+                  placeholder="Search enabled…"
+                  aria-label="Search enabled groups"
+                />
+              </div>
+
+              <div class="selector-list" role="group" aria-label="Auto-enabled groups">
+                <label v-for="g in filteredEnabledGroups" :key="g" class="check-row">
+                  <input type="checkbox" :value="g" v-model="selectedRightGroups" />
+                  <span class="check-label">{{ g }}</span>
+                </label>
+
+                <div v-if="filteredEnabledGroups.length === 0" class="empty-small">
+                  No groups enabled.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button class="btn btn-primary" @click="saveEmbeddingConfig" :disabled="saving">
+              <span v-if="saving" class="spinner" aria-hidden="true"></span>
+              {{ saving ? 'Saving…' : 'Save configuration' }}
+            </button>
+
+            <span class="muted">
+              Changes apply to new sessions after saving.
+            </span>
+          </div>
+
+          <div
+            v-if="configStatus"
+            class="alert"
+            :class="configStatus.type === 'success' ? 'alert-success' : 'alert-error'"
+            role="status"
+            aria-live="polite"
+          >
+            {{ configStatus.message }}
+          </div>
+        </div>
+      </section>
+
+      <!-- 2: Add User -->
+      <section
+        v-show="activeTab === 2"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-add-user'"
+        :aria-labelledby="'admin-tab-add-user'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Create user</h3>
+            <p class="card-subtitle">
+              Create a user and generate a token. Tokens are shown once—copy and store securely.
+            </p>
           </div>
         </div>
 
-        <hr class="divider" />
+        <div class="card-body">
+          <form class="form" @submit.prevent="createUser">
+            <div class="form-grid">
+              <div class="field">
+                <label class="label">Username</label>
+                <input v-model="newUser.username" class="input" required placeholder="john.doe" />
+                <p class="help">Use a unique username. Avoid spaces where possible.</p>
+              </div>
 
-        <!-- Update Role Section -->
-        <div class="enterprise-card">
-          <h4 class="card-title">Update Role</h4>
-          <div style="display:flex; gap:12px; align-items:end; margin-top:var(--space-md)">
-            <div class="form-group" style="flex:1; margin-bottom:0">
-              <label class="form-label">New Role</label>
-              <select v-model="updateRole.newRole" class="form-select">
-                <option value="user">Regular User</option>
+              <div class="field">
+                <label class="label">Role</label>
+                <select v-model="newUser.role" class="select">
+                  <option value="user">Regular user</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <p class="help">Admins can manage users, sessions, and logs.</p>
+              </div>
+
+              <div class="field">
+                <label class="label">Token TTL (minutes)</label>
+                <input v-model.number="newUser.tokenTTL" type="number" class="input" placeholder="60" min="1" />
+                <p class="help">How long the token remains valid after creation.</p>
+              </div>
+
+              <div class="field field-full">
+                <label class="label">Note (optional)</label>
+                <textarea v-model="newUser.note" class="textarea" rows="3" placeholder="Internal notes…"></textarea>
+              </div>
+            </div>
+
+            <div class="action-row">
+              <button class="btn btn-primary" :disabled="creating" type="submit">
+                <span v-if="creating" class="spinner" aria-hidden="true"></span>
+                {{ creating ? 'Creating…' : 'Create user & generate token' }}
+              </button>
+              <span class="muted">You can manage the user after creation in “Manage user”.</span>
+            </div>
+          </form>
+
+          <div v-if="createdToken" class="token-card" role="status" aria-live="polite">
+            <div class="token-header">
+              <strong>Token generated</strong>
+              <div class="token-actions">
+                <button class="btn btn-secondary btn-sm" @click="copyToClipboard(createdToken)">
+                  Copy
+                </button>
+                <button class="btn btn-secondary btn-sm" @click="createdToken = null">
+                  Dismiss
+                </button>
+              </div>
+            </div>
+            <p class="help">
+              Store this token securely. It will not be shown again after you close this card.
+            </p>
+            <pre class="token-value">{{ createdToken }}</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3: Manage User -->
+      <section
+        v-show="activeTab === 3"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-manage-user'"
+        :aria-labelledby="'admin-tab-manage-user'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Manage user</h3>
+            <p class="card-subtitle">
+              Update roles, unlock accounts, and generate reset tokens.
+            </p>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="field field-full">
+              <label class="label">Select user</label>
+              <select v-model="selectedUserId" @change="loadUserDetails" class="select">
+                <option value="">Select a user…</option>
+                <option v-for="u in users" :key="u.id" :value="u.id">
+                  {{ u.username }} ({{ u.role }})
+                </option>
+              </select>
+              <p class="help">Choose a user to view account details and actions.</p>
+            </div>
+          </div>
+
+          <div v-if="!selectedUser && selectedUserId" class="empty-state">
+            <div class="empty-title">Loading user details…</div>
+            <div class="empty-text">Please wait while we fetch the profile.</div>
+          </div>
+
+          <div v-if="selectedUser" class="manage-grid">
+            <!-- User summary -->
+            <div class="subcard">
+              <div class="subcard-head">
+                <h4 class="subcard-title">User details</h4>
+                <span
+                  class="badge"
+                  :class="selectedUser.is_locked ? 'badge-error' : (selectedUser.is_active ? 'badge-success' : 'badge-warning')"
+                >
+                  {{ selectedUser.is_locked ? 'Locked' : (selectedUser.is_active ? 'Active' : 'Disabled') }}
+                </span>
+              </div>
+
+              <div class="info-grid">
+                <div class="info-item">
+                  <div class="info-k">Username</div>
+                  <div class="info-v">{{ selectedUser.username }}</div>
+                </div>
+                <div class="info-item">
+                  <div class="info-k">Role</div>
+                  <div class="info-v">
+                    <span class="badge" :class="selectedUser.role === 'admin' ? 'badge-warning' : 'badge-info'">
+                      {{ selectedUser.role }}
+                    </span>
+                  </div>
+                </div>
+                <div class="info-item">
+                  <div class="info-k">Created</div>
+                  <div class="info-v">{{ formatDate(selectedUser.created_at) }}</div>
+                </div>
+                <div class="info-item">
+                  <div class="info-k">Updated</div>
+                  <div class="info-v">{{ formatDate(selectedUser.updated_at) }}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="subcard">
+              <div class="subcard-head">
+                <h4 class="subcard-title">Actions</h4>
+                <p class="subcard-subtitle">Changes are logged for audit.</p>
+              </div>
+
+              <!-- Update role -->
+              <div class="action-block">
+                <div class="action-block-title">Update role</div>
+                <div class="action-inline">
+                  <select v-model="updateRole.newRole" class="select">
+                    <option value="user">Regular user</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <button class="btn btn-primary" @click="updateUserRole" :disabled="!selectedUserId">
+                    Update
+                  </button>
+                </div>
+                <p class="help">Role changes take effect immediately.</p>
+              </div>
+
+              <div class="divider" role="separator"></div>
+
+              <!-- Reset token -->
+              <div class="action-block">
+                <div class="action-block-title">Generate password reset token</div>
+                <p class="help">Create a one-time token for the user to reset their password.</p>
+                <button class="btn btn-secondary" @click="generateResetToken" :disabled="!selectedUserId">
+                  Generate token
+                </button>
+
+                <div v-if="resetToken" class="token-inline" role="status" aria-live="polite">
+                  <pre class="token-value">{{ resetToken }}</pre>
+                  <button class="btn btn-secondary btn-sm" @click="copyToClipboard(resetToken)">Copy</button>
+                </div>
+              </div>
+
+              <!-- Unlock -->
+              <div v-if="selectedUser.is_locked" class="action-block warn">
+                <div class="action-block-title">Unlock account</div>
+                <p class="help">This account is locked due to failed authentication attempts.</p>
+                <button class="btn btn-success" @click="unlockAccount">Unlock now</button>
+              </div>
+
+              <div class="divider" role="separator"></div>
+
+              <!-- Danger zone -->
+              <div class="action-block danger">
+                <div class="action-block-title">Danger zone</div>
+                <p class="help">
+                  Permanently delete this user. This action cannot be undone.
+                </p>
+                <button class="btn btn-danger" @click="openConfirm('deleteUser')">
+                  Delete user
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4: All Users -->
+      <section
+        v-show="activeTab === 4"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-all-users'"
+        :aria-labelledby="'admin-tab-all-users'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">All users</h3>
+            <p class="card-subtitle">Search and manage the user directory.</p>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-primary" @click="setTabByKey('add-user')">
+              Create user
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="table-tools">
+            <div class="tool">
+              <label class="tool-label">Search</label>
+              <input v-model="userSearch" class="input" placeholder="Search by username…" />
+            </div>
+            <div class="tool">
+              <label class="tool-label">Role</label>
+              <select v-model="roleFilter" class="select">
+                <option value="">All</option>
                 <option value="admin">Admin</option>
+                <option value="user">User</option>
               </select>
             </div>
-            <button class="btn btn-primary" @click="updateUserRole">Update Role</button>
+            <div class="tool">
+              <label class="tool-label">Status</label>
+              <select v-model="statusFilter" class="select">
+                <option value="">All</option>
+                <option value="active">Active</option>
+                <option value="locked">Locked</option>
+                <option value="disabled">Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="filteredUsers.length === 0" class="empty-state">
+            <div class="empty-title">No users match your filters</div>
+            <div class="empty-text">Try clearing search or changing filters.</div>
+          </div>
+
+          <div v-else class="table-wrap">
+            <table class="table" aria-label="All users table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Created</th>
+                  <th>Updated</th>
+                  <th>Status</th>
+                  <th class="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in filteredUsers" :key="u.id">
+                  <td class="strong">{{ u.username }}</td>
+                  <td>
+                    <span class="badge" :class="u.role === 'admin' ? 'badge-warning' : 'badge-info'">
+                      {{ u.role }}
+                    </span>
+                  </td>
+                  <td>{{ formatDate(u.created_at) }}</td>
+                  <td>{{ formatDate(u.updated_at) }}</td>
+                  <td>
+                    <span class="badge"
+                      :class="u.is_locked ? 'badge-error' : (u.is_active ? 'badge-success' : 'badge-warning')"
+                    >
+                      {{ u.is_locked ? 'Locked' : (u.is_active ? 'Active' : 'Disabled') }}
+                    </span>
+                  </td>
+                  <td class="col-actions">
+                    <button class="btn btn-secondary btn-sm" @click="editUser(u)">Manage</button>
+                    <button class="btn btn-danger btn-sm" @click="openConfirm('deleteSpecific', u)">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5: Reset Requests -->
+      <section
+        v-show="activeTab === 5"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-reset-requests'"
+        :aria-labelledby="'admin-tab-reset-requests'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Password reset requests</h3>
+            <p class="card-subtitle">View pending and processed reset requests.</p>
           </div>
         </div>
 
-        <!-- Generate Reset Token Section -->
-        <div class="enterprise-card" style="margin-top:var(--space-lg)">
-          <h4 class="card-title">Generate Password Reset Token</h4>
-          <p class="card-description">Create a one-time token for user to reset password</p>
-          <button class="btn btn-warning" @click="generateResetToken" style="margin-top:var(--space-md)">
-            Generate Reset Token
-          </button>
-          <div v-if="resetToken" class="alert alert-info" style="margin-top:var(--space-md)">
-            <div class="alert-content">
-              <strong>Reset Token:</strong>
-              <pre style="margin-top:var(--space-xs); background:var(--surface-base); padding:var(--space-sm); border-radius:var(--radius-sm)">{{ resetToken }}</pre>
+        <div class="card-body">
+          <div v-if="resetRequests.length === 0" class="empty-state">
+            <div class="empty-title">No reset requests</div>
+            <div class="empty-text">There are currently no pending or recent requests.</div>
+          </div>
+
+          <div v-else class="table-wrap">
+            <table class="table" aria-label="Reset requests table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Reason</th>
+                  <th>Requested</th>
+                  <th>Decided</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in resetRequests" :key="r.id">
+                  <td class="strong">{{ r.username }}</td>
+                  <td>{{ r.reason || '—' }}</td>
+                  <td>{{ formatDate(r.created_at) }}</td>
+                  <td>{{ formatDate(r.decided_at) }}</td>
+                  <td>
+                    <span class="badge"
+                      :class="r.status === 'approved' ? 'badge-success' : (r.status === 'rejected' ? 'badge-error' : 'badge-warning')"
+                    >
+                      {{ r.status || 'pending' }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 6: Audit Logs -->
+      <section
+        v-show="activeTab === 6"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-audit'"
+        :aria-labelledby="'admin-tab-audit'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Audit logs</h3>
+            <p class="card-subtitle">Authentication and security events.</p>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div v-if="auditLogs.length === 0" class="empty-state">
+            <div class="empty-title">No audit events</div>
+            <div class="empty-text">No events available for the current window.</div>
+          </div>
+
+          <div v-else class="table-wrap">
+            <table class="table" aria-label="Audit logs table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Username</th>
+                  <th>Action</th>
+                  <th>Area</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in auditLogs" :key="log.id">
+                  <td>{{ formatDate(log.created_at) }}</td>
+                  <td class="strong">{{ log.username || '—' }}</td>
+                  <td>
+                    <span class="badge" :class="getEventBadgeClass(log.action)">
+                      {{ log.action || '—' }}
+                    </span>
+                  </td>
+                  <td>{{ log.area || '—' }}</td>
+                  <td class="truncate" :title="log.message || ''">{{ log.message || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7: Ops Logs -->
+      <section
+        v-show="activeTab === 7"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-ops'"
+        :aria-labelledby="'admin-tab-ops'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Operations logs</h3>
+            <p class="card-subtitle">System activity and conversions.</p>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div v-if="opsLogs.length === 0" class="empty-state">
+            <div class="empty-title">No operations logs</div>
+            <div class="empty-text">No system operations available right now.</div>
+          </div>
+
+          <div v-else class="table-wrap">
+            <table class="table" aria-label="Operations logs table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>User</th>
+                  <th>Area</th>
+                  <th>Action</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="log in opsLogs" :key="log.id">
+                  <td>{{ formatDate(log.created_at) }}</td>
+                  <td class="strong">{{ log.username || '—' }}</td>
+                  <td><span class="badge badge-info">{{ log.area || '—' }}</span></td>
+                  <td class="strong">{{ log.action || '—' }}</td>
+                  <td class="truncate" :title="log.message || ''">{{ log.message || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8: Conversion Exclusions -->
+      <section
+        v-show="activeTab === 8"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-conv-exclusions'"
+        :aria-labelledby="'admin-tab-conv-exclusions'"
+      >
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">Conversion exclusions</h3>
+            <p class="card-subtitle">
+              Select a session and mark scanned files that should NOT be converted.
+              Exclusions are stored per session and applied during conversion.
+            </p>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-secondary" @click="loadExclSession" :disabled="!excl.sessionId || excl.loading">
+              <span v-if="excl.loading" class="spinner" aria-hidden="true"></span>
+              {{ excl.loading ? 'Loading…' : 'Load session' }}
+            </button>
+            <button class="btn btn-primary" @click="saveExclusions" :disabled="!excl.sessionId || excl.saving">
+              <span v-if="excl.saving" class="spinner" aria-hidden="true"></span>
+              {{ excl.saving ? 'Saving…' : 'Save exclusions' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="field field-full">
+              <label class="label">Select session</label>
+              <select v-model="excl.sessionId" class="select" @change="onExclSessionChange">
+                <option value="">Select a session…</option>
+                <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
+                  {{ shortId(s.session_id) }} — {{ s.username || '—' }}
+                </option>
+              </select>
+              <p class="help">
+                Tip: If you select a session not owned by this admin user, you may receive “Not authorized”.
+              </p>
+            </div>
+          </div>
+
+          <div v-if="excl.error" class="alert alert-error" role="status" aria-live="polite">
+            {{ excl.error }}
+          </div>
+
+          <div v-if="excl.sessionId && excl.meta" class="excl-summary">
+            <div class="excl-pill">
+              <div class="k">Files</div>
+              <div class="v">{{ excl.files.length }}</div>
+            </div>
+            <div class="excl-pill">
+              <div class="k">Groups</div>
+              <div class="v">{{ excl.groupList.length }}</div>
+            </div>
+            <div class="excl-pill">
+              <div class="k">Excluded</div>
+              <div class="v">{{ excl.excluded.length }}</div>
+            </div>
+          </div>
+
+          <div v-if="excl.sessionId && excl.meta" class="excl-controls">
+            <div class="field">
+              <label class="label">Search files</label>
+              <input v-model="excl.search" class="input" placeholder="Search filename or logical path…" />
+              <p class="help">Search applies to filename and logical path.</p>
+            </div>
+
+            <div class="field">
+              <label class="label">Filter group</label>
+              <select v-model="excl.filterGroup" class="select">
+                <option value="">All groups</option>
+                <option v-for="g in excl.groupList" :key="g" :value="g">{{ g }}</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <label class="label">Filter type</label>
+              <select v-model="excl.filterType" class="select">
+                <option value="">All types</option>
+                <option value="xml">XML</option>
+                <option value="csv">CSV</option>
+                <option value="xlsx">XLSX</option>
+                <option value="xls">XLS</option>
+              </select>
+            </div>
+          </div>
+
+          <div v-if="excl.sessionId && excl.meta" class="excl-actions-row">
+            <button class="btn btn-secondary btn-sm" @click="excludeFiltered" :disabled="filteredExclFiles.length === 0">
+              Exclude filtered
+            </button>
+            <button class="btn btn-secondary btn-sm" @click="clearExclusionsLocal" :disabled="excl.excluded.length === 0">
+              Clear exclusions
+            </button>
+            <button class="btn btn-secondary btn-sm" @click="reloadExclusions" :disabled="excl.loading">
+              Reload exclusions
+            </button>
+            <span class="muted">
+              Showing <strong>{{ filteredExclFiles.length }}</strong> / {{ excl.files.length }}
+            </span>
+          </div>
+
+          <div v-if="excl.sessionId && excl.meta" class="excl-list-wrap">
+            <div class="excl-list-head">
+              <span class="muted">Select files to exclude (not converted)</span>
+              <span class="muted">Excluded: <strong>{{ excl.excluded.length }}</strong></span>
+            </div>
+
+            <div class="excl-list" role="list">
+              <label
+                v-for="f in filteredExclFiles"
+                :key="f.logical_path || f.abs_path || f.path || f.filename"
+                class="excl-row"
+                role="listitem"
+              >
+                <input type="checkbox" class="excl-check" :checked="isExcluded(f)" @change="toggleExcluded(f)" />
+
+                <div class="excl-main">
+                  <div class="excl-name">{{ (f.filename || 'FILE').toUpperCase() }}</div>
+                  <div class="excl-meta">
+                    <span class="badge badge-info">{{ (f.file_type || 'file').toUpperCase() }}</span>
+                    <span class="badge badge-warning">{{ (f.group || 'EXTRAS').toUpperCase() }}</span>
+                    <span class="muted truncate" :title="f.logical_path || f.path || ''">
+                      {{ f.logical_path || f.path || '' }}
+                    </span>
+                  </div>
+                </div>
+              </label>
+
+              <div v-if="filteredExclFiles.length === 0" class="empty-small">
+                No files match your filter.
+              </div>
             </div>
           </div>
         </div>
+      </section>
 
-        <!-- Unlock Account Section -->
-        <div v-if="selectedUser.is_locked" class="enterprise-card" style="margin-top:var(--space-lg)">
-          <h4 class="card-title">Unlock Account</h4>
-          <p class="card-description">This account is currently locked due to failed login attempts</p>
-          <button class="btn btn-success" @click="unlockAccount" style="margin-top:var(--space-md)">
-            Unlock Now
-          </button>
-        </div>
-
-        <!-- Danger Zone -->
-        <div class="enterprise-card" style="margin-top:var(--space-lg); border:2px solid var(--error)">
-          <h4 class="card-title" style="color:var(--error)">⚠️ Danger Zone</h4>
-          <p class="card-description">Permanently delete this user and all associated data. This cannot be undone.</p>
-          <button class="btn btn-danger" @click="confirmDelete" style="margin-top:var(--space-md)">
-            Delete User Permanently
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB 4: All Users -->
-    <div v-show="activeTab === 4" class="enterprise-card">
-      <div class="card-header">
-        <div style="display:flex; justify-content:space-between; align-items:center">
+      <!-- 9: Sessions -->
+      <section
+        v-show="activeTab === 9"
+        class="card"
+        role="tabpanel"
+        :id="'admin-panel-sessions'"
+        :aria-labelledby="'admin-tab-sessions'"
+      >
+        <div class="card-header">
           <div>
-            <h3 class="card-title">👥 All Users</h3>
-            <p class="card-description">Complete user directory</p>
+            <h3 class="card-title">Sessions</h3>
+            <p class="card-subtitle">Monitor active sessions and remove old session data.</p>
           </div>
-          <button class="btn btn-primary" @click="activeTab = 2">
-            Add New User
+          <div class="card-actions">
+            <button class="btn btn-danger" @click="openConfirm('cleanupSessions')" :disabled="sessions.length === 0">
+              Cleanup old sessions
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div v-if="sessions.length === 0" class="empty-state">
+            <div class="empty-title">No active sessions</div>
+            <div class="empty-text">There are no sessions currently tracked.</div>
+          </div>
+
+          <div v-else class="table-wrap">
+            <table class="table" aria-label="Sessions table">
+              <thead>
+                <tr>
+                  <th>Session ID</th>
+                  <th>Username</th>
+                  <th>Created</th>
+                  <th>Last activity</th>
+                  <th>Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in sessions" :key="s.session_id">
+                  <td><code class="code">{{ shortId(s.session_id) }}</code></td>
+                  <td class="strong">{{ s.username || '—' }}</td>
+                  <td>{{ formatDate(s.created_at) }}</td>
+                  <td>{{ formatDate(s.last_activity) }}</td>
+                  <td>{{ s.size || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p class="help" style="margin-top: 10px;">
+            Cleanup removes old session artifacts to reduce storage usage. Active sessions are not affected.
+          </p>
+        </div>
+      </section>
+    </section>
+
+    <!-- Confirm Modal -->
+    <div v-if="confirmModal.open" class="modal-backdrop" role="presentation" @click.self="closeConfirm">
+      <div class="modal" role="dialog" aria-modal="true" :aria-labelledby="'confirm-title'">
+        <div class="modal-head">
+          <h3 id="confirm-title" class="modal-title">{{ confirmModal.title }}</h3>
+        </div>
+        <div class="modal-body">
+          <p class="modal-text">{{ confirmModal.message }}</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary" @click="closeConfirm">Cancel</button>
+          <button
+            class="btn"
+            :class="confirmModal.variant === 'danger' ? 'btn-danger' : 'btn-primary'"
+            @click="confirmModal.onConfirm"
+          >
+            {{ confirmModal.confirmText }}
           </button>
         </div>
-      </div>
-      
-      <div class="data-table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Created</th>
-              <th>Updated</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="u in users" :key="u.id">
-              <td><strong>{{ u.username }}</strong></td>
-              <td>
-                <span class="status-badge" :class="u.role === 'admin' ? 'badge-warning' : 'badge-info'">
-                  {{ u.role }}
-                </span>
-              </td>
-              <td>{{ formatDate(u.created_at) }}</td>
-              <td>{{ formatDate(u.updated_at) }}</td>
-              <td>
-                <span
-                  class="status-badge"
-                  :class="u.is_locked ? 'badge-error' : (u.is_active ? 'badge-success' : 'badge-warning')"
-                >
-                  {{ u.is_locked ? 'Locked' : (u.is_active ? 'Active' : 'Disabled') }}
-                </span>
-              </td>
-              <td>
-                <button class="btn btn-sm btn-secondary" @click="editUser(u)">Edit</button>
-                <button class="btn btn-sm btn-danger" @click="deleteUser(u)">Delete</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- TAB 5: Reset Requests -->
-    <div v-show="activeTab === 5" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">🔑 Password Reset Requests</h3>
-        <p class="card-description">Pending and completed reset token requests</p>
-      </div>
-
-      <div v-if="resetRequests.length === 0" class="alert alert-info">
-        <div class="alert-content">No pending reset requests</div>
-      </div>
-
-      <div v-else class="data-table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Reason</th>
-              <th>Requested At</th>
-              <th>Decided At</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="r in resetRequests" :key="r.id">
-              <td>{{ r.username }}</td>
-              <td>{{ r.reason || '—' }}</td>
-              <td>{{ formatDate(r.created_at) }}</td>
-              <td>{{ formatDate(r.decided_at) }}</td>
-              <td>
-                <span class="status-badge" :class="r.status === 'approved' ? 'badge-success' : (r.status === 'rejected' ? 'badge-error' : 'badge-warning')">
-                  {{ r.status || 'pending' }}
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- TAB 6: Audit Logs -->
-    <div v-show="activeTab === 6" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">📋 Audit Logs</h3>
-        <p class="card-description">Security and authentication events</p>
-      </div>
-
-      <div class="data-table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Username</th>
-              <th>Action</th>
-              <th>Area</th>
-              <th>Message</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="log in auditLogs" :key="log.id">
-              <td>{{ formatDate(log.created_at) }}</td>
-              <td>{{ log.username }}</td>
-              <td>
-                <span class="status-badge" :class="getEventBadgeClass(log.action)">
-                  {{ log.action || '—' }}
-                </span>
-              </td>
-              <td>{{ log.area || '—' }}</td>
-              <td>{{ log.message || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- TAB 7: Ops Logs -->
-    <div v-show="activeTab === 7" class="enterprise-card">
-      <div class="card-header">
-        <h3 class="card-title">⚙️ Operations Logs</h3>
-        <p class="card-description">System operations and conversions</p>
-      </div>
-
-      <div class="data-table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>User</th>
-              <th>Area</th>
-              <th>Action</th>
-              <th>Message</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="log in opsLogs" :key="log.id">
-              <td>{{ formatDate(log.created_at) }}</td>
-              <td>{{ log.username || '—' }}</td>
-              <td>
-                <span class="status-badge badge-info">{{ log.area }}</span>
-              </td>
-              <td><strong>{{ log.action }}</strong></td>
-              <td>{{ log.message }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- TAB 8: Sessions -->
-    <div v-show="activeTab === 8" class="enterprise-card">
-      <div class="card-header">
-        <div style="display:flex; justify-content:space-between; align-items:center">
-          <div>
-            <h3 class="card-title">💾 Active Sessions</h3>
-            <p class="card-description">User session management</p>
-          </div>
-          <button class="btn btn-danger btn-sm" @click="cleanupSessions">
-            Cleanup Old Sessions
-          </button>
-        </div>
-      </div>
-
-      <div class="data-table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Session ID</th>
-              <th>Username</th>
-              <th>Created</th>
-              <th>Last Activity</th>
-              <th>Size</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="session in sessions" :key="session.session_id">
-              <td><code>{{ session.session_id.substring(0, 12) }}...</code></td>
-              <td>{{ session.username }}</td>
-              <td>{{ formatDate(session.created_at) }}</td>
-              <td>{{ formatDate(session.last_activity) }}</td>
-              <td>{{ session.size || '—' }}</td>
-            </tr>
-          </tbody>
-        </table>
       </div>
     </div>
   </div>
@@ -498,82 +940,172 @@ import { useAuthStore } from '@/stores/authStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useRouter } from 'vue-router'
 import AIAgentChat from '@/components/admin/AIAgentChat.vue'
-import api from '@/utils/api'
+import api, { longApi } from '@/utils/api'
 import { format } from 'date-fns'
 
 const auth = useAuthStore()
 const toast = useToastStore()
 const router = useRouter()
-const activeTab = ref(0)
 
+/** Tabs */
 const tabs = [
-  'AI Agent',
-  'AI Indexing Config',
-  'Add User',
-  'Manage User',
-  'All Users',
-  'Reset Requests',
-  'Audit Logs',
-  'Ops Logs',
-  'Sessions'
+  { key: 'ai-agent', label: 'AI Assistant', icon: '✨' },
+  { key: 'ai-indexing', label: 'AI Indexing', icon: '🧠' },
+  { key: 'add-user', label: 'Create user', icon: '➕' },
+  { key: 'manage-user', label: 'Manage user', icon: '⚙️' },
+  { key: 'all-users', label: 'All users', icon: '👥' },
+  { key: 'reset-requests', label: 'Reset requests', icon: '🔑' },
+  { key: 'audit', label: 'Audit logs', icon: '🧾' },
+  { key: 'ops', label: 'Operations', icon: '📦' },
+  { key: 'conv-exclusions', label: 'Conversion Exclusions', icon: '🚫' },
+  { key: 'sessions', label: 'Sessions', icon: '💾' }
 ]
 
+const activeTab = ref(0)
+function setTab(idx) { activeTab.value = idx }
+function setTabByKey(key) {
+  const idx = tabs.findIndex(t => t.key === key)
+  if (idx >= 0) activeTab.value = idx
+}
+function onTabKeydown(e, idx) {
+  const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
+  if (!keys.includes(e.key)) return
+  e.preventDefault()
+  if (e.key === 'Home') return setTab(0)
+  if (e.key === 'End') return setTab(tabs.length - 1)
+  const dir = e.key === 'ArrowRight' ? 1 : -1
+  const next = (idx + dir + tabs.length) % tabs.length
+  setTab(next)
+}
+
+/** Data */
 const stats = reactive({ totalUsers: 0, admins: 0, regular: 0 })
 const users = ref([])
 const selectedUserId = ref('')
 const selectedUser = ref(null)
+
 const newUser = reactive({ username: '', role: 'user', tokenTTL: 60, note: '' })
 const creating = ref(false)
 const createdToken = ref(null)
+
 const updateRole = reactive({ newRole: 'user' })
 const resetToken = ref(null)
+
 const resetRequests = ref([])
 const auditLogs = ref([])
 const opsLogs = ref([])
 const sessions = ref([])
+const refreshing = ref(false)
 
+/** User header initials */
 const userInitials = computed(() => {
-  if (!auth.user?.username) return 'A'
-  return auth.user.username.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
+  const name = auth.user?.username || 'Admin'
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .map(s => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
 })
 
-// AI Embedding Configuration
+/** Filters (All Users tab) */
+const userSearch = ref('')
+const roleFilter = ref('')
+const statusFilter = ref('')
+
+const filteredUsers = computed(() => {
+  const q = userSearch.value.trim().toLowerCase()
+  return (users.value || [])
+    .filter(u => (!q ? true : (u.username || '').toLowerCase().includes(q)))
+    .filter(u => (!roleFilter.value ? true : u.role === roleFilter.value))
+    .filter(u => {
+      if (!statusFilter.value) return true
+      if (statusFilter.value === 'locked') return !!u.is_locked
+      if (statusFilter.value === 'active') return !u.is_locked && !!u.is_active
+      if (statusFilter.value === 'disabled') return !u.is_locked && !u.is_active
+      return true
+    })
+})
+
+/** AI Indexing Config */
 const availableGroupsList = ref([])
 const autoEmbeddedGroups = ref([])
+const autoEmbedEnabled = ref(true)
 const selectedLeftGroups = ref([])
 const selectedRightGroups = ref([])
 const newGroup = ref('')
 const saving = ref(false)
 const configStatus = ref(null)
+const aiConfigLoading = ref(false)
+
+const availableSearch = ref('')
+const enabledSearch = ref('')
+
+const filteredAvailableGroups = computed(() => {
+  const q = availableSearch.value.trim().toUpperCase()
+  const list = availableGroupsList.value || []
+  return !q ? list : list.filter(x => x.includes(q))
+})
+const filteredEnabledGroups = computed(() => {
+  const q = enabledSearch.value.trim().toUpperCase()
+  const list = autoEmbeddedGroups.value || []
+  return !q ? list : list.filter(x => x.includes(q))
+})
 
 function addGroup() {
   if (!newGroup.value) return
   const val = newGroup.value.toUpperCase().trim()
+  if (!val) return
   if (!availableGroupsList.value.includes(val) && !autoEmbeddedGroups.value.includes(val)) {
-    availableGroupsList.value.push(val)
+    availableGroupsList.value = [...availableGroupsList.value, val].sort()
   }
   newGroup.value = ''
 }
-
-function formatDate(d) {
-  if (!d) return '—'
-  try {
-    return format(new Date(d), 'MMM dd, yyyy HH:mm')
-  } catch {
-    return d
-  }
+function moveToRight() {
+  if (!selectedLeftGroups.value.length) return
+  autoEmbeddedGroups.value = [...new Set([...autoEmbeddedGroups.value, ...selectedLeftGroups.value])].sort()
+  availableGroupsList.value = availableGroupsList.value.filter(g => !selectedLeftGroups.value.includes(g))
+  selectedLeftGroups.value = []
+}
+function moveToLeft() {
+  if (!selectedRightGroups.value.length) return
+  availableGroupsList.value = [...new Set([...availableGroupsList.value, ...selectedRightGroups.value])].sort()
+  autoEmbeddedGroups.value = autoEmbeddedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
+  selectedRightGroups.value = []
 }
 
+/** Formatting */
+function formatDate(d) {
+  if (!d) return '—'
+  try { return format(new Date(d), 'MMM dd, yyyy HH:mm') } catch { return String(d) }
+}
+function shortId(id) {
+  if (!id) return '—'
+  return id.length > 12 ? `${id.slice(0, 12)}…` : id
+}
 function getEventBadgeClass(action) {
   const lower = (action || '').toLowerCase()
   if (lower.includes('login') && lower.includes('success')) return 'badge-success'
-  if (lower.includes('login') && lower.includes('fail')) return 'badge-error'
+  if (lower.includes('login') && (lower.includes('fail') || lower.includes('failed'))) return 'badge-error'
   if (lower.includes('logout')) return 'badge-info'
   if (lower.includes('delete') || lower.includes('lock') || lower.includes('error')) return 'badge-error'
   return 'badge-warning'
 }
 
+/** Clipboard */
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success('Copied to clipboard')
+  } catch {
+    toast.error('Copy failed. Please copy manually.')
+  }
+}
+
+/** Refresh */
 async function refresh() {
+  refreshing.value = true
   try {
     const [statsRes, usersRes, resetRes, auditRes, opsRes, sessionsRes] = await Promise.all([
       api.get('/admin/stats'),
@@ -583,8 +1115,8 @@ async function refresh() {
       api.get('/admin/ops-logs'),
       api.get('/admin/sessions')
     ])
-    
-    Object.assign(stats, statsRes.data)
+
+    Object.assign(stats, statsRes.data || {})
     users.value = usersRes.data || []
     resetRequests.value = resetRes.data || []
     auditLogs.value = auditRes.data || []
@@ -592,21 +1124,27 @@ async function refresh() {
     sessions.value = sessionsRes.data || []
   } catch (e) {
     console.error('Failed to refresh admin data:', e)
+    toast.error('Failed to refresh admin data')
+  } finally {
+    refreshing.value = false
   }
 }
 
+/** User detail */
 async function loadUserDetails() {
+  resetToken.value = null
+  selectedUser.value = null
   if (!selectedUserId.value) return
   try {
     const res = await api.get(`/admin/users/${selectedUserId.value}`)
     selectedUser.value = res.data
     updateRole.newRole = res.data.role
-    resetToken.value = null
-  } catch (e) {
+  } catch {
     toast.error('Failed to load user details')
   }
 }
 
+/** Create user */
 async function createUser() {
   creating.value = true
   createdToken.value = null
@@ -623,204 +1161,775 @@ async function createUser() {
   }
 }
 
+/** Update role */
 async function updateUserRole() {
+  if (!selectedUserId.value) return
   try {
     await api.put(`/admin/users/${selectedUserId.value}/role`, { role: updateRole.newRole })
-    toast.success('Role updated successfully')
+    toast.success('Role updated')
     await loadUserDetails()
     await refresh()
-  } catch (e) {
+  } catch {
     toast.error('Failed to update role')
   }
 }
 
+/** Reset token */
 async function generateResetToken() {
+  if (!selectedUserId.value) return
   try {
     const res = await api.post(`/admin/users/${selectedUserId.value}/reset-token`)
     resetToken.value = res.data.token
     toast.success('Reset token generated')
-  } catch (e) {
+  } catch {
     toast.error('Failed to generate token')
   }
 }
 
+/** Unlock */
 async function unlockAccount() {
+  if (!selectedUserId.value) return
   try {
     await api.post(`/admin/users/${selectedUserId.value}/unlock`)
     toast.success('Account unlocked')
     await loadUserDetails()
-  } catch (e) {
+    await refresh()
+  } catch {
     toast.error('Failed to unlock account')
   }
 }
 
-async function confirmDelete() {
-  if (!confirm(`⚠️ Delete user "${selectedUser.value?.username}"? This action cannot be undone.`)) return
+/** Delete */
+async function deleteSelectedUser() {
+  if (!selectedUserId.value) return
   try {
     await api.delete(`/admin/users/${selectedUserId.value}`)
     toast.success('User deleted')
     selectedUserId.value = ''
     selectedUser.value = null
     await refresh()
-  } catch (e) {
+  } catch {
     toast.error('Failed to delete user')
   }
 }
-
+async function deleteUserById(id, username) {
+  try {
+    await api.delete(`/admin/users/${id}`)
+    toast.success(`User ${username} deleted`)
+    await refresh()
+  } catch {
+    toast.error('Failed to delete user')
+  }
+}
 function editUser(u) {
   selectedUserId.value = u.id
-  activeTab.value = 3
+  setTabByKey('manage-user')
   loadUserDetails()
 }
 
-async function deleteUser(u) {
-  if (!confirm(`⚠️ Delete user "${u.username}"?`)) return
-  try {
-    await api.delete(`/admin/users/${u.id}`)
-    toast.success(`User ${u.username} deleted`)
-    await refresh()
-  } catch (e) {
-    toast.error('Failed to delete user')
-  }
-}
-
+/** Sessions cleanup */
 async function cleanupSessions() {
-  if (!confirm('Clean up sessions older than 24 hours?')) return
   try {
     await api.post('/admin/sessions/cleanup')
     toast.success('Cleanup complete')
     await refresh()
-  } catch (e) {
+  } catch {
     toast.error('Cleanup failed')
   }
 }
 
-// AI Embedding Configuration Functions
-function moveToRight() {
-  autoEmbeddedGroups.value.push(...selectedLeftGroups.value)
-  autoEmbeddedGroups.value = [...new Set(autoEmbeddedGroups.value)]
-  availableGroupsList.value = availableGroupsList.value.filter(g => !selectedLeftGroups.value.includes(g))
-  selectedLeftGroups.value = []
+/** AI config persistence */
+async function reloadAIConfig() {
+  aiConfigLoading.value = true
+  try {
+    const res = await api.get('/admin/ai-indexing-config')
+    autoEmbeddedGroups.value = (res.data.auto_embedded_groups || []).map(x => String(x).toUpperCase())
+    const autoEmbedRaw = res?.data?.auto_embed_enabled ?? res?.data?.enable_auto_embedding
+    autoEmbedEnabled.value = autoEmbedRaw === undefined ? true : !!autoEmbedRaw
+    const defaults = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER']
+    availableGroupsList.value = defaults.filter(g => !autoEmbeddedGroups.value.includes(g)).sort()
+  } catch (e) {
+    console.error('Failed to load AI config', e)
+    toast.error('Failed to load AI configuration')
+    availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER'].sort()
+    autoEmbedEnabled.value = true
+  } finally {
+    aiConfigLoading.value = false
+  }
 }
-
-function moveToLeft() {
-  availableGroupsList.value.push(...selectedRightGroups.value)
-  availableGroupsList.value = [...new Set(availableGroupsList.value)]
-  autoEmbeddedGroups.value = autoEmbeddedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
-  selectedRightGroups.value = []
-}
-
 async function saveEmbeddingConfig() {
   saving.value = true
   configStatus.value = null
   try {
     await api.post('/admin/ai-indexing-config', {
+      auto_embed_enabled: autoEmbedEnabled.value,
       auto_embedded_groups: autoEmbeddedGroups.value
     })
-    configStatus.value = {
-      type: 'success',
-      message: '✅ Configuration saved successfully'
-    }
-    setTimeout(() => {
-      configStatus.value = null
-    }, 3000)
+    configStatus.value = { type: 'success', message: 'Configuration saved successfully.' }
+    setTimeout(() => (configStatus.value = null), 3000)
+    toast.success('Configuration saved')
   } catch (e) {
     configStatus.value = {
       type: 'error',
-      message: '❌ Failed to save configuration: ' + (e.response?.data?.detail || e.message)
+      message: 'Failed to save configuration: ' + (e.response?.data?.detail || e.message)
     }
   } finally {
     saving.value = false
   }
 }
 
+/** -----------------------------
+ * Conversion Exclusions tab
+ * ------------------------------ */
+const excl = reactive({
+  sessionId: '',
+  meta: null,
+  files: [],
+  excluded: [],
+  loading: false,
+  saving: false,
+  error: '',
+  search: '',
+  filterGroup: '',
+  filterType: '',
+  groupList: []
+})
+
+const filteredExclFiles = computed(() => {
+  const list = excl.files || []
+  const q = (excl.search || '').trim().toLowerCase()
+  const g = (excl.filterGroup || '').trim()
+  const t = (excl.filterType || '').trim().toLowerCase()
+
+  return list.filter(f => {
+    const name = (f.filename || '').toLowerCase()
+    const lp = (f.logical_path || f.path || '').toLowerCase()
+    const grp = (f.group || '').trim()
+    const typ = (f.file_type || '').toLowerCase()
+    if (g && grp !== g) return false
+    if (t && typ !== t) return false
+    if (q && !(name.includes(q) || lp.includes(q))) return false
+    return true
+  })
+})
+
+const groupListFromFiles = computed(() => {
+  const set = new Set()
+  for (const f of excl.files || []) if (f?.group) set.add(String(f.group))
+  return Array.from(set).sort()
+})
+
+function onExclSessionChange() {
+  excl.error = ''
+  excl.meta = null
+  excl.files = []
+  excl.excluded = []
+  excl.search = ''
+  excl.filterGroup = ''
+  excl.filterType = ''
+  excl.groupList = []
+}
+
+function fileLogicalPath(f) {
+  return (f?.logical_path || f?.path || '').trim()
+}
+function isExcluded(f) {
+  const lp = fileLogicalPath(f)
+  return lp ? excl.excluded.includes(lp) : false
+}
+function toggleExcluded(f) {
+  const lp = fileLogicalPath(f)
+  if (!lp) return
+  const idx = excl.excluded.indexOf(lp)
+  if (idx >= 0) excl.excluded.splice(idx, 1)
+  else excl.excluded.push(lp)
+}
+function clearExclusionsLocal() {
+  excl.excluded = []
+}
+function excludeFiltered() {
+  const toAdd = []
+  for (const f of filteredExclFiles.value) {
+    const lp = fileLogicalPath(f)
+    if (lp && !excl.excluded.includes(lp)) toAdd.push(lp)
+  }
+  excl.excluded = [...new Set([...excl.excluded, ...toAdd])]
+}
+
+async function loadExclSession() {
+  if (!excl.sessionId) return
+  excl.loading = true
+  excl.error = ''
+  try {
+    const metaRes = await longApi.get(`/files/session/${excl.sessionId}`, { timeout: 5 * 60 * 1000 })
+    excl.meta = metaRes.data || {}
+
+    excl.files = (excl.meta.scanned_files || excl.meta.xml_files || []).map(f => ({
+      ...f,
+      logical_path: f.logical_path || '',
+      file_type: f.file_type || 'file',
+      group: f.group || 'EXTRAS'
+    }))
+
+    excl.groupList = groupListFromFiles.value
+    await reloadExclusions()
+    toast.success('Session loaded')
+  } catch (e) {
+    const msg = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load session'
+    excl.error = String(e?.response?.status) === '403'
+      ? 'Not authorized to manage exclusions for this session (ownership enforced).'
+      : msg
+  } finally {
+    excl.loading = false
+  }
+}
+
+async function reloadExclusions() {
+  if (!excl.sessionId) return
+  excl.loading = true
+  excl.error = ''
+  try {
+    const res = await api.get(`/conversion/exclusions/${excl.sessionId}`)
+    excl.excluded = (res.data?.excluded || []).map(x => String(x))
+  } catch (e) {
+    excl.error = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load exclusions'
+  } finally {
+    excl.loading = false
+  }
+}
+
+async function saveExclusions() {
+  if (!excl.sessionId) return
+  excl.saving = true
+  excl.error = ''
+  try {
+    const fd = new FormData()
+    ;(excl.excluded || []).forEach(x => fd.append('excluded', x))
+    await longApi.post(`/conversion/exclusions/${excl.sessionId}`, fd, { timeout: 2 * 60 * 1000 })
+    toast.success(`Saved exclusions (${excl.excluded.length})`)
+  } catch (e) {
+    const msg = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to save exclusions'
+    excl.error = String(e?.response?.status) === '403'
+      ? 'Not authorized to save exclusions for this session (ownership enforced).'
+      : msg
+  } finally {
+    excl.saving = false
+  }
+}
+
+/** Confirm modal */
+const confirmModal = reactive({
+  open: false,
+  title: '',
+  message: '',
+  confirmText: 'Confirm',
+  variant: 'primary',
+  onConfirm: () => {}
+})
+
+function openConfirm(type, payload = null) {
+  if (type === 'deleteUser') {
+    confirmModal.open = true
+    confirmModal.title = 'Delete user'
+    confirmModal.message =
+      `This will permanently delete "${selectedUser.value?.username || 'this user'}". This action cannot be undone.`
+    confirmModal.confirmText = 'Delete'
+    confirmModal.variant = 'danger'
+    confirmModal.onConfirm = async () => {
+      closeConfirm()
+      await deleteSelectedUser()
+    }
+    return
+  }
+
+  if (type === 'deleteSpecific' && payload) {
+    confirmModal.open = true
+    confirmModal.title = 'Delete user'
+    confirmModal.message = `This will permanently delete "${payload.username}". This action cannot be undone.`
+    confirmModal.confirmText = 'Delete'
+    confirmModal.variant = 'danger'
+    confirmModal.onConfirm = async () => {
+      closeConfirm()
+      await deleteUserById(payload.id, payload.username)
+    }
+    return
+  }
+
+  if (type === 'cleanupSessions') {
+    confirmModal.open = true
+    confirmModal.title = 'Cleanup old sessions'
+    confirmModal.message = 'This removes old session artifacts to reduce storage usage. Continue?'
+    confirmModal.confirmText = 'Cleanup'
+    confirmModal.variant = 'danger'
+    confirmModal.onConfirm = async () => {
+      closeConfirm()
+      await cleanupSessions()
+    }
+  }
+}
+function closeConfirm() {
+  confirmModal.open = false
+}
+
 onMounted(async () => {
   await refresh()
-  
-  // Load AI Config
-  try {
-    const res = await api.get('/admin/ai-indexing-config')
-    if (res.data.auto_embedded_groups) {
-      autoEmbeddedGroups.value = res.data.auto_embedded_groups
-      // Remove auto-embedded from available to avoid duplicates
-      availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER']
-        .filter(g => !autoEmbeddedGroups.value.includes(g))
-    }
-  } catch (e) {
-    console.error("Failed to load AI config", e)
-    availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT']
-  }
+  await reloadAIConfig()
 })
 </script>
 
 <style scoped>
-.group-selector-box {
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: var(--space-md);
-  background: var(--surface-alt);
-  min-height: 200px;
+/* -------------------------------------------------------
+   Enterprise Admin Console Styling
+------------------------------------------------------- */
+
+.admin-shell {
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
-.box-title {
-  margin: 0 0 var(--space-md) 0;
-  font-size: 0.95rem;
-  font-weight: 600;
+/* Header */
+.admin-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-sm);
+}
+
+.header-left { max-width: 70ch; }
+.page-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: var(--text-heading, var(--text-primary));
+}
+.page-subtitle {
+  margin: 6px 0 0 0;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.header-right {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-elevated);
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  background: var(--brand-subtle, rgba(99, 102, 241, 0.12));
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+}
+
+.user-meta { display: flex; flex-direction: column; gap: 2px; }
+.user-name { font-weight: 850; color: var(--text-primary); font-size: 0.9rem; }
+.user-role { font-size: 0.8rem; color: var(--text-tertiary); }
+
+.header-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* Metrics */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 12px;
+}
+@media (max-width: 980px) { .metrics { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .metrics { grid-template-columns: 1fr; } }
+
+.metric-card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+.metric-soft { background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated)); }
+.metric-value { font-size: 1.4rem; font-weight: 950; color: var(--text-heading, var(--text-primary)); }
+.metric-label { margin-top: 4px; font-size: 0.88rem; color: var(--text-secondary); }
+
+/* Tabs */
+.tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.tab:hover { border-color: var(--brand-primary); background: var(--surface-hover); color: var(--text-primary); }
+.tab.active {
+  border-color: var(--brand-primary);
+  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+}
+.tab:focus-visible { outline: 2px solid var(--brand-primary); outline-offset: 2px; }
+.tab-icon { opacity: 0.95; }
+.tab-label { font-weight: 800; }
+
+/* Panels */
+.panel-stack { display: flex; flex-direction: column; gap: 14px; }
+.card {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+}
+.card-title { margin: 0; font-size: 1.05rem; font-weight: 950; color: var(--text-heading, var(--text-primary)); }
+.card-subtitle { margin: 6px 0 0 0; color: var(--text-secondary); font-size: 0.92rem; line-height: 1.35; }
+.card-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.card-body { padding: 14px 16px 16px 16px; }
+
+/* Info banner */
+.info-banner {
+  border: 1px solid var(--border-light);
+  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.info-title { font-weight: 950; color: var(--text-primary); }
+.info-text { margin-top: 6px; color: var(--text-secondary); font-size: 0.9rem; line-height: 1.35; }
+
+/* Dual selector */
+.dual-selector { display: grid; grid-template-columns: 1fr 160px 1fr; gap: 12px; align-items: start; }
+@media (max-width: 980px) { .dual-selector { grid-template-columns: 1fr; } }
+
+.selector {
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: var(--surface-base);
+  padding: 12px;
+}
+.selector-head { margin-bottom: 10px; }
+.selector-title { margin: 0; font-size: 0.95rem; font-weight: 950; }
+.selector-subtitle { margin: 4px 0 0 0; color: var(--text-tertiary); font-size: 0.85rem; }
+.selector-tools, .selector-add { display: flex; gap: 8px; margin-bottom: 10px; }
+.selector-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; padding-right: 4px; }
+
+.summary-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.summary-pill {
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+}
+
+.summary-pill.summary-on {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.10);
+  color: var(--success, #2e7d32);
+}
+
+.summary-pill.summary-off {
+  border-color: rgba(234, 179, 8, 0.35);
+  background: rgba(234, 179, 8, 0.10);
+  color: #a16207;
+}
+
+.config-top-row {
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: var(--surface-base);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 900;
   color: var(--text-primary);
 }
 
-.group-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.group-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color 0.2s;
-  font-size: 0.9rem;
-}
-
-.group-item:hover {
-  background-color: var(--surface-base);
-}
-
-.group-item input[type="checkbox"] {
-  cursor: pointer;
+.toggle-inline input {
   width: 18px;
   height: 18px;
+  accent-color: var(--brand-primary);
 }
 
-.button-column {
+.selector-hint {
+  margin: 2px 0 0 0;
+  text-align: center;
+}
+
+.check-row {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-elevated);
+  cursor: pointer;
 }
+.check-row:hover { background: var(--surface-hover); }
+.check-row input { width: 18px; height: 18px; accent-color: var(--brand-primary); }
+.check-label { font-weight: 800; color: var(--text-primary); font-size: 0.9rem; }
+.selector-controls { display: flex; flex-direction: column; gap: 10px; justify-content: center; }
 
-.button-column .btn {
+/* Forms */
+.form { margin: 0; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+@media (max-width: 980px) { .form-grid { grid-template-columns: 1fr; } }
+.field { background: var(--surface-base); border: 1px solid var(--border-light); border-radius: 14px; padding: 12px; }
+.field-full { grid-column: 1 / -1; }
+.label { display: block; font-weight: 950; color: var(--text-primary); font-size: 0.9rem; margin-bottom: 8px; }
+.help { margin: 8px 0 0 0; color: var(--text-tertiary); font-size: 0.85rem; line-height: 1.3; }
+.input, .select, .textarea {
   width: 100%;
-  padding: 8px;
-  font-weight: 600;
-  font-size: 1.1rem;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-medium);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+}
+.input:focus-visible, .select:focus-visible, .textarea:focus-visible { outline: 2px solid var(--brand-primary); outline-offset: 2px; }
+
+/* Action rows */
+.action-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.muted { color: var(--text-tertiary); font-size: 0.88rem; }
+
+/* Token cards */
+.token-card { margin-top: 14px; border: 1px solid var(--border-light); border-radius: 14px; background: var(--surface-base); padding: 12px; }
+.token-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.token-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.token-value { margin-top: 10px; padding: 12px; border-radius: 12px; border: 1px solid var(--border-light); background: var(--surface-elevated); overflow: auto; font-size: 0.85rem; }
+
+/* Manage layout */
+.manage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+@media (max-width: 980px) { .manage-grid { grid-template-columns: 1fr; } }
+.subcard { border: 1px solid var(--border-light); border-radius: 14px; background: var(--surface-base); padding: 12px; }
+.subcard-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+.subcard-title { margin: 0; font-weight: 950; font-size: 0.98rem; }
+.subcard-subtitle { margin: 4px 0 0 0; color: var(--text-tertiary); font-size: 0.85rem; }
+.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.info-item { border: 1px solid var(--border-light); border-radius: 12px; padding: 10px; background: var(--surface-elevated); }
+.info-k { font-size: 0.8rem; color: var(--text-tertiary); }
+.info-v { margin-top: 4px; font-weight: 900; color: var(--text-primary); }
+
+/* Action blocks */
+.action-block { padding: 10px; border-radius: 12px; border: 1px solid var(--border-light); background: var(--surface-elevated); }
+.action-block + .action-block { margin-top: 10px; }
+.action-block-title { font-weight: 950; margin-bottom: 8px; }
+.action-inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.action-block.warn { border-color: rgba(234, 179, 8, 0.35); }
+.action-block.danger { border-color: rgba(239, 68, 68, 0.45); }
+
+/* Alerts */
+.alert { margin-top: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border-light); background: var(--surface-elevated); }
+.alert-success { border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.10); color: var(--success, #2e7d32); }
+.alert-error { border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.10); color: var(--error, #c62828); }
+
+/* Tables */
+.table-tools { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+@media (max-width: 980px) { .table-tools { grid-template-columns: 1fr; } }
+.tool-label { display: block; font-weight: 900; font-size: 0.85rem; margin-bottom: 6px; color: var(--text-primary); }
+.table-wrap { border: 1px solid var(--border-light); border-radius: 14px; overflow: auto; background: var(--surface-base); }
+.table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.table thead th { position: sticky; top: 0; background: var(--surface-elevated); text-align: left; padding: 12px; border-bottom: 1px solid var(--border-light); font-weight: 950; color: var(--text-primary); }
+.table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border-light); color: var(--text-secondary); }
+.table tbody tr:nth-child(even) { background: var(--surface-hover); }
+.col-actions { width: 180px; white-space: nowrap; }
+.strong { font-weight: 900; color: var(--text-primary); }
+.truncate { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code { padding: 3px 6px; border-radius: 8px; border: 1px solid var(--border-light); background: var(--surface-elevated); }
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  font-size: 0.82rem;
+  font-weight: 900;
+  background: var(--surface-elevated);
+}
+.badge-success { color: var(--success, #2e7d32); border-color: rgba(34, 197, 94, 0.35); }
+.badge-warning { color: #a16207; border-color: rgba(234, 179, 8, 0.35); }
+.badge-error { color: var(--error, #c62828); border-color: rgba(239, 68, 68, 0.35); }
+.badge-info { color: #1d4ed8; border-color: rgba(59, 130, 246, 0.35); }
+
+/* Empty states */
+.empty-state { border: 1px dashed var(--border-medium); border-radius: 14px; padding: 16px; background: var(--surface-base); text-align: center; }
+.empty-title { font-weight: 950; color: var(--text-primary); }
+.empty-text { margin-top: 6px; color: var(--text-tertiary); font-size: 0.9rem; }
+.empty-small { padding: 10px; color: var(--text-tertiary); font-size: 0.88rem; }
+
+/* Divider */
+.divider { height: 1px; background: var(--border-light); margin: 12px 0; }
+
+/* Buttons */
+.btn {
+  border-radius: 12px;
+  border: 1px solid var(--border-medium);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 900;
+  transition: background 0.15s ease, border-color 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.btn:hover:not(:disabled) { background: var(--surface-hover); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-sm { padding: 8px 10px; font-size: 0.85rem; border-radius: 10px; }
+
+.btn-primary { background: var(--brand-primary); border-color: var(--brand-primary); color: #0b0b0b; }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: var(--shadow-sm); }
+
+.btn-secondary { background: var(--surface-elevated); border-color: var(--border-light); }
+.btn-success { background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.35); color: var(--success, #2e7d32); }
+.btn-danger { background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.45); color: var(--error, #c62828); }
+
+/* Spinner */
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.42);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 999;
+}
+.modal {
+  width: min(560px, 100%);
+  border-radius: 16px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.modal-head { padding: 14px 16px; border-bottom: 1px solid var(--border-light); }
+.modal-title { margin: 0; font-weight: 950; font-size: 1.05rem; }
+.modal-body { padding: 14px 16px; }
+.modal-text { margin: 0; color: var(--text-secondary); line-height: 1.4; }
+.modal-actions { padding: 14px 16px; border-top: 1px solid var(--border-light); display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+
+/* -------------------------------------------------------
+   ✅ Conversion Exclusions UI additions
+------------------------------------------------------- */
+.excl-summary {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  margin-bottom: 12px;
+}
+.excl-pill {
+  min-width: 160px;
+  border-radius: 14px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+  padding: 10px 12px;
+}
+.excl-pill .k { font-size: 0.8rem; color: var(--text-tertiary); }
+.excl-pill .v { margin-top: 2px; font-weight: 950; font-size: 1.05rem; color: var(--text-primary); }
+
+.excl-controls {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 980px) { .excl-controls { grid-template-columns: 1fr; } }
+
+.excl-actions-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 12px;
+  margin-bottom: 10px;
 }
 
-.alert-success {
-  background-color: #dcfce7;
-  border-left: 4px solid var(--success);
-  color: var(--success);
+.excl-list-wrap {
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-base);
 }
-
-.alert-error {
-  background-color: #fee2e2;
-  border-left: 4px solid var(--error);
-  color: var(--error);
+.excl-list-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--surface-elevated);
 }
+.excl-list { max-height: 420px; overflow: auto; }
+.excl-row {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+}
+.excl-row:hover { background: var(--surface-hover); }
+.excl-row:last-child { border-bottom: none; }
+.excl-check { margin-top: 3px; width: 18px; height: 18px; accent-color: var(--brand-primary); }
+.excl-name { font-weight: 950; color: var(--text-primary); }
+.excl-meta { margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 </style>

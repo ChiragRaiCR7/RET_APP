@@ -1,13 +1,20 @@
-/* Additional CSS for Enhanced RAG Inspector & Charts */
+/* =========================================================
+   AI Chat Enhanced — RAG Inspector & Retrieval Styles
+   
+   These styles complement the scoped component styles in
+   AIPanel.vue, ChartRenderer.vue, DataTable.vue, and
+   MessageRenderer.vue. Only inspector-specific and global
+   overrides belong here.
+   ========================================================= */
 
-/* RAG Inspector - New Styles */
+/* ── RAG Inspector Panel ── */
 .inspector-panel {
-  background: var(--bg-elevated, #2a2a3e);
-  border: 1px solid var(--border-color, #3a3a4e);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius-lg, 12px);
   margin: var(--space-md, 16px);
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-sm);
 }
 
 .inspector-header {
@@ -15,8 +22,8 @@
   justify-content: space-between;
   align-items: center;
   padding: var(--space-md, 16px);
-  background: var(--bg-panel, #1a1a2e);
-  border-bottom: 2px solid #FFC000;
+  background: var(--surface-active);
+  border-bottom: 2px solid var(--brand-primary);
 }
 
 .inspector-title {
@@ -31,56 +38,57 @@
 
 .inspector-title h4 {
   margin: 0;
-  color: var(--text-primary, #fff);
+  color: var(--text-heading);
   font-size: 1.1rem;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .source-count {
   padding: 0.25rem 0.75rem;
-  background: rgba(255, 192, 0, 0.15);
-  border: 1px solid rgba(255, 192, 0, 0.3);
+  background: rgba(255, 192, 0, 0.12);
+  border: 1px solid rgba(255, 192, 0, 0.25);
   border-radius: 12px;
   font-size: 0.85rem;
-  color: #FFC000;
+  color: var(--brand-primary);
   font-weight: 600;
 }
 
 .toggle-inspector-btn {
   padding: 0.5rem 1rem;
-  background: var(--bg-button, #3a3a4e);
-  border: 1px solid var(--border-color, #4a4a5e);
+  background: var(--surface-base);
+  border: 1px solid var(--border-medium);
   border-radius: 6px;
-  color: var(--text-primary, #fff);
+  color: var(--text-body);
   font-size: 0.85rem;
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .toggle-inspector-btn:hover {
-  background: var(--bg-button-hover, #4a4a5e);
-  border-color: #FFC000;
+  background: var(--surface-hover);
+  border-color: var(--brand-primary);
   transform: translateY(-1px);
 }
 
+/* ── Source Cards Grid ── */
 .sources-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-md, 16px);
 }
 
 .source-card {
-  background: var(--bg-panel, #1a1a2e);
-  border: 1px solid var(--border-color, #3a3a4e);
+  background: var(--surface-base);
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: var(--space-md, 16px);
-  transition: all 0.3s;
+  transition: all 0.25s;
 }
 
 .source-card:hover {
-  border-color: #FFC000;
+  border-color: var(--brand-primary);
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(255, 192, 0, 0.2);
+  box-shadow: var(--shadow-md);
 }
 
 .source-card-header {
@@ -95,20 +103,20 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: linear-gradient(135deg, #FFC000, #FFD700);
-  color: #1a1a2e;
+  width: 26px;
+  height: 26px;
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-light));
+  color: #000;
   border-radius: 50%;
-  font-weight: 700;
-  font-size: 0.85rem;
+  font-weight: 800;
+  font-size: 0.8rem;
 }
 
 .source-filename {
   flex: 1;
-  color: var(--text-primary, #fff);
+  color: var(--text-heading);
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   word-break: break-all;
 }
 
@@ -116,33 +124,34 @@
   display: flex;
   gap: var(--space-xs, 4px);
   margin-bottom: var(--space-sm, 8px);
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
 .meta-label {
-  color: var(--text-secondary, #b0b0b0);
+  color: var(--text-tertiary);
 }
 
 .meta-value {
-  color: #66B5F5;
+  color: var(--chat-link-color, #2563eb);
   font-weight: 600;
 }
 
 .source-snippet {
   margin-top: var(--space-sm, 8px);
   padding: var(--space-sm, 8px);
-  background: var(--bg-code, rgba(255, 192, 0, 0.05));
-  border-left: 3px solid #FFC000;
+  background: var(--surface-overlay);
+  border-left: 3px solid var(--brand-primary);
   border-radius: 4px;
 }
 
 .source-snippet p {
   margin: 0;
-  color: var(--text-secondary, #e0e0e0);
-  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
   line-height: 1.5;
 }
 
+/* ── Retrieval Method Badges ── */
 .source-method {
   margin-top: var(--space-sm, 8px);
   display: flex;
@@ -150,107 +159,33 @@
 }
 
 .method-hybrid {
-  background: rgba(102, 187, 106, 0.15);
-  color: #66BB6A;
-  border: 1px solid rgba(102, 187, 106, 0.3);
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.25);
 }
 
 .method-vector {
-  background: rgba(66, 165, 245, 0.15);
-  color: #42A5F5;
-  border: 1px solid rgba(66, 165, 245, 0.3);
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--info);
+  border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
 .method-lexical {
-  background: rgba(255, 167, 38, 0.15);
-  color: #FFA726;
-  border: 1px solid rgba(255, 167, 38, 0.3);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.25);
 }
 
-/* Enhanced Citation Styles */
-.citation {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25em;
-  padding: 0.2em 0.5em;
-  background: rgba(255, 192, 0, 0.15);
-  border: 1px solid rgba(255, 192, 0, 0.3);
-  border-radius: 12px;
-  font-size: 0.85em;
-  font-weight: 600;
-  color: #FFC000;
-  cursor: pointer;
-  transition: all 0.2s;
-  margin: 0 0.2em;
-}
-
-.citation:hover {
-  background: rgba(255, 192, 0, 0.25);
-  border-color: #FFC000;
-  transform: translateY(-1px);
-}
-
-.citation-icon {
-  font-size: 1.1em;
-}
-
-.citation-num {
-  font-variant-numeric: tabular-nums;
-}
-
+/* ── CSV Reference Badge ── */
 .csv-ref {
   display: inline-flex;
   align-items: center;
-  padding: 0.2em 0.5em;
-  background: rgba(66, 165, 245, 0.15);
-  border: 1px solid rgba(66, 165, 245, 0.3);
+  padding: 0.15em 0.45em;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
   border-radius: 8px;
-  font-size: 0.85em;
+  font-size: 0.82em;
   font-weight: 600;
-  color: #42A5F5;
-  margin: 0 0.2em;
-}
-
-/* Markdown styles for rich text */
-.message-content :deep(h1),
-.message-content :deep(h2),
-.message-content :deep(h3) {
-  color: var(--text-primary, #fff);
-  margin-top: 1.5em;
-  margin-bottom: 0.75em;
-  font-weight: 600;
-}
-
-.message-content :deep(h1) { font-size: 1.75em; border-bottom: 2px solid #FFC000; padding-bottom: 0.3em; }
-.message-content :deep(h2) { font-size: 1.5em; }
-.message-content :deep(h3) { font-size: 1.25em; }
-
-.message-content :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 1.5em 0;
-  border: 1px solid var(--border-color, #3a3a4e);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.message-content :deep(thead) {
-  background: var(--bg-panel, #1a1a2e);
-}
-
-.message-content :deep(th) {
-  padding: 0.75em 1em;
-  text-align: left;
-  font-weight: 600;
-  color: var(--text-primary, #fff);
-  border-bottom: 2px solid #FFC000;
-}
-
-.message-content :deep(td) {
-  padding: 0.75em 1em;
-  border-bottom: 1px solid var(--border-color, #3a3a4e);
-}
-
-.message-content :deep(tr:hover) {
-  background: var(--bg-hover, rgba(255, 192, 0, 0.05));
-}
+  color: var(--info, #3b82f6);
+  margin: 0 0.15em;
+}/* ── End of AI Chat Enhanced styles ── */

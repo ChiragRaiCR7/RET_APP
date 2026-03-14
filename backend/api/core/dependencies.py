@@ -1,58 +1,88 @@
+
+from __future__ import annotations
+
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
-from jose.exceptions import ExpiredSignatureError, JWTClaimsError
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import settings
 from api.core.database import get_db
 from api.core.exceptions import TokenExpiredError, TokenInvalidError
+from api.core.security import verify_token
 from api.models.models import User
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+# ✅ tokenUrl mismatch fix + optional auth support
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_PREFIX}/auth/login",
+    auto_error=False,  # ✅ required for get_optional_user to work correctly
+)
 
 
-def get_current_user(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+def _extract_access_token(request: Request, bearer_token: Optional[str]) -> Optional[str]:
+    """
+    Extract access token using a non-breaking, security-first order:
+
+    1) Prefer access token from HttpOnly cookie if configured (cookie-based auth)
+    2) Fall back to Authorization: Bearer <token> (existing behavior)
+    """
+    cookie_name = getattr(settings, "ACCESS_COOKIE_NAME", None)
+
+    if cookie_name:
+        cookie_token = request.cookies.get(cookie_name)
+        if cookie_token:
+            return cookie_token
+
+    # Fallback to bearer token from OAuth2PasswordBearer
+    return bearer_token
+
+
+async def get_current_user(
+    request: Request,
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     """
     Get the current authenticated user from JWT token.
 
-    Returns a full User object (not just ID) to reduce repeated DB lookups.
-    Validates JWT claims including issuer and audience.
+    - Returns a full User object to reduce repeated DB lookups.
+    - Validates JWT claims including issuer and audience.
+    - Accepts token from HttpOnly access cookie (if enabled) or Bearer header.
     """
     if not settings.JWT_SECRET_KEY:
         raise TokenInvalidError(detail="JWT configuration error")
 
-    try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM],
-            audience=settings.JWT_AUDIENCE,
-            issuer=settings.JWT_ISSUER,
+    actual_token = _extract_access_token(request, token)
+    if not actual_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
         )
 
-        user_id: Optional[str] = payload.get("sub")
-        token_type: Optional[str] = payload.get("type")
+    try:
+        payload = verify_token(actual_token, token_type="access")
 
+        user_id: Optional[str] = payload.get("sub")
         if user_id is None:
             raise TokenInvalidError(detail="Token missing subject claim")
 
-        # Only accept access tokens (not refresh tokens)
-        if token_type != "access":
-            raise TokenInvalidError(detail="Invalid token type")
+    except ValueError as exc:
+        msg = str(exc)
+        if "expired" in msg.lower():
+            raise TokenExpiredError()
+        raise TokenInvalidError(detail=msg)
 
-    except ExpiredSignatureError:
-        raise TokenExpiredError()
-    except JWTClaimsError:
-        raise TokenInvalidError(detail="Invalid token claims")
-    except JWTError:
-        raise TokenInvalidError(detail="Could not validate credentials")
+    # ✅ Async-friendly lookup
+    try:
+        uid = int(user_id)
+    except Exception:
+        raise TokenInvalidError(detail="Invalid subject claim")
 
-    user = db.get(User, int(user_id))
+    res = await db.execute(select(User).where(User.id == uid))
+    user = res.scalar_one_or_none()
 
     if user is None:
         raise TokenInvalidError(detail="User not found")
@@ -69,10 +99,18 @@ def get_current_user(
             detail="User account is locked",
         )
 
+    # Useful for middleware (rate limit keying / logging)
+    request.state.user_id = user.id
+
+    # Patch user_id into the request context for downstream services
+    from api.core.request_context import get_request_context
+    ctx = get_request_context()
+    ctx.user_id = str(user.id)
+
     return user
 
 
-def get_current_user_id(
+async def get_current_user_id(
     current_user: User = Depends(get_current_user),
 ) -> str:
     """
@@ -83,19 +121,21 @@ def get_current_user_id(
     return str(current_user.id)
 
 
-def get_optional_user(
+async def get_optional_user(
+    request: Request,
     token: Optional[str] = Depends(oauth2_scheme),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> Optional[User]:
     """
     Get the current user if authenticated, or None if not.
 
-    Use this for endpoints that work both authenticated and unauthenticated.
+    Uses OAuth2PasswordBearer(auto_error=False) so missing tokens don't raise.
     """
-    if not token:
+    actual_token = _extract_access_token(request, token)
+    if not actual_token:
         return None
 
     try:
-        return get_current_user(token, db)
+        return await get_current_user(request, token, db)
     except HTTPException:
         return None

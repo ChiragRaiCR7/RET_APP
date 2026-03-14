@@ -1,3 +1,4 @@
+
 """
 Storage Service
 Manages session-specific file storage, metadata, and cleanup.
@@ -78,9 +79,9 @@ def save_upload(session_id: str, filename: str, data: bytes) -> Path:
     return p
 
 
-def cleanup_session(session_id: str) -> None:
+async def cleanup_session(session_id: str) -> None:
     """
-    Clean up a session and all its resources.
+    Clean up a session and all its resources (async).
     
     Cleans up:
     - AI indexer resources
@@ -108,15 +109,16 @@ def cleanup_session(session_id: str) -> None:
         logger.debug("No AI index cleanup or failed (continuing)")
 
     try:
-        cache = get_session_cache()
-        cache.clear_pattern(f"session:{session_id}:")
+        cache = await get_session_cache()
+        await cache.clear_pattern(f"session:{session_id}:")
     except Exception:
         logger.debug("Cache cleanup failed (continuing)")
 
     try:
         p = get_session_dir(session_id)
         if p.exists():
-            shutil.rmtree(p, ignore_errors=True)
+            import asyncio
+            await asyncio.to_thread(shutil.rmtree, p, True)
             logger.info("Deleted session directory: %s", p)
     except ValueError:
         logger.debug("Session directory not found: %s", session_id)
@@ -196,15 +198,15 @@ def get_user_sessions(user_id: str) -> List[dict]:
     return sessions
 
 
-def cleanup_user_sessions(user_id: str) -> int:
+async def cleanup_user_sessions(user_id: str) -> int:
     """
-    Clean up all sessions for a user.
+    Clean up all sessions for a user (async).
     
     Returns the number of sessions cleaned up.
     """
     count = 0
     for s in get_user_sessions(user_id):
-        cleanup_session(s["session_id"])
+        await cleanup_session(s["session_id"])
         count += 1
     return count
 

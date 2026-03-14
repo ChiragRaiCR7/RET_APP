@@ -1,3 +1,4 @@
+
 <template>
   <div class="chart-renderer" :class="`chart-type-${chartConfig.type}`">
     <div v-if="chartConfig.title" class="chart-title">
