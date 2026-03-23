@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import Depends, HTTPException, Request, status
@@ -11,8 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.core.config import settings
 from api.core.database import get_db
 from api.core.exceptions import TokenExpiredError, TokenInvalidError
+from api.core.request_context import get_request_context
 from api.core.security import verify_token
 from api.models.models import User
+
+logger = logging.getLogger(__name__)
 
 
 # ✅ tokenUrl mismatch fix + optional auth support
@@ -24,19 +28,26 @@ oauth2_scheme = OAuth2PasswordBearer(
 
 def _extract_access_token(request: Request, bearer_token: Optional[str]) -> Optional[str]:
     """
-    Extract access token using a non-breaking, security-first order:
+    Extract access token in priority order:
 
-    1) Prefer access token from HttpOnly cookie if configured (cookie-based auth)
-    2) Fall back to Authorization: Bearer <token> (existing behavior)
+    1. HttpOnly access cookie (if ``ACCESS_COOKIE_NAME`` is configured).
+    2. ``Authorization: Bearer <token>`` header (OAuth2 standard fallback).
+
+    If a cookie is present but empty/whitespace, a debug log is emitted and
+    the bearer token is tried instead, making auth debugging easier.
     """
     cookie_name = getattr(settings, "ACCESS_COOKIE_NAME", None)
 
     if cookie_name:
         cookie_token = request.cookies.get(cookie_name)
-        if cookie_token:
+        if cookie_token and cookie_token.strip():
             return cookie_token
+        if cookie_token is not None:
+            logger.debug(
+                "Empty access cookie ignored, falling back to bearer token",
+                extra={"extra_fields": {"cookie_name": cookie_name}},
+            )
 
-    # Fallback to bearer token from OAuth2PasswordBearer
     return bearer_token
 
 
@@ -99,11 +110,11 @@ async def get_current_user(
             detail="User account is locked",
         )
 
-    # Useful for middleware (rate limit keying / logging)
+    # Expose user_id on request.state (for rate-limit keying, middleware logging, etc.)
     request.state.user_id = user.id
 
-    # Patch user_id into the request context for downstream services
-    from api.core.request_context import get_request_context
+    # Mirror into RequestContext so service-layer code can read it without
+    # receiving the Request object directly.
     ctx = get_request_context()
     ctx.user_id = str(user.id)
 
@@ -114,9 +125,11 @@ async def get_current_user_id(
     current_user: User = Depends(get_current_user),
 ) -> str:
     """
-    Get just the user ID as a string.
+    Return the current user ID as a string.
 
-    For backward compatibility with code that expects a string user ID.
+    Kept for backward compatibility with code that declared a ``str`` user ID
+    dependency.  In new code prefer ``current_user.id`` directly from
+    ``get_current_user`` to avoid the extra dependency hop.
     """
     return str(current_user.id)
 

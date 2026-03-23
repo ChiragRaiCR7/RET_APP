@@ -178,7 +178,7 @@
               <div class="selector-list" role="group" aria-label="Available groups">
                 <label v-for="g in filteredAvailableGroups" :key="g" class="check-row">
                   <input type="checkbox" :value="g" v-model="selectedLeftGroups" />
-                  <span class="check-label">{{ g }}</span>
+                  <span class="check-label">{{ formatOracleGroupLabel(g) }}</span>
                 </label>
 
                 <div v-if="filteredAvailableGroups.length === 0" class="empty-small">
@@ -230,7 +230,7 @@
               <div class="selector-list" role="group" aria-label="Auto-enabled groups">
                 <label v-for="g in filteredEnabledGroups" :key="g" class="check-row">
                   <input type="checkbox" :value="g" v-model="selectedRightGroups" />
-                  <span class="check-label">{{ g }}</span>
+                  <span class="check-label">{{ formatOracleGroupLabel(g) }}</span>
                 </label>
 
                 <div v-if="filteredEnabledGroups.length === 0" class="empty-small">
@@ -726,130 +726,157 @@
           <div>
             <h3 class="card-title">Conversion exclusions</h3>
             <p class="card-subtitle">
-              Select a session and mark scanned files that should NOT be converted.
-              Exclusions are stored per session and applied during conversion.
+              Exclude groups globally from conversion and AI embedding.
+              Excluded groups are skipped during conversion and cannot be embedded.
             </p>
           </div>
           <div class="card-actions">
-            <button class="btn btn-secondary" @click="loadExclSession" :disabled="!excl.sessionId || excl.loading">
-              <span v-if="excl.loading" class="spinner" aria-hidden="true"></span>
-              {{ excl.loading ? 'Loading…' : 'Load session' }}
+            <button class="btn btn-secondary" @click="reloadAIConfig" :disabled="aiConfigLoading">
+              <span v-if="aiConfigLoading" class="spinner" aria-hidden="true"></span>
+              {{ aiConfigLoading ? 'Loading…' : 'Reload' }}
             </button>
-            <button class="btn btn-primary" @click="saveExclusions" :disabled="!excl.sessionId || excl.saving">
-              <span v-if="excl.saving" class="spinner" aria-hidden="true"></span>
-              {{ excl.saving ? 'Saving…' : 'Save exclusions' }}
+            <button class="btn btn-primary" @click="saveEmbeddingConfig" :disabled="saving">
+              <span v-if="saving" class="spinner" aria-hidden="true"></span>
+              {{ saving ? 'Saving…' : 'Save exclusions' }}
             </button>
           </div>
         </div>
 
         <div class="card-body">
-          <div class="form-grid">
-            <div class="field field-full">
-              <label class="label">Select session</label>
-              <select v-model="excl.sessionId" class="select" @change="onExclSessionChange">
-                <option value="">Select a session…</option>
-                <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
-                  {{ shortId(s.session_id) }} — {{ s.username || '—' }}
-                </option>
-              </select>
-              <p class="help">
-                Tip: If you select a session not owned by this admin user, you may receive “Not authorized”.
+          <div class="summary-strip" role="status" aria-live="polite">
+            <div class="summary-pill">
+              Excluded groups: <strong>{{ excludedGroups.length }}</strong>
+            </div>
+            <div class="summary-pill summary-off">
+              Conversion: <strong>Skipped</strong>
+            </div>
+            <div class="summary-pill summary-off">
+              AI indexing: <strong>Blocked</strong>
+            </div>
+          </div>
+
+          <div class="info-banner" role="note">
+            <div class="info-title">How it works</div>
+            <div class="info-text">
+              Groups moved to <strong>Excluded</strong> are prevented from conversion output and AI embedding.
+              You can also add custom group names and remove them later.
+            </div>
+          </div>
+
+          <div class="dual-selector">
+            <!-- Available -->
+            <div class="selector">
+              <div class="selector-head">
+                <h4 class="selector-title">Available</h4>
+                <p class="selector-subtitle">Groups eligible for conversion/indexing.</p>
+              </div>
+
+              <div class="selector-tools">
+                <input
+                  v-model="availableExclusionSearch"
+                  class="input"
+                  type="text"
+                  placeholder="Search available…"
+                  aria-label="Search available exclusion groups"
+                />
+              </div>
+
+              <div class="selector-add">
+                <input
+                  v-model="newExcludedCandidate"
+                  class="input"
+                  type="text"
+                  placeholder="Add new group (e.g., REPORTS)"
+                  @keyup.enter="addExcludedCandidate"
+                  aria-label="Add new group for exclusions"
+                />
+                <button class="btn btn-secondary btn-sm" @click="addExcludedCandidate" :disabled="!newExcludedCandidate">
+                  Add
+                </button>
+              </div>
+
+              <div class="selector-list" role="group" aria-label="Available groups for exclusion">
+                <label v-for="g in filteredAvailableExclusionGroups" :key="g" class="check-row">
+                  <input type="checkbox" :value="g" v-model="selectedExclusionLeft" />
+                  <span class="check-label">{{ formatOracleGroupLabel(g) }}</span>
+                </label>
+
+                <div v-if="filteredAvailableExclusionGroups.length === 0" class="empty-small">
+                  No groups found.
+                </div>
+              </div>
+            </div>
+
+            <!-- Controls -->
+            <div class="selector-controls" aria-label="Move exclusion controls">
+              <button
+                class="btn btn-primary btn-sm"
+                @click="moveToExcluded"
+                :disabled="!selectedExclusionLeft.length"
+                title="Exclude selected"
+              >
+                Exclude →
+              </button>
+              <button
+                class="btn btn-secondary btn-sm"
+                @click="moveToAvailable"
+                :disabled="!selectedExclusionRight.length"
+                title="Unexclude selected"
+              >
+                ← Remove
+              </button>
+              <p class="muted selector-hint">
+                Excluded groups are skipped in conversion and embedding.
               </p>
             </div>
-          </div>
 
-          <div v-if="excl.error" class="alert alert-error" role="status" aria-live="polite">
-            {{ excl.error }}
-          </div>
+            <!-- Excluded -->
+            <div class="selector">
+              <div class="selector-head">
+                <h4 class="selector-title">Excluded</h4>
+                <p class="selector-subtitle">Blocked from conversion and AI indexing.</p>
+              </div>
 
-          <div v-if="excl.sessionId && excl.meta" class="excl-summary">
-            <div class="excl-pill">
-              <div class="k">Files</div>
-              <div class="v">{{ excl.files.length }}</div>
-            </div>
-            <div class="excl-pill">
-              <div class="k">Groups</div>
-              <div class="v">{{ excl.groupList.length }}</div>
-            </div>
-            <div class="excl-pill">
-              <div class="k">Excluded</div>
-              <div class="v">{{ excl.excluded.length }}</div>
-            </div>
-          </div>
+              <div class="selector-tools">
+                <input
+                  v-model="excludedSearch"
+                  class="input"
+                  type="text"
+                  placeholder="Search excluded…"
+                  aria-label="Search excluded groups"
+                />
+              </div>
 
-          <div v-if="excl.sessionId && excl.meta" class="excl-controls">
-            <div class="field">
-              <label class="label">Search files</label>
-              <input v-model="excl.search" class="input" placeholder="Search filename or logical path…" />
-              <p class="help">Search applies to filename and logical path.</p>
-            </div>
+              <div class="selector-list" role="group" aria-label="Excluded groups">
+                <label v-for="g in filteredExcludedGroups" :key="g" class="check-row">
+                  <input type="checkbox" :value="g" v-model="selectedExclusionRight" />
+                  <span class="check-label">{{ formatOracleGroupLabel(g) }}</span>
+                </label>
 
-            <div class="field">
-              <label class="label">Filter group</label>
-              <select v-model="excl.filterGroup" class="select">
-                <option value="">All groups</option>
-                <option v-for="g in excl.groupList" :key="g" :value="g">{{ g }}</option>
-              </select>
-            </div>
-
-            <div class="field">
-              <label class="label">Filter type</label>
-              <select v-model="excl.filterType" class="select">
-                <option value="">All types</option>
-                <option value="xml">XML</option>
-                <option value="csv">CSV</option>
-                <option value="xlsx">XLSX</option>
-                <option value="xls">XLS</option>
-              </select>
+                <div v-if="filteredExcludedGroups.length === 0" class="empty-small">
+                  No excluded groups.
+                </div>
+              </div>
             </div>
           </div>
 
-          <div v-if="excl.sessionId && excl.meta" class="excl-actions-row">
-            <button class="btn btn-secondary btn-sm" @click="excludeFiltered" :disabled="filteredExclFiles.length === 0">
-              Exclude filtered
-            </button>
-            <button class="btn btn-secondary btn-sm" @click="clearExclusionsLocal" :disabled="excl.excluded.length === 0">
-              Clear exclusions
-            </button>
-            <button class="btn btn-secondary btn-sm" @click="reloadExclusions" :disabled="excl.loading">
-              Reload exclusions
+          <div class="action-row">
+            <button class="btn btn-secondary btn-sm" @click="clearExcluded" :disabled="excludedGroups.length === 0">
+              Clear excluded
             </button>
             <span class="muted">
-              Showing <strong>{{ filteredExclFiles.length }}</strong> / {{ excl.files.length }}
+              Save to apply globally.
             </span>
           </div>
 
-          <div v-if="excl.sessionId && excl.meta" class="excl-list-wrap">
-            <div class="excl-list-head">
-              <span class="muted">Select files to exclude (not converted)</span>
-              <span class="muted">Excluded: <strong>{{ excl.excluded.length }}</strong></span>
-            </div>
-
-            <div class="excl-list" role="list">
-              <label
-                v-for="f in filteredExclFiles"
-                :key="f.logical_path || f.abs_path || f.path || f.filename"
-                class="excl-row"
-                role="listitem"
-              >
-                <input type="checkbox" class="excl-check" :checked="isExcluded(f)" @change="toggleExcluded(f)" />
-
-                <div class="excl-main">
-                  <div class="excl-name">{{ (f.filename || 'FILE').toUpperCase() }}</div>
-                  <div class="excl-meta">
-                    <span class="badge badge-info">{{ (f.file_type || 'file').toUpperCase() }}</span>
-                    <span class="badge badge-warning">{{ (f.group || 'EXTRAS').toUpperCase() }}</span>
-                    <span class="muted truncate" :title="f.logical_path || f.path || ''">
-                      {{ f.logical_path || f.path || '' }}
-                    </span>
-                  </div>
-                </div>
-              </label>
-
-              <div v-if="filteredExclFiles.length === 0" class="empty-small">
-                No files match your filter.
-              </div>
-            </div>
+          <div
+            v-if="configStatus"
+            class="alert"
+            :class="configStatus.type === 'success' ? 'alert-success' : 'alert-error'"
+            role="status"
+            aria-live="polite"
+          >
+            {{ configStatus.message }}
           </div>
         </div>
       </section>
@@ -941,6 +968,8 @@ import { useToastStore } from '@/stores/toastStore'
 import { useRouter } from 'vue-router'
 import AIAgentChat from '@/components/admin/AIAgentChat.vue'
 import api, { longApi } from '@/utils/api'
+import { ORACLE_APP_CODES, formatOracleGroupLabel } from '@/utils/oracleApps'
+import { normalizeGroupName } from '@/utils/groups'
 import { format } from 'date-fns'
 
 const auth = useAuthStore()
@@ -997,6 +1026,18 @@ const opsLogs = ref([])
 const sessions = ref([])
 const refreshing = ref(false)
 
+/** Filter sessions for Conversion Exclusions: only ACTIVE or today's sessions */
+const activeExclSessions = computed(() => {
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  const todayEpoch = Math.floor(todayStart.getTime() / 1000)
+  return sessions.value.filter(s => {
+    if (String(s.status || '').toUpperCase() === 'ACTIVE') return true
+    const created = Number(s.created_at || 0)
+    return created >= todayEpoch
+  })
+})
+
 /** User header initials */
 const userInitials = computed(() => {
   const name = auth.user?.username || 'Admin'
@@ -1035,6 +1076,12 @@ const autoEmbedEnabled = ref(true)
 const selectedLeftGroups = ref([])
 const selectedRightGroups = ref([])
 const newGroup = ref('')
+const excludedGroups = ref([])
+const selectedExclusionLeft = ref([])
+const selectedExclusionRight = ref([])
+const availableExclusionSearch = ref('')
+const excludedSearch = ref('')
+const newExcludedCandidate = ref('')
 const saving = ref(false)
 const configStatus = ref(null)
 const aiConfigLoading = ref(false)
@@ -1055,7 +1102,7 @@ const filteredEnabledGroups = computed(() => {
 
 function addGroup() {
   if (!newGroup.value) return
-  const val = newGroup.value.toUpperCase().trim()
+  const val = normalizeGroupName(newGroup.value)
   if (!val) return
   if (!availableGroupsList.value.includes(val) && !autoEmbeddedGroups.value.includes(val)) {
     availableGroupsList.value = [...availableGroupsList.value, val].sort()
@@ -1073,6 +1120,61 @@ function moveToLeft() {
   availableGroupsList.value = [...new Set([...availableGroupsList.value, ...selectedRightGroups.value])].sort()
   autoEmbeddedGroups.value = autoEmbeddedGroups.value.filter(g => !selectedRightGroups.value.includes(g))
   selectedRightGroups.value = []
+}
+
+const availableExclusionGroups = computed(() => {
+  const allKnown = new Set([
+    ...ORACLE_APP_CODES,
+    ...(availableGroupsList.value || []),
+    ...(autoEmbeddedGroups.value || []),
+    ...(excludedGroups.value || [])
+  ])
+
+  for (const g of excludedGroups.value || []) {
+    allKnown.add(g)
+  }
+
+  return [...allKnown].filter(g => !excludedGroups.value.includes(g)).sort()
+})
+
+const filteredAvailableExclusionGroups = computed(() => {
+  const q = availableExclusionSearch.value.trim().toUpperCase()
+  const list = availableExclusionGroups.value || []
+  return !q ? list : list.filter(x => x.includes(q))
+})
+
+const filteredExcludedGroups = computed(() => {
+  const q = excludedSearch.value.trim().toUpperCase()
+  const list = excludedGroups.value || []
+  return !q ? list : list.filter(x => x.includes(q))
+})
+
+function addExcludedCandidate() {
+  if (!newExcludedCandidate.value) return
+  const val = normalizeGroupName(newExcludedCandidate.value)
+  if (!val) return
+  if (!excludedGroups.value.includes(val) && !availableExclusionGroups.value.includes(val)) {
+    availableGroupsList.value = [...new Set([...availableGroupsList.value, val])].sort()
+  }
+  newExcludedCandidate.value = ''
+}
+
+function moveToExcluded() {
+  if (!selectedExclusionLeft.value.length) return
+  excludedGroups.value = [...new Set([...excludedGroups.value, ...selectedExclusionLeft.value])].sort()
+  autoEmbeddedGroups.value = autoEmbeddedGroups.value.filter(g => !selectedExclusionLeft.value.includes(g))
+  selectedExclusionLeft.value = []
+}
+
+function moveToAvailable() {
+  if (!selectedExclusionRight.value.length) return
+  excludedGroups.value = excludedGroups.value.filter(g => !selectedExclusionRight.value.includes(g))
+  selectedExclusionRight.value = []
+}
+
+function clearExcluded() {
+  excludedGroups.value = []
+  selectedExclusionRight.value = []
 }
 
 /** Formatting */
@@ -1243,15 +1345,29 @@ async function reloadAIConfig() {
   aiConfigLoading.value = true
   try {
     const res = await api.get('/admin/ai-indexing-config')
-    autoEmbeddedGroups.value = (res.data.auto_embedded_groups || []).map(x => String(x).toUpperCase())
+    excludedGroups.value = (res.data.excluded_groups || []).map(normalizeGroupName)
+    autoEmbeddedGroups.value = (res.data.auto_embedded_groups || [])
+      .map(normalizeGroupName)
+      .filter(g => !excludedGroups.value.includes(g))
+
     const autoEmbedRaw = res?.data?.auto_embed_enabled ?? res?.data?.enable_auto_embedding
     autoEmbedEnabled.value = autoEmbedRaw === undefined ? true : !!autoEmbedRaw
-    const defaults = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER']
-    availableGroupsList.value = defaults.filter(g => !autoEmbeddedGroups.value.includes(g)).sort()
+
+    const backendAvailable = (res?.data?.available_groups || []).map(normalizeGroupName).filter(Boolean)
+    const enabledSet = new Set(autoEmbeddedGroups.value)
+    const excludedSet = new Set(excludedGroups.value)
+
+    const canonicalAvailable = ORACLE_APP_CODES.filter(code => !enabledSet.has(code) && !excludedSet.has(code))
+    const customAvailable = backendAvailable
+      .filter(code => !enabledSet.has(code) && !excludedSet.has(code) && !ORACLE_APP_CODES.includes(code))
+      .sort()
+
+    availableGroupsList.value = [...canonicalAvailable, ...customAvailable]
   } catch (e) {
     console.error('Failed to load AI config', e)
     toast.error('Failed to load AI configuration')
-    availableGroupsList.value = ['BOOK', 'JOURNAL', 'CONFERENCE', 'DISSERTATION', 'COMPONENT', 'OTHER'].sort()
+    availableGroupsList.value = [...ORACLE_APP_CODES]
+    excludedGroups.value = []
     autoEmbedEnabled.value = true
   } finally {
     aiConfigLoading.value = false
@@ -1261,10 +1377,20 @@ async function saveEmbeddingConfig() {
   saving.value = true
   configStatus.value = null
   try {
+    const cleanedExcluded = [...new Set((excludedGroups.value || []).map(normalizeGroupName).filter(Boolean))].sort()
+    const cleanedAuto = [...new Set((autoEmbeddedGroups.value || []).map(normalizeGroupName).filter(Boolean))]
+      .filter(g => !cleanedExcluded.includes(g))
+      .sort()
+
     await api.post('/admin/ai-indexing-config', {
       auto_embed_enabled: autoEmbedEnabled.value,
-      auto_embedded_groups: autoEmbeddedGroups.value
+      auto_embedded_groups: cleanedAuto,
+      excluded_groups: cleanedExcluded
     })
+
+    autoEmbeddedGroups.value = cleanedAuto
+    excludedGroups.value = cleanedExcluded
+
     configStatus.value = { type: 'success', message: 'Configuration saved successfully.' }
     setTimeout(() => (configStatus.value = null), 3000)
     toast.success('Configuration saved')
@@ -1275,145 +1401,6 @@ async function saveEmbeddingConfig() {
     }
   } finally {
     saving.value = false
-  }
-}
-
-/** -----------------------------
- * Conversion Exclusions tab
- * ------------------------------ */
-const excl = reactive({
-  sessionId: '',
-  meta: null,
-  files: [],
-  excluded: [],
-  loading: false,
-  saving: false,
-  error: '',
-  search: '',
-  filterGroup: '',
-  filterType: '',
-  groupList: []
-})
-
-const filteredExclFiles = computed(() => {
-  const list = excl.files || []
-  const q = (excl.search || '').trim().toLowerCase()
-  const g = (excl.filterGroup || '').trim()
-  const t = (excl.filterType || '').trim().toLowerCase()
-
-  return list.filter(f => {
-    const name = (f.filename || '').toLowerCase()
-    const lp = (f.logical_path || f.path || '').toLowerCase()
-    const grp = (f.group || '').trim()
-    const typ = (f.file_type || '').toLowerCase()
-    if (g && grp !== g) return false
-    if (t && typ !== t) return false
-    if (q && !(name.includes(q) || lp.includes(q))) return false
-    return true
-  })
-})
-
-const groupListFromFiles = computed(() => {
-  const set = new Set()
-  for (const f of excl.files || []) if (f?.group) set.add(String(f.group))
-  return Array.from(set).sort()
-})
-
-function onExclSessionChange() {
-  excl.error = ''
-  excl.meta = null
-  excl.files = []
-  excl.excluded = []
-  excl.search = ''
-  excl.filterGroup = ''
-  excl.filterType = ''
-  excl.groupList = []
-}
-
-function fileLogicalPath(f) {
-  return (f?.logical_path || f?.path || '').trim()
-}
-function isExcluded(f) {
-  const lp = fileLogicalPath(f)
-  return lp ? excl.excluded.includes(lp) : false
-}
-function toggleExcluded(f) {
-  const lp = fileLogicalPath(f)
-  if (!lp) return
-  const idx = excl.excluded.indexOf(lp)
-  if (idx >= 0) excl.excluded.splice(idx, 1)
-  else excl.excluded.push(lp)
-}
-function clearExclusionsLocal() {
-  excl.excluded = []
-}
-function excludeFiltered() {
-  const toAdd = []
-  for (const f of filteredExclFiles.value) {
-    const lp = fileLogicalPath(f)
-    if (lp && !excl.excluded.includes(lp)) toAdd.push(lp)
-  }
-  excl.excluded = [...new Set([...excl.excluded, ...toAdd])]
-}
-
-async function loadExclSession() {
-  if (!excl.sessionId) return
-  excl.loading = true
-  excl.error = ''
-  try {
-    const metaRes = await longApi.get(`/files/session/${excl.sessionId}`, { timeout: 5 * 60 * 1000 })
-    excl.meta = metaRes.data || {}
-
-    excl.files = (excl.meta.scanned_files || excl.meta.xml_files || []).map(f => ({
-      ...f,
-      logical_path: f.logical_path || '',
-      file_type: f.file_type || 'file',
-      group: f.group || 'EXTRAS'
-    }))
-
-    excl.groupList = groupListFromFiles.value
-    await reloadExclusions()
-    toast.success('Session loaded')
-  } catch (e) {
-    const msg = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load session'
-    excl.error = String(e?.response?.status) === '403'
-      ? 'Not authorized to manage exclusions for this session (ownership enforced).'
-      : msg
-  } finally {
-    excl.loading = false
-  }
-}
-
-async function reloadExclusions() {
-  if (!excl.sessionId) return
-  excl.loading = true
-  excl.error = ''
-  try {
-    const res = await api.get(`/conversion/exclusions/${excl.sessionId}`)
-    excl.excluded = (res.data?.excluded || []).map(x => String(x))
-  } catch (e) {
-    excl.error = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to load exclusions'
-  } finally {
-    excl.loading = false
-  }
-}
-
-async function saveExclusions() {
-  if (!excl.sessionId) return
-  excl.saving = true
-  excl.error = ''
-  try {
-    const fd = new FormData()
-    ;(excl.excluded || []).forEach(x => fd.append('excluded', x))
-    await longApi.post(`/conversion/exclusions/${excl.sessionId}`, fd, { timeout: 2 * 60 * 1000 })
-    toast.success(`Saved exclusions (${excl.excluded.length})`)
-  } catch (e) {
-    const msg = e?.response?.data?.detail || e?.response?.data?.message || e?.message || 'Failed to save exclusions'
-    excl.error = String(e?.response?.status) === '403'
-      ? 'Not authorized to save exclusions for this session (ownership enforced).'
-      : msg
-  } finally {
-    excl.saving = false
   }
 }
 
@@ -1573,9 +1560,17 @@ onMounted(async () => {
 .metric-label { margin-top: 4px; font-size: 0.88rem; color: var(--text-secondary); }
 
 /* Tabs */
-.tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px; }
+.tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  padding: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
 .tab {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;

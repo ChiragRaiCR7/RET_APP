@@ -120,6 +120,11 @@ def _normalize_ai_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     # Keep excluded_groups for backward-compatible payload roundtrips only.
     cfg["excluded_groups"] = _normalize_group_list(cfg.get("excluded_groups"))
 
+    # A group cannot be both auto-embedded and excluded.
+    if cfg["excluded_groups"]:
+        excluded = set(cfg["excluded_groups"])
+        cfg["auto_embedded_groups"] = [g for g in cfg["auto_embedded_groups"] if g not in excluded]
+
     return cfg
 
 

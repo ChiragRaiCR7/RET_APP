@@ -88,19 +88,19 @@ const chartComponent = computed(() => {
 })
 
 const chartData = computed(() => {
-  const data = props.chartConfig.data
-  
-  // Apply color schemes if not provided
-  if (data.datasets) {
-    data.datasets = data.datasets.map((dataset, index) => ({
+  const src = props.chartConfig?.data
+  if (!src) return { labels: [], datasets: [] }
+
+  // Return a new object — never mutate the prop
+  return {
+    ...src,
+    datasets: (src.datasets || []).map((dataset, index) => ({
       ...dataset,
-      backgroundColor: dataset.backgroundColor || generateColors(data.labels?.length || 10, 0.7, index),
-      borderColor: dataset.borderColor || generateColors(data.labels?.length || 10, 1, index),
+      backgroundColor: dataset.backgroundColor || generateColors(src.labels?.length || 10, 0.7, index),
+      borderColor: dataset.borderColor || generateColors(src.labels?.length || 10, 1, index),
       borderWidth: dataset.borderWidth ?? 2
     }))
   }
-  
-  return data
 })
 
 const baseOptions = computed(() => {
@@ -233,46 +233,46 @@ watch(() => document.documentElement.classList.contains('dark'), () => {
 
 <style scoped>
 .chart-renderer {
-  margin: 1.5rem 0;
-  padding: 1.5rem;
-  background: var(--bg-elevated, #2a2a3e);
-  border: 1px solid var(--border-color, #3a3a4e);
-  border-radius: 12px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  margin: 1rem 0;
+  padding: 1.25rem;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md, 12px);
+  box-shadow: var(--shadow-sm);
 }
 
 .chart-title {
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
   text-align: center;
 }
 
 .chart-title h4 {
-  margin: 0 0 0.5rem 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+  margin: 0 0 0.35rem 0;
+  color: var(--text-heading);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .chart-subtitle {
   display: block;
-  color: var(--text-secondary, #b0b0b0);
-  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
   font-style: italic;
 }
 
 .chart-container {
   position: relative;
-  min-height: 300px;
-  padding: 1rem;
+  min-height: 280px;
+  padding: 0.5rem 0;
 }
 
 .chart-description {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border-color, #3a3a4e);
-  color: var(--text-secondary, #b0b0b0);
-  font-size: 0.9rem;
+  margin-top: 0.875rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
   line-height: 1.5;
   text-align: center;
 }
@@ -283,15 +283,15 @@ watch(() => document.documentElement.classList.contains('dark'), () => {
   align-items: center;
   justify-content: center;
   min-height: 200px;
-  color: var(--text-secondary, #b0b0b0);
+  color: var(--text-tertiary);
+  gap: 0.5rem;
 }
 
 .error-icon {
-  font-size: 3rem;
-  margin-bottom: 1rem;
+  font-size: 2.5rem;
 }
 
-/* Chart type specific styles */
+/* Chart type–specific sizing */
 .chart-type-pie .chart-container,
 .chart-type-doughnut .chart-container,
 .chart-type-polararea .chart-container {
@@ -301,11 +301,11 @@ watch(() => document.documentElement.classList.contains('dark'), () => {
 
 .chart-type-line .chart-container,
 .chart-type-bar .chart-container {
-  min-height: 350px;
+  min-height: 320px;
 }
 
 .chart-type-radar .chart-container {
-  max-width: 600px;
+  max-width: 580px;
   margin: 0 auto;
 }
 </style>

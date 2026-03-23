@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import DeclarativeBase
@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 # Lazy globals (avoid import-time crashes)
 _engine: Optional[AsyncEngine] = None
-engine: Optional[AsyncEngine] = None  # compatibility alias for older scripts
 SessionLocal: Optional[async_sessionmaker[AsyncSession]] = None
 
 
@@ -124,9 +123,9 @@ def _build_engine(url: str) -> AsyncEngine:
     """
     engine_kwargs = {
         "pool_pre_ping": True,   # drop stale connections automatically
-        "pool_recycle": 1800,    # recycle connections every 30 min (was 60 min)
+        "pool_recycle": 1800,    # recycle connections every 30 min (1800 s)
         "future": True,
-        "echo": bool(getattr(settings, "DEBUG", False)),
+        "echo": False,  # SQL logging routed through InterceptHandler at DEBUG level
     }
 
     if not _is_sqlite_async(url):
@@ -149,15 +148,16 @@ async def init_db() -> None:
     Dev/testing convenience:
     - Creates tables (create_all) only in development/testing.
     - In staging/production use Alembic migrations.
+    - Retries the initial connection up to DB_CONNECT_RETRIES times with
+      exponential back-off to tolerate transient startup races.
     """
-    global _engine, engine, SessionLocal
+    global _engine, SessionLocal
 
     if _engine is not None and SessionLocal is not None:
         return
 
     url = getattr(settings, "DATABASE_URL", None)
     if not url:
-        # ✅ Do NOT crash at import time; raise only when init is called.
         raise RuntimeError(
             "DATABASE_URL is not set. Provide an async DSN like "
             "'postgresql+asyncpg://user:password@host:5432/dbname'."
@@ -166,18 +166,46 @@ async def init_db() -> None:
     _validate_database_url(url)
     _ensure_async_driver_installed(url)
 
-    _engine = _build_engine(url)
+    max_retries = getattr(settings, "DB_CONNECT_RETRIES", 5)
+    for attempt in range(max_retries):
+        try:
+            _engine = _build_engine(url)
+            engine = _engine
+            # Probe the connection before handing the engine to the app.
+            async with engine.connect() as probe:
+                await probe.execute(text("SELECT 1"))
+            break
+        except Exception as exc:
+            engine_to_dispose = _engine
+            if engine_to_dispose is not None:
+                await engine_to_dispose.dispose()
+            _engine = None
+            if attempt < max_retries - 1:
+                delay = 2 ** attempt  # 1 s, 2 s, 4 s, 8 s …
+                logger.warning(
+                    "Database connection failed (attempt %d/%d), retrying in %ds: %s",
+                    attempt + 1, max_retries, delay, exc,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(delay)
+            else:
+                raise RuntimeError(
+                    f"Failed to connect to database after {max_retries} attempts: {exc}"
+                ) from exc
+
     engine = _engine
-    SessionLocal = async_sessionmaker(bind=_engine, expire_on_commit=False)
+    if engine is None:
+        raise RuntimeError("Database engine is not initialized")
+
+    SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
     # Create tables only in development/testing to avoid production accidents
     if getattr(settings, "is_development", False) or getattr(settings, "ENVIRONMENT", "") == "testing":
-        async with _engine.begin() as conn:
+        async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    # Safety net for dev/test/stale local DBs:
-    # ensure login_sessions has token-rotation columns expected by current models.
-    # This prevents runtime login failures when an existing database missed a migration.
+    # Safety net: ensure login_sessions has token-rotation columns.
+    # Only run in dev/test — staging/production rely on Alembic migrations.
     await _ensure_login_sessions_schema()
 
 
@@ -185,13 +213,22 @@ async def _ensure_login_sessions_schema() -> None:
     """
     Ensure token-rotation columns/indexes exist on login_sessions.
 
-    This is intentionally additive-only and safe to run repeatedly. Alembic
-    remains the source of truth for managed migrations in staging/production.
+    This is intentionally additive-only and safe to run repeatedly.  It runs
+    **only** in development/testing environments — staging/production rely on
+    Alembic migrations exclusively.
     """
     if _engine is None:
         return
+    engine = _engine
 
-    async with _engine.begin() as conn:
+    env = (
+        getattr(settings, "ENVIRONMENT", None)
+        or getattr(getattr(settings, "ENV", None), "value", "development")
+    )
+    if env not in {"development", "testing"}:
+        return
+
+    async with engine.begin() as conn:
         metadata = await conn.run_sync(_inspect_login_sessions_metadata)
         if metadata is None:
             return
@@ -228,7 +265,7 @@ async def _ensure_login_sessions_schema() -> None:
             )
 
 
-def _inspect_login_sessions_metadata(sync_conn: Any) -> Optional[dict[str, set[str]]]:
+def _inspect_login_sessions_metadata(sync_conn: Any) -> Optional[Dict[str, set[str]]]:
     inspector = inspect(sync_conn)
     tables = set(inspector.get_table_names())
     if "login_sessions" not in tables:
@@ -244,16 +281,19 @@ async def close_db() -> None:
     Dispose engine (shutdown cleanup). Safe no-op if not initialized.
     Handles already-disposed engines gracefully.
     """
-    global _engine, engine, SessionLocal
+    global _engine, SessionLocal
 
     if _engine is not None:
+        engine = _engine
+        logger.warning(
+            "Disposing database engine — any in-flight connections may be interrupted"
+        )
         try:
-            await _engine.dispose()
+            await engine.dispose()
         except Exception:
             logger.debug("Engine dispose raised (may already be disposed)", exc_info=True)
 
     _engine = None
-    engine = None
     SessionLocal = None
 
 

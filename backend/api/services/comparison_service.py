@@ -38,6 +38,7 @@ from api.services.xml_processing_service import (
     scan_zip_for_files,
     xml_to_rows as _xml_to_rows_canonical,
 )
+from api.utils.oracle_catalog import enrich_group as _oracle_enrich_cmp
 
 logger = logging.getLogger(__name__)
 
@@ -1090,6 +1091,15 @@ def compare_by_group_filename(
     removed = sum(1 for r in out_rows if r.get("status") == "REMOVED")
     overall_proxy = (same / max(len(out_rows), 1)) * 100 if out_rows else 0.0
 
+    # Oracle EBS enrichment — add module name + domain to every file row
+    domain_counts: Dict[str, int] = defaultdict(int)
+    for row in out_rows:
+        meta = _oracle_enrich_cmp(row.get("group", ""))
+        row["oracle_module_name"] = meta.get("oracle_module_name")
+        row["oracle_business_domain"] = meta.get("oracle_business_domain")
+        domain = meta.get("oracle_business_domain") or "Unknown"
+        domain_counts[domain] += 1
+
     return {
         "rows": out_rows,
         "summary": {
@@ -1099,6 +1109,7 @@ def compare_by_group_filename(
             "removed": removed,
             "total_files": len(out_rows),
             "overall_similarity": float(overall_proxy),
+            "by_oracle_domain": dict(domain_counts),
         },
     }
 

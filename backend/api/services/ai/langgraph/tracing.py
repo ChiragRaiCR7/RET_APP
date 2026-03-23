@@ -25,11 +25,17 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 logger = logging.getLogger(__name__)
 
 _tracing_enabled = False
+
+
+class TracingConfig(TypedDict):
+    callbacks: List[Any]
+    tags: List[str]
+    metadata: Dict[str, Any]
 
 
 def configure_langsmith() -> None:
@@ -137,7 +143,7 @@ def build_tracing_config(
     user_id: str = "",
     thread_id: str = "",
     group_filter: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> Optional[TracingConfig]:
     """
     Build a config dict fragment with tracing callbacks and tags.
 
@@ -150,7 +156,7 @@ def build_tracing_config(
     Returns empty dict when tracing is disabled.
     """
     if not _tracing_enabled:
-        return {}
+        return None
 
     callbacks = get_tracing_callbacks(
         session_id=session_id,
@@ -160,7 +166,7 @@ def build_tracing_config(
     )
 
     if not callbacks:
-        return {}
+        return None
 
     from api.core.config import settings
 

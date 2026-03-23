@@ -1,81 +1,90 @@
 
+from __future__ import annotations
+
+import logging
 from typing import List, Union
 from fastapi import Depends, HTTPException, status
 
 from api.core.dependencies import get_current_user
 from api.models.models import User, UserRole
 
+logger = logging.getLogger(__name__)
+
+
+def _normalize_role(role: Union[str, UserRole]) -> str:
+    """Return the canonical lowercase string for *role*."""
+    if isinstance(role, UserRole):
+        return role.value.lower()
+    return str(role).lower()
+
 
 def require_role(*required_roles: Union[str, UserRole]):
     """
-    Dependency that requires the current user to have one of the specified roles.
-    
-    Args:
-        *required_roles: One or more roles that are allowed access
-        
-    Usage:
+    Dependency factory that requires the current user to hold one of
+    *required_roles*.  Logs and raises 403 on access denial.
+
+    Usage::
+
         @router.get("/admin", dependencies=[Depends(require_role("admin"))])
         @router.get("/users", dependencies=[Depends(require_role(UserRole.ADMIN, UserRole.USER))])
     """
-    # Convert all roles to lowercase strings for comparison
-    role_strings = set()
-    for role in required_roles:
-        if isinstance(role, UserRole):
-            role_strings.add(role.value.lower())
-        else:
-            role_strings.add(str(role).lower())
-    
-    def checker(
-        current_user: User = Depends(get_current_user),
-    ) -> User:
-        # Get user's role as lowercase string for comparison
-        user_role = current_user.role
-        if isinstance(user_role, UserRole):
-            user_role = user_role.value.lower()
-        else:
-            user_role = str(user_role).lower()
-        
+    role_strings = {_normalize_role(r) for r in required_roles}
+
+    def checker(current_user: User = Depends(get_current_user)) -> User:
+        user_role = _normalize_role(current_user.role)
         if user_role not in role_strings:
+            logger.warning(
+                "Access denied",
+                extra={
+                    "extra_fields": {
+                        "user_id": current_user.id,
+                        "user_role": user_role,
+                        "required_roles": sorted(role_strings),
+                    }
+                },
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied. Required role: {', '.join(role_strings)}",
+                detail=f"Access denied. Required role: {', '.join(sorted(role_strings))}",
             )
-        
         return current_user
 
     return checker
-
-
-def require_admin():
-    """
-    Shortcut dependency for admin-only endpoints.
-    
-    Usage:
-        @router.get("/admin-only")
-        def admin_endpoint(admin: User = Depends(require_admin)):
-            ...
-    """
-    return require_role(UserRole.ADMIN)
 
 
 def get_admin_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """
-    Get the current user if they are an admin or super_admin, else raise 403.
-    
-    This is a direct dependency (not a factory) for simpler usage.
+    Direct dependency: return *current_user* if they are admin or super_admin,
+    else raise 403.  Prefer this over ``require_admin()`` for new endpoints.
+
+    Usage::
+
+        @router.get("/admin-only")
+        def admin_endpoint(admin: User = Depends(get_admin_user)):
+            ...
     """
-    user_role = current_user.role
-    if isinstance(user_role, UserRole):
-        user_role = user_role.value.lower()
-    else:
-        user_role = str(user_role).lower()
-    
-    if user_role not in ["admin", "super_admin"]:
+    if _normalize_role(current_user.role) not in {"admin", "super_admin"}:
+        logger.warning(
+            "Admin access denied",
+            extra={"extra_fields": {"user_id": current_user.id, "role": _normalize_role(current_user.role)}},
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
         )
-    
     return current_user
+
+
+def require_admin():
+    """
+    Deprecated factory — kept for backward compatibility.
+    Prefer ``Depends(get_admin_user)`` directly in new code.
+    """
+    return require_role(UserRole.ADMIN, "super_admin")
+
+
+def require_roles(roles: List[Union[str, UserRole]]):
+    """Convenience wrapper that accepts a list instead of variadic args."""
+    return require_role(*roles)

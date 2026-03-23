@@ -14,6 +14,8 @@ This file is the single-source documentation for the RET v4 application in this 
 - deployment strategies for **10–50** and **100–500** users
 - file-by-file utility reference for the main application source code
 
+The maintained documentation source in this repository is Markdown. There is currently **no editable PDF user-guide source file** checked into the repo, so documentation updates should be made in these Markdown documents.
+
 > **Security note**
 >
 > This repository contains a real `backend/.env` file. This documentation **does not reproduce any live secrets**. Use placeholders, rotate any existing exposed secrets, and never commit production credentials.
@@ -48,6 +50,7 @@ This file is the single-source documentation for the RET v4 application in this 
 - scanning uploaded ZIP/XML payloads
 - extracting and grouping XML and related files
 - converting XML into CSV/XLSX outputs
+- deriving a 5-layer Business Structure graph from converted CSV contents
 - comparing converted outputs and uploaded files
 - editing session-scoped CSV content before download
 - indexing converted data into a RAG workflow
@@ -67,6 +70,7 @@ The application is designed around **session-based processing**. Each uploaded j
 - recursively scan nested ZIPs
 - auto-detect groups based on module prefixes
 - convert XML files to CSV or XLSX
+- generate a Business Structure hierarchy after conversion completes
 - preview generated files
 - download all outputs or selected groups
 - edit generated CSV files in-session
@@ -97,11 +101,16 @@ The application is designed around **session-based processing**. Each uploaded j
 - **Database**: PostgreSQL (preferred), SQLite for dev/testing
 - **Validation**: Pydantic v2
 - **Auth**: JWT + HttpOnly refresh cookies + Argon2 password hashing
-- **AI**: Azure OpenAI
-- **Vector storage**: ChromaDB
+- **AI & RAG**:
+  - Azure OpenAI (embeddings, GPT-4 chat completion)
+  - LangChain (document processing, prompts, text splitting)
+  - LangGraph (workflow orchestration via StateGraph)
+  - DSPy (prompt optimization and few-shot learning)
+- **Vector storage**: ChromaDB (session-scoped persistent client)
 - **XML parsing**: lxml / ElementTree fallback
 - **Excel output**: openpyxl-compatible XML generation + pandas when needed
 - **Background jobs**: in-process async task manager with job-tracking records
+- **Data analysis**: NumPy, pandas, matplotlib, seaborn
 
 ### Frontend
 
@@ -129,27 +138,40 @@ $$
    - expose HTTP endpoints
    - validate requests using Pydantic schemas
    - inject dependencies like current user and DB session
+   - include specialized routers for auth, conversion, comparison, files, jobs, AI/RAG, and admin
 
 2. **Services**
-   - implement business logic
-   - own conversion, comparison, storage, auth, and AI workflows
+   - implement business logic for conversion, comparison, storage, auth, and AI workflows
+   - **Advanced AI Service** (`advanced_ai_service.py`): Unified RAG pipeline with hybrid retrieval, chunking, and conversation history
+   - **Session Manager** (`ai/session_manager.py`): Per-session ChromaDB collection management
+   - **LangGraph RAG Graph** (`ai/langgraph/graph.py`): Orchestrated pipeline with TypedDict state management
 
-3. **Core infrastructure**
-   - configuration
-   - database initialization
-   - security helpers
-   - rate limiting
-   - structured logging
-   - error handling
+3. **AI/RAG Components**
+   - **LangGraph nodes** (`ai/langgraph/nodes.py`): Async pipeline stages (query transformation, embedding, retrieval, fusion/reranking, context assembly, answer generation, citation validation)
+   - **DSPy modules** (`ai/langgraph/dspy_modules.py`): Optional prompt optimization layer for query transformation and citation repair
+   - **State management** (`ai/langgraph/state.py`): Typed state dictionary for graph execution
+   - **Azure OpenAI integration** (`integrations/azure_openai.py`): Async embeddings and chat completion with retry/backoff
+   - **Auto-embedder** (`ai/auto_embedder.py`): Batch embedding with token-aware chunking
+   - **Visualization service** (`ai/visualization_service.py`): Chart generation from RAG responses
 
-4. **Workers**
-   - execute long-running jobs asynchronously
+4. **Core infrastructure**
+   - configuration (settings from `pydantic-settings` and `.env`)
+   - database initialization and async session management
+   - security helpers (JWT, Argon2, RBAC)
+   - rate limiting and correlation IDs
+   - structured logging with redaction
+   - comprehensive error handling via middleware
+
+5. **Workers**
+   - execute long-running jobs asynchronously (conversion, comparison, embedding)
    - update job status/progress in the database
+   - support celery-compatible task scheduling
 
-5. **Storage model**
-   - runtime session data stored locally under `backend/runtime/`
+6. **Storage model**
+   - runtime session data stored locally under `backend/runtime/sessions/{session_id}/`
    - metadata stored in JSON files plus database rows
-   - AI vector state stored per session
+   - AI vector state (ChromaDB) stored per session with optional persistence
+   - all paths validated to prevent traversal attacks
 
 ### Frontend architecture layers
 
@@ -187,7 +209,6 @@ RET_App/
 │  ├─ pyproject.toml
 │  ├─ alembic.ini
 │  ├─ start.py
-│  ├─ recreate_demo.py
 │  ├─ README.md
 │  ├─ alembic/
 │  ├─ api/
@@ -274,7 +295,17 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-This installs the FastAPI application and development tools declared in `backend/pyproject.toml`.
+This installs the FastAPI application and development tools declared in `backend/pyproject.toml`. Includes LangChain, LangGraph, ChromaDB, and Azure OpenAI integrations.
+
+### Optional: Enable DSPy-based prompt optimization
+
+If you want to use DSPy for automated prompt optimization and few-shot learning in the RAG pipeline, install the optional DSPy extra:
+
+```powershell
+pip install -e ".[dspy]"
+```
+
+Then set `FEATURE_DSPY_ENABLED=true` in your `.env` to activate prompt optimization in the LangGraph pipeline.
 
 ### If you use PostgreSQL with `asyncpg`
 
@@ -325,12 +356,27 @@ RET_SESSION_DB=./runtime/ret_session.db
 RET_RUNTIME_ROOT=./runtime
 LOG_LEVEL=INFO
 
+# AI/RAG Configuration
 AI_STRATEGY=advanced
 AZURE_OPENAI_API_KEY=replace-me
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_VERSION=2024-10-21
 AZURE_OPENAI_CHAT_MODEL=your-chat-deployment
 AZURE_OPENAI_EMBED_MODEL=your-embedding-deployment
+RET_AI_TEMPERATURE=0.65
+AI_MAX_TOKENS=4000
+
+# Advanced RAG Settings (LangGraph + hybrid retrieval)
+RAG_ENABLE_QUERY_TRANSFORM=true
+RAG_TOP_K_VECTOR=20
+RAG_TOP_K_SUMMARY=5
+RAG_MAX_CONTEXT_CHARS=40000
+RAG_VECTOR_WEIGHT=0.70
+RAG_LEXICAL_WEIGHT=0.30
+RAG_ENABLE_CITATION_REPAIR=true
+
+# DSPy Optimization (optional - set to true to enable prompt optimization)
+FEATURE_DSPY_ENABLED=false
 ```
 
 ### PostgreSQL example
@@ -359,9 +405,7 @@ This initializes the database and seeds common demo accounts.
 
 ```powershell
 python -m scripts.create_admin --create-demo
-python -m scripts.demo_users
 python -m scripts.fix_role_case
-python recreate_demo.py
 ```
 
 ---
@@ -558,7 +602,43 @@ The main workspace is centered around the **Utility** tab.
 
 ---
 
-## 3. Editing converted files
+## 3. Business Structure graph
+
+Use the **Business Structure** tab after conversion completes.
+
+### What it shows
+
+The graph is generated from converted CSV contents, not from scanned ZIP folder names. The hierarchy is:
+
+1. Business Group
+2. Ledger
+3. Legal Entity
+4. Operating Unit
+5. Inventory Organization
+
+### Source files used
+
+- `FUN_BUSINESS_UNIT.CSV`
+- `INVENTORYORGANIZATIONMASTER.CSV`
+- `INVENTORYORGANIZATIONCHILD.CSV`
+
+### How it is built
+
+- `PrimaryLedgerName` provides the **Ledger**
+- `LegalEntityName` provides the **Legal Entity**
+- `BusinessUnitName` is treated as the **Operating Unit**
+- `NAME` in the inventory files provides the **Inventory Organization**
+- inventory master and child files are unioned and deduplicated before rendering
+
+### Frontend behavior
+
+- the graph appears only after XML → CSV conversion completes
+- it supports search, depth control, refresh, pan, and zoom
+- diagnostics are shown when required files or columns are missing
+
+---
+
+## 4. Editing converted files
 
 Edit mode is **session-only**.
 
@@ -574,7 +654,7 @@ This does **not** permanently rewrite source archives unless you explicitly expo
 
 ---
 
-## 4. Comparing two datasets
+## 5. Comparing two datasets
 
 Use the **Compare (ZIP/XML/CSV)** tab.
 
@@ -592,7 +672,7 @@ Use the **Compare (ZIP/XML/CSV)** tab.
 
 ---
 
-## 5. Asking RET AI questions
+## 6. Asking RET AI questions
 
 Use the **Ask RET (Advanced RAG)** tab.
 
@@ -611,13 +691,18 @@ Use the **Ask RET (Advanced RAG)** tab.
 
 ### AI response behavior
 
-The AI layer can:
+Under the hood, the **LangGraph-based RAG pipeline**:
 
-- transform user queries
-- retrieve semantic and lexical matches
-- build RAG context
-- answer with citations
-- generate chart/table instructions that the frontend can render
+- **Query transformation**: LLM analyzes intent (factual, analytical, summary, exploratory)
+- **Hybrid retrieval**: Semantic (vector) + lexical (keyword) + optional summary retrieval
+- **Fusion & reranking**: Reciprocal Rank Fusion combines all retrieval channels
+- **Context assembly**: Formats top-k chunks into markdown tables with citations
+- **Answer generation**: Azure OpenAI GPT-4 generates response with inline citation markers
+- **Citation validation**: Optional LLM-based repair of malformed citations
+- **Conversation persistence**: Multi-turn history stored per session
+- **Visualization generation**: Can include chart/table instructions for the frontend
+
+All retrieval and scoring parameters are configurable (see [Advanced RAG Implementation](#advanced-rag-implementation-langgraph--chromadb--azure-openai) section).
 
 ---
 
@@ -721,9 +806,12 @@ The application mounts its main routes under:
 
 - `POST /api/v1/conversion/scan`
 - `POST /api/v1/conversion/convert`
+- `GET /api/v1/conversion/business-structure/{session_id}`
 - `GET /api/v1/conversion/files/{session_id}`
 - `GET /api/v1/conversion/preview/{session_id}/{filename}`
 - download and edit endpoints under the same router
+
+The Business Structure endpoint also accepts an optional `business_group` query parameter to override the default root label.
 
 ### Comparison
 
@@ -764,6 +852,152 @@ Practical endpoints include:
 
 ---
 
+## Advanced RAG Implementation (LangGraph + ChromaDB + Azure OpenAI)
+
+The RET v4 application includes a sophisticated **Advanced RAG Engine** built with LangGraph state orchestration, LangChain components, and optional DSPy-based prompt optimization. This enables intelligent retrieval-augmented generation for querying converted XML data.
+
+### LangGraph RAG Pipeline Architecture
+
+The pipeline is implemented as a compiled `StateGraph` with typed state management and conditional edges:
+
+```
+START
+  │
+  ├─► transform_query (LLM: intent, keywords, sub-queries)
+  │
+  ├─► embed_and_tokenize (Embeddings: query vector)
+  │
+  ├─► retrieve (Vector + Lexical + Summary retrieval)
+  │
+  ├─► fuse_rerank (Reciprocal Rank Fusion + scoring)
+  │   └─► [early exit if insufficient hits]
+  │
+  ├─► build_context (Assemble chunks into context)
+  │   └─► [early exit if context insufficient]
+  │
+  ├─► generate_answer (LLM: answer with citations)
+  │
+  ├─► validate_citations (LLM: repair malformed citations)
+  │
+  ├─► hitl_review (Optional human-in-the-loop)
+  │
+  └─► assemble_response (Format final JSON response)
+  │
+  END
+```
+
+### Key Components
+
+1. **Query Transformation** (DSPy-optional)
+   - Analyzes user query intent (factual, analytical, summary, exploratory, specific)
+   - Extracts keywords and generates sub-queries
+   - Detects optional group/file filters
+   - Uses configurable LLM temperature (default 0.1 for consistency)
+
+2. **Hybrid Retrieval Strategy**
+   - **Vector search**: Semantic similarity via ChromaDB + Azure embeddings
+   - **Lexical search**: Keyword matching with BM25-style scoring
+   - **Summary index**: Optional document-level summaries (if `RAG_ENABLE_SUMMARIES=true`)
+   - **Fusion**: Reciprocal Rank Fusion (RRF) combines three retrieval channels with configurable weights
+
+3. **Reranking & Scoring**
+   - Multi-method boost: Items found by multiple retrieval methods ranked higher
+   - Hybrid scoring combines vector and lexical scores
+   - Configurable weights: `RAG_VECTOR_WEIGHT` (default 0.70), `RAG_LEXICAL_WEIGHT` (0.30)
+
+4. **Context Assembly**
+   - Collects top-k chunks from reranking
+   - Truncates to `RAG_MAX_CONTEXT_CHARS` (default 40,000)
+   - Formats as markdown tables with citations
+   - Early-exit if context is below sufficiency threshold
+
+5. **Answer Generation**
+   - Calls Azure OpenAI GPT-4 with system prompt, user query, and RAG context
+   - Returns answer with inline citation markers (e.g., `[source:1]`, `[source:2]`)
+   - Temperature: `RET_AI_TEMPERATURE` (default 0.65)
+   - Max tokens: `AI_MAX_TOKENS` (default 4000)
+
+6. **Citation Validation & Repair**
+   - Optional step (configured via `RAG_ENABLE_CITATION_REPAIR`)
+   - Uses LLM to fix malformed or missing citations
+   - Temperature: `RAG_CITATION_REPAIR_TEMPERATURE` (default 0.0 for determinism)
+
+7. **Human-in-the-Loop (HITL)**
+   - Optional interruption for low-confidence responses
+   - User can approve, reject, or edit answer before finalization
+   - Enabled via `FEATURE_HITL_ENABLED=true` (default false)
+
+### Session-Scoped Vector Storage
+
+- **ChromaDB Persistent Client**: Per-session collection under `backend/runtime/sessions/{session_id}/ai_index/chroma/`
+- **Auto-initialization**: Collections created on first indexing request
+- **Cleanup**: Sessions removed on logout or admin cleanup
+- **Filtering**: Collection metadata includes `session_id`, `group`, allowing targeted retrieval
+
+### Auto-Embedding with Token-Aware Chunking
+
+The `auto_embedder` service:
+- Chunks CSV data respecting token limits (via `tiktoken`)
+- Configurable chunk size: `RAG_CHUNK_SIZE` (default 1500 chars)
+- Overlap for context continuity: `RAG_CHUNK_OVERLAP` (default 200 chars)
+- Batch embedding for efficiency: `EMBED_BATCH_SIZE` (default 16)
+- Retry with exponential backoff: `EMBED_BATCH_MAX_RETRIES` (default 3)
+
+### Conversation History & Context Preservation
+
+- Stores up to `AI_MAX_HISTORY` messages (default 50)
+- Each turn appends to session-scoped history
+- Supports multi-turn RAG queries within a session
+- Download transcript of full conversation
+
+### DSPy Integration (Optional)
+
+When `FEATURE_DSPY_ENABLED=true`:
+- **Query transformer**: `QueryTransformSignature` wrapped in DSPy Module
+- **Citation repair**: `CitationRepairSignature` wrapped in DSPy Module
+- **Signature definitions** in `dspy_modules.py` specify input/output contracts
+- **LM configuration**: Automatically configured for Azure OpenAI backend
+- **Teleprompter support**: Enable BootstrapFewShot, MIPRO, or other optimizers
+
+DSPy modules are **drop-in replacements** for raw LLM calls, allowing you to optimize prompts without changing node logic.
+
+### Configuration Reference
+
+Key RAG settings (from `.env` or code defaults):
+
+```bash
+# Chunking
+RAG_CHUNK_SIZE=1500              # Target chunk size (characters)
+RAG_CHUNK_MIN=900                # Minimum chunk size
+RAG_CHUNK_MAX=3500               # Maximum chunk size
+RAG_CHUNK_OVERLAP=200            # Overlap between chunks
+
+# Retrieval
+RAG_TOP_K_VECTOR=20              # Top-k from vector search
+RAG_TOP_K_SUMMARY=5              # Top-k from summary index
+RAG_MAX_CONTEXT_CHARS=40000      # Max context for LLM
+RAG_MAX_CHUNKS=15                # Max chunks in final context
+RAG_RRF_K=60                     # RRF parameter for ranking
+
+# Weights
+RAG_VECTOR_WEIGHT=0.70           # Weight for vector retrieval (fusion)
+RAG_LEXICAL_WEIGHT=0.30          # Weight for lexical retrieval (fusion)
+
+# LLM
+RET_AI_TEMPERATURE=0.65          # Chat completion temperature
+AI_MAX_TOKENS=4000               # Max tokens in response
+AI_MAX_HISTORY=50                # Max conversation turns to keep
+
+# Features
+RAG_ENABLE_QUERY_TRANSFORM=true  # LLM-based query analysis
+RAG_ENABLE_SUMMARIES=true        # Generate/use document summaries
+RAG_ENABLE_CITATION_REPAIR=true  # Repair malformed citations
+FEATURE_DSPY_ENABLED=false       # Enable DSPy-based optimization (requires pip install -e ".[dspy]")
+FEATURE_HITL_ENABLED=false       # Enable human-in-the-loop review
+```
+
+---
+
 ## Operational commands
 
 ## Backend commands
@@ -774,6 +1008,7 @@ cd backend
 
 # install
 pip install -e ".[dev]"
+pip install -e ".[dspy]"  # optional: DSPy prompt optimization
 pip install asyncpg
 
 # initialize DB
@@ -786,13 +1021,10 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 # demo/admin users
 python -m scripts.create_admin --create-demo
 python -m scripts.create_admin --username bob --password "StrongPass123!" --role user
-python -m scripts.demo_users
-python recreate_demo.py
 
 # maintenance
 python -m scripts.cleanup_sessions
 python -m scripts.fix_role_case
-python -m scripts.add_is_deleted_column
 python -m scripts.migrate_all_columns
 
 # validation
@@ -1236,17 +1468,20 @@ This section documents the utility of the main application files. Generated fold
 | Path | Utility |
 |---|---|
 | `backend/.env` | Environment-specific configuration file for database, auth, runtime, and Azure OpenAI settings. |
+| `backend/.gitignore` | Backend-specific ignore rules for runtime, caches, and local environment files. |
+| `backend/.pre-commit-config.yaml` | Pre-commit hook configuration for formatting and linting checks. |
+| `backend/.python-version` | Python version hint for pyenv/uv-like tooling. |
 | `backend/alembic.ini` | Alembic migration configuration entrypoint. |
 | `backend/pyproject.toml` | Python package metadata, dependencies, and tooling configuration for black, ruff, mypy, bandit, and pytest. |
-| `backend/README.md` | Legacy backend guide; useful for reference but should be superseded by this document. |
+| `backend/README.md` | Backend setup guide and API-oriented supplement to this document. |
 | `backend/start.py` | Development startup helper that initializes the database and starts the FastAPI server. |
-| `backend/recreate_demo.py` | Async utility that recreates the `demo` user and verifies its password hash. |
-| `backend/test.db` | Local development/testing SQLite database file. |
-| `backend/uv.lock` | Python dependency lock file generated by uv tooling. |
+| `backend/.vscode/` | Workspace-local editor settings for backend development. |
 | `backend/alembic/` | Database migration environment and revision history. |
+| `backend/data/` | Backend data files such as AI configuration JSON. |
 | `backend/logs/` | Runtime log output directory. |
 | `backend/runtime/` | Runtime session storage root for uploaded files, converted outputs, and AI data. |
 | `backend/scripts/` | Administrative, migration, seeding, and validation utilities. |
+| `backend/tests/` | Backend unit/integration/performance/security test suite. |
 | `backend/api/` | Main backend application package containing FastAPI code. |
 
 ## Alembic files
@@ -1271,8 +1506,8 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | `backend/api/core/exceptions.py` | Shared exception classes for authentication, sessions, rate limits, and service failures. |
 | `backend/api/core/logging_config.py` | Configures structured logging for stdlib logging and optional loguru. |
 | `backend/api/core/prompts.py` | Core LLM prompts for RAG answering, transformation, citation repair, and refusal logic. |
-| `backend/api/core/prompts_visualization.py` | Visualization-specific prompting rules for charts, tables, and summaries. |
 | `backend/api/core/rbac.py` | Role-based access control helpers used by routers and dependencies. |
+| `backend/api/core/request_context.py` | Per-request context helpers for correlation IDs and request-scoped metadata. |
 | `backend/api/core/security.py` | Password hashing, password verification, and JWT token creation/verification helpers. |
 | `backend/api/core/session_cache.py` | Async session cache layer used for rate limiting and persistent cached session metadata. |
 
@@ -1301,6 +1536,7 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | `backend/api/schemas/advanced.py` | Schemas for XLSX conversion and legacy advanced feature payloads. |
 | `backend/api/schemas/ai.py` | Schemas for chat, embedding, transcript, and AI workflow responses. |
 | `backend/api/schemas/auth.py` | Schemas for login, token responses, and password-reset flows. |
+| `backend/api/schemas/business_structure.py` | Schemas for the 5-layer Business Structure hierarchy endpoint. |
 | `backend/api/schemas/common.py` | Common response wrappers such as `MessageResponse` and `JobCreatedResponse`. |
 | `backend/api/schemas/comparison.py` | Schemas for comparison requests, summaries, deltas, and drilldown models. |
 | `backend/api/schemas/conversion.py` | Schemas for ZIP scan responses, file previews, conversion listings, and edit operations. |
@@ -1313,7 +1549,7 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | `backend/api/routers/advanced_router.py` | Exposes advanced endpoints for XLSX generation and related conversion helpers. |
 | `backend/api/routers/auth_router.py` | Exposes login, refresh, logout, reset, and current-user endpoints. |
 | `backend/api/routers/comparison_router.py` | Exposes comparison endpoints for sessions, uploaded files, and drilldown details. |
-| `backend/api/routers/conversion_router.py` | Exposes scan, convert, preview, download, edit, and cleanup endpoints for the main workflow. |
+| `backend/api/routers/conversion_router.py` | Exposes scan, convert, Business Structure, preview, download, edit, and cleanup endpoints for the main workflow. |
 | `backend/api/routers/files_router.py` | Provides file/session helper routes for scan/session retrieval and deletion. |
 | `backend/api/routers/job_router.py` | Exposes job-status lookup for async operations. |
 | `backend/api/routers/rag_router.py` | Exposes unified v2 AI endpoints for chat, embedding, transcript export, and cleanup. |
@@ -1324,6 +1560,9 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 |---|---|
 | `backend/api/integrations/azure_openai.py` | Retry and backoff utilities for Azure OpenAI sync and async calls. |
 | `backend/api/utils/io_utils.py` | Atomic JSON/text/bytes write helpers and safe deletion/read utilities. |
+| `backend/api/utils/metrics.py` | Metrics helpers and instrumentation support used by backend workflows. |
+| `backend/api/utils/oracle_catalog.py` | Oracle-specific catalog helpers/constants used for grouping and domain logic. |
+| `backend/api/utils/sidecar.py` | Sidecar metadata helpers for session-scoped processing artifacts. |
 
 ## Backend service files
 
@@ -1332,6 +1571,7 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | `backend/api/services/admin_service.py` | Implements admin business rules, logging, stats, and AI indexing configuration persistence. |
 | `backend/api/services/advanced_ai_service.py` | Implements the main unified RAG service, retrieval, embedding, conversation history, and citation logic. |
 | `backend/api/services/auth_service.py` | Implements user authentication, token issuance, refresh, and password reset logic. |
+| `backend/api/services/business_structure_service.py` | Reads converted CSV outputs and builds the Business Group → Ledger → Legal Entity → Operating Unit → Inventory Organization hierarchy. |
 | `backend/api/services/comparison_service.py` | Implements archive/file comparison, conversion-to-CSV for diffing, similarity scoring, and drilldown generation. |
 | `backend/api/services/conversion_service.py` | Implements scan, conversion, exclusion handling, preview, edit operations, and download packaging. |
 | `backend/api/services/job_service.py` | Implements job record creation, lookup, status updates, and cleanup. |
@@ -1364,10 +1604,8 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 
 | Path | Utility |
 |---|---|
-| `backend/scripts/add_is_deleted_column.py` | One-off SQLite migration script to add the `is_deleted` column. |
 | `backend/scripts/cleanup_sessions.py` | Async maintenance script to delete expired login sessions. |
 | `backend/scripts/create_admin.py` | Async CLI utility for creating admin or demo users. |
-| `backend/scripts/demo_users.py` | Async CLI utility for seeding or repairing demo users. |
 | `backend/scripts/fix_role_case.py` | Async migration script that normalizes role values to lowercase. |
 | `backend/scripts/init_db.py` | Async database bootstrap and demo-user seeding script. |
 | `backend/scripts/migrate_all_columns.py` | SQLite migration helper that adds missing user-table columns. |
@@ -1380,7 +1618,7 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 |---|---|
 | `frontend/index.html` | Vite HTML entry page for the SPA shell. |
 | `frontend/package.json` | Frontend package metadata, dependencies, and npm scripts. |
-| `frontend/README.md` | Minimal template README from Vue/Vite scaffolding. |
+| `frontend/README.md` | Frontend-specific guide for the Vue SPA structure, workflow tabs, and key components. |
 | `frontend/vite.config.js` | Vite configuration with Vue plugin, aliasing, dev server port, and backend proxy. |
 | `frontend/public/` | Static assets copied directly into the built frontend. |
 | `frontend/dist/` | Generated production frontend bundle output. |
@@ -1393,16 +1631,13 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | `frontend/src/App.vue` | Root component that hosts global layout and route rendering. |
 | `frontend/src/router/index.js` | Defines routes and auth/admin navigation guards. |
 | `frontend/src/utils/api.js` | Central Axios client with auth header injection and token refresh retry queue. |
-| `frontend/src/utils/validators.js` | Shared frontend validation helpers for inputs and forms. |
 
 ## Frontend stores and composables
 
 | Path | Utility |
 |---|---|
 | `frontend/src/stores/authStore.js` | Stores logged-in user state, access token, refresh flow, and logout logic. |
-| `frontend/src/stores/conversionStore.js` | Stores session, scan, conversion, file-preview, and download workflow state. |
 | `frontend/src/stores/toastStore.js` | Stores and manages toast notifications. |
-| `frontend/src/composable/useAuth.js` | Reusable auth helper logic for components. |
 | `frontend/src/composable/useTheme.js` | Reusable theme-toggle and theme persistence logic. |
 
 ## Frontend views
@@ -1410,8 +1645,9 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 | Path | Utility |
 |---|---|
 | `frontend/src/views/LoginView.vue` | Login page for authentication and reset flows. |
-| `frontend/src/views/MainView.vue` | Main end-user workspace containing Utility, Compare, and AI tabs. |
+| `frontend/src/views/MainView.vue` | Main end-user workspace containing Utility, Business Structure, Compare, and AI tabs. |
 | `frontend/src/views/AdminView.vue` | Admin dashboard for management and monitoring workflows. |
+| `frontend/src/views/ComparisonDrilldownView.vue` | Detailed drilldown page for reviewing comparison results. |
 
 ## Frontend common components
 
@@ -1440,17 +1676,12 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 
 | Path | Utility |
 |---|---|
-| `frontend/src/components/workspace/AIChatInterface.vue` | Chat UI for asking RAG questions and displaying answers/sources. |
 | `frontend/src/components/workspace/AIPanel.vue` | Wrapper panel for AI embedding, status, and transcript actions. |
-| `frontend/src/components/workspace/AutoEmbedProgress.vue` | Shows progress state for automatic embedding jobs. |
+| `frontend/src/components/workspace/BusinessStructurePanel.vue` | Renders the converted Business Structure hierarchy as a searchable Mermaid graph. |
 | `frontend/src/components/workspace/ComparisonPanel.vue` | Comparison UI for archives/files and drilldown results. |
-| `frontend/src/components/workspace/ConversionResults.vue` | Displays grouped conversion results, previews, and downloads. |
 | `frontend/src/components/workspace/EditModePanel.vue` | Handles edit-mode actions such as adding/updating/removing files and rows. |
 | `frontend/src/components/workspace/EditModeToggle.vue` | Enables or disables session edit mode. |
 | `frontend/src/components/workspace/FileUploader.vue` | Handles drag/drop or manual upload of ZIP/XML files. |
-| `frontend/src/components/workspace/GroupSelector.vue` | Group selection UI for filtered conversion or AI actions. |
-| `frontend/src/components/workspace/UtilityPanel.vue` | Utility panel for general workflow helpers and secondary actions. |
-| `frontend/src/components/workspace/WorkflowControls.vue` | Shared workflow action controls for scan/convert/download actions. |
 
 ## Frontend chart/message components
 

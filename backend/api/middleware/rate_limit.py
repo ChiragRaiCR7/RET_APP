@@ -1,52 +1,42 @@
 """
 Rate limiting middleware with optional trusted-proxy X-Forwarded-For support and configurable limits.
 
-Non-breaking improvements:
+Improvements:
 - Uses settings.RATE_LIMIT_EXEMPT_PATHS (should be built using settings.API_PREFIX in config)
 - Trusts X-Forwarded-For ONLY if enabled and request comes from a trusted proxy
 - Better key strategy: prefer authenticated user_id if available; else IP (+ small UA suffix)
-- Unified logging for stdlib + loguru
+- Correlation ID included in rate-limit exceeded log entries.
+- Structured JSONResponse (matching API error schema) returned on 429 instead of HTTPException.
+- In-memory block/allow/error counters exposed via get_rate_limit_stats().
 - Fail-open on cache errors (do not block requests if cache fails)
 """
 
 from __future__ import annotations
 
 import time
-import logging
 from typing import Callable, Optional
 
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from api.core.config import settings
+from api.core.logging_config import get_logger
 from api.core.session_cache import get_session_cache, SessionCache
 
-try:
-    from loguru import logger as loguru_logger  # type: ignore
-    HAS_LOGURU = True
-except ImportError:
-    HAS_LOGURU = False
-    loguru_logger = None
-
-_std_logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Lazy-initialized async session cache (set on first dispatch)
 _cache: SessionCache | None = None
 
+# In-memory rate-limit event counters (reset on process restart)
+_rate_limit_stats: dict[str, int] = {"allowed": 0, "blocked": 0, "errors": 0}
 
-def _log(level: str, msg: str, **fields) -> None:
-    """
-    Unified logging helper for stdlib + loguru.
 
-    - loguru: logger.bind(**fields).log(...)
-    - stdlib: logger.<level>(..., extra={...})
-    """
-    if HAS_LOGURU and loguru_logger is not None:
-        loguru_logger.bind(**fields).log(level.upper(), msg)
-    else:
-        extra = {"extra_fields": fields} if fields else None
-        getattr(_std_logger, level.lower(), _std_logger.info)(msg, extra=extra)
+def get_rate_limit_stats() -> dict[str, int]:
+    """Return a snapshot of in-memory rate-limit event counters."""
+    return dict(_rate_limit_stats)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -145,32 +135,44 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
             if current >= self.max_requests:
                 retry_after = int(self.window - (now % self.window))
+                corr_id = getattr(request.state, "correlation_id", None)
 
-                _log(
-                    "warning",
-                    "Rate limit exceeded",
-                    key=key,
-                    window_key=window_key,
-                    current=current,
-                    max=self.max_requests,
-                    retry_after=retry_after,
-                    path=request.url.path,
+                logger.warning(
+                    "Rate limit exceeded: %s %s (cid=%s key=%s current=%d max=%d)",
+                    request.method,
+                    request.url.path,
+                    corr_id,
+                    key,
+                    current,
+                    self.max_requests,
+                    extra={"extra_fields": {"retry_after": retry_after}},
                 )
+                _rate_limit_stats["blocked"] += 1
 
-                # Raise 429 with Retry-After
-                raise HTTPException(
+                return JSONResponse(
                     status_code=429,
-                    detail="Rate limit exceeded. Please slow down your requests.",
+                    content={
+                        "success": False,
+                        "error": "Rate limit exceeded. Please slow down your requests.",
+                        "error_code": "rate_limit_exceeded",
+                        "correlation_id": corr_id,
+                        "retry_after": retry_after,
+                    },
                     headers={"Retry-After": str(retry_after)},
                 )
 
             # Increment counter with TTL matching window
             await _cache.set(window_key, current + 1, ttl_seconds=self.window)
+            _rate_limit_stats["allowed"] += 1
 
-        except HTTPException:
-            raise
         except Exception as e:
-            # Fail-open: log cache failure but do not block request
-            _log("warning", "Rate limiter cache error (fail-open)", error=str(e), key=key, path=request.url.path)
+            _rate_limit_stats["errors"] += 1
+            # Fail-open: log cache error but do not block the request
+            logger.warning(
+                "Rate limiter cache error (fail-open): %s | key=%s path=%s",
+                e,
+                key,
+                request.url.path,
+            )
 
         return await call_next(request)

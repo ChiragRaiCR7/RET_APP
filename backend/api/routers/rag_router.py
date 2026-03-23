@@ -451,6 +451,19 @@ async def get_available_groups(
             group_counts[grp] = group_counts.get(grp, 0) + 1
 
     embedding_status: Dict[str, Dict[str, Any]] = {}
+    excluded_groups: List[str] = []
+    excluded_set: set[str] = set()
+
+    try:
+        from api.services.admin_service import get_ai_indexing_config_data
+
+        cfg = get_ai_indexing_config_data() or {}
+        excluded_groups = [str(g).strip().upper() for g in (cfg.get("excluded_groups") or []) if str(g).strip()]
+        excluded_set = set(excluded_groups)
+    except Exception:
+        excluded_groups = []
+        excluded_set = set()
+
     manager = None
     try:
         manager = _get_manager(session_id, current_user_id)
@@ -473,8 +486,14 @@ async def get_available_groups(
 
     groups_info = []
     for grp in sorted(group_counts):
+        is_excluded = grp.upper() in excluded_set
         if eligible_set is not None and grp.upper() not in eligible_set:
             continue
+        if is_excluded:
+            # Excluded groups are hidden from eligible-only responses.
+            if eligible_only:
+                continue
+
         es = embedding_status.get(grp, {})
         groups_info.append({
             "name": grp,
@@ -482,8 +501,7 @@ async def get_available_groups(
             "fileCount": group_counts[grp],
             "indexed": es.get("indexed", False),
             "chunk_count": es.get("chunk_count", 0),
-            # Backward-compatible field retained as neutral value.
-            "excluded_by_admin": False,
+            "excluded_by_admin": is_excluded,
         })
 
     return {
@@ -491,8 +509,7 @@ async def get_available_groups(
         "groups": groups_info,
         "all_groups": groups_info,
         "auto_embedded_groups": auto_embedded_groups,
-        # Backward-compatible field retained as neutral value.
-        "excluded_groups": [],
+        "excluded_groups": sorted(excluded_set),
         "total_groups": len(groups_info),
     }
 
@@ -516,10 +533,39 @@ async def embed_selected_groups(
     if not groups:
         raise HTTPException(status_code=400, detail="No groups selected")
 
+    excluded_set: set[str] = set()
+    try:
+        from api.services.admin_service import get_ai_indexing_config_data
+
+        cfg = get_ai_indexing_config_data() or {}
+        excluded_set = {
+            str(g).strip().upper()
+            for g in (cfg.get("excluded_groups") or [])
+            if str(g).strip()
+        }
+    except Exception:
+        excluded_set = set()
+
+    groups_to_embed = [g for g in groups if str(g).strip().upper() not in excluded_set]
+    skipped_excluded = [g for g in groups if str(g).strip().upper() in excluded_set]
+    if not groups_to_embed:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected groups are excluded by admin and cannot be embedded",
+        )
+
     manager = _get_manager(req.session_id, current_user_id)
 
     if not manager.is_configured():
         raise HTTPException(status_code=503, detail="AI service not configured")
+
+    suppression_cleared = False
+    try:
+        if manager.is_auto_embed_suppressed:
+            manager.clear_auto_embed_suppression()
+            suppression_cleared = True
+    except Exception as e:
+        logger.warning("Failed to clear auto-embed suppression for session %s: %s", req.session_id, e)
 
     # Background mode: queue a task and return immediately
     if req.background:
@@ -536,7 +582,7 @@ async def embed_selected_groups(
                 task_id=f"manual_embed_{req.session_id}_{uuid.uuid4().hex[:8]}",
                 session_id=req.session_id,
                 user_id=current_user_id,
-                groups=groups,
+                groups=groups_to_embed,
                 csv_dir=csv_dir,
                 rag_service=manager.rag_service,
                 admin_config=None,
@@ -548,14 +594,16 @@ async def embed_selected_groups(
                 "status": "queued",
                 "message": "Embedding task queued",
                 "task_id": task.task_id,
-                "queued_groups": list(groups),
+                "queued_groups": list(groups_to_embed),
+                "skipped_excluded_groups": skipped_excluded,
+                "auto_embed_suppression_cleared": suppression_cleared,
             }
         except Exception as e:
             logger.error("Failed to queue embedding task: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=f"Failed to queue embedding task: {e}")
 
     try:
-        stats = manager.embed_groups(groups=groups)
+        stats = manager.embed_groups(groups=groups_to_embed)
 
         return {
             "status": "success",
@@ -570,6 +618,8 @@ async def embed_selected_groups(
             "docs_embedded": stats.indexed_docs,
             "chunks_embedded": stats.indexed_chunks,
             "errors": stats.errors[:10],
+            "skipped_excluded_groups": skipped_excluded,
+            "auto_embed_suppression_cleared": suppression_cleared,
         }
     except Exception as e:
         logger.error("Embedding failed: %s", e, exc_info=True)
@@ -752,6 +802,12 @@ async def start_auto_embed(
     if not manager.is_configured():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
+    try:
+        if manager.is_auto_embed_suppressed:
+            await asyncio.to_thread(manager.clear_auto_embed_suppression)
+    except Exception as e:
+        logger.warning("Failed to clear auto-embed suppression for session %s: %s", session_id, e)
+
     session_dir = get_session_dir(session_id)
     xml_inventory = body.get("xml_inventory")
     if not isinstance(xml_inventory, list):
@@ -838,16 +894,22 @@ async def stop_auto_embed(
     session_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    """Compatibility endpoint to stop auto-embedding."""
+    """Stop ALL embedding for a session (both auto-embed and manual worker tasks)."""
     _verify_session_owner(session_id, current_user_id)
 
     manager = _get_manager(session_id, current_user_id)
-    await asyncio.to_thread(manager.stop_auto_embed)
+    stop_result = await manager.stop_all_embedding(
+        suppress_auto_start=True,
+        reason="Stopped by user",
+        source=current_user_id,
+    )
 
     return {
         "stopped": True,
         "status": "idle",
-        "message": "Auto-embedding stopped",
+        "message": "All embedding stopped. Auto-embedding is suppressed for this session until manually resumed.",
+        "worker_tasks_cancelled": int(stop_result.get("worker_tasks_cancelled", 0) or 0),
+        "auto_embed_suppressed": bool(stop_result.get("auto_embed_suppressed", False)),
     }
 
 

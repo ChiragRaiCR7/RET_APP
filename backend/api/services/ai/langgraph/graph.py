@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 from langgraph.graph import END
 from langgraph.graph.state import StateGraph  # type: ignore[import-untyped]
@@ -63,6 +63,9 @@ from api.services.ai.langgraph.nodes import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 # ---------------------------------------------------------------------------
 # Conditional edge helpers
@@ -216,7 +219,7 @@ async def run_rag_graph(
     """
     graph = get_compiled_graph()
 
-    initial_state: Dict[str, Any] = {
+    initial_state: RAGState = {
         "query": query,
         "session_id": session_id,
         "user_id": user_id,
@@ -244,11 +247,26 @@ async def run_rag_graph(
             group_filter=group_filter,
         )
         if tracing_cfg:
-            config.setdefault("callbacks", []).extend(tracing_cfg.get("callbacks", []))
-            config.setdefault("tags", []).extend(tracing_cfg.get("tags", []))
-            config.setdefault("metadata", {}).update(tracing_cfg.get("metadata", {}))
+            callbacks = config.setdefault("callbacks", [])
+            if isinstance(callbacks, list):
+                callbacks.extend(tracing_cfg["callbacks"])
+            else:
+                config["callbacks"] = list(tracing_cfg["callbacks"])
 
-        final_state = await graph.ainvoke(initial_state, config=config or None)
+            tags = config.setdefault("tags", [])
+            if isinstance(tags, list):
+                tags.extend(tracing_cfg["tags"])
+            else:
+                config["tags"] = list(tracing_cfg["tags"])
+
+            metadata = config.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata.update(tracing_cfg["metadata"])
+            else:
+                config["metadata"] = dict(tracing_cfg["metadata"])
+
+        invoke_config = cast(Optional["RunnableConfig"], config or None)
+        final_state = cast(Dict[str, Any], await graph.ainvoke(initial_state, config=invoke_config))
 
         answer = final_state.get("answer") or final_state.get("early_exit_answer", "")
 
@@ -317,17 +335,32 @@ async def resume_rag_graph(
     # Merge LangSmith tracing callbacks/tags when enabled
     tracing_cfg = build_tracing_config(thread_id=thread_id)
     if tracing_cfg:
-        config.setdefault("callbacks", []).extend(tracing_cfg.get("callbacks", []))
-        config.setdefault("tags", []).extend(tracing_cfg.get("tags", []))
-        config.setdefault("metadata", {}).update(tracing_cfg.get("metadata", {}))
+        callbacks = config.setdefault("callbacks", [])
+        if isinstance(callbacks, list):
+            callbacks.extend(tracing_cfg["callbacks"])
+        else:
+            config["callbacks"] = list(tracing_cfg["callbacks"])
+
+        tags = config.setdefault("tags", [])
+        if isinstance(tags, list):
+            tags.extend(tracing_cfg["tags"])
+        else:
+            config["tags"] = list(tracing_cfg["tags"])
+
+        metadata = config.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata.update(tracing_cfg["metadata"])
+        else:
+            config["metadata"] = dict(tracing_cfg["metadata"])
 
     resume_value = {"decision": decision, "edited_answer": edited_answer}
 
     try:
-        final_state = await graph.ainvoke(
+        invoke_config = cast(Optional["RunnableConfig"], config)
+        final_state = cast(Dict[str, Any], await graph.ainvoke(
             Command(resume=resume_value),
-            config=config,
-        )
+            config=invoke_config,
+        ))
 
         answer = final_state.get("answer") or final_state.get("early_exit_answer", "")
 

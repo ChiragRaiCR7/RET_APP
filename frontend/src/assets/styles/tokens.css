@@ -72,6 +72,9 @@
   --text-body: var(--neutral-800);
   --text-secondary: var(--neutral-700);
   --text-tertiary: var(--neutral-600);
+   --text-primary: var(--text-heading);
+   --text-muted: var(--text-secondary);
+   --text-subtle: var(--text-tertiary);
   --text-placeholder: color-mix(in srgb, var(--neutral-500), #ffffff 20%);
   --text-disabled: color-mix(in srgb, var(--neutral-400), #ffffff 18%);
   --text-inverse: #ffffff;
@@ -116,6 +119,8 @@
   --shadow-lg: 0 18px 40px rgba(17, 24, 39, 0.14);
   --shadow-xl: 0 28px 70px rgba(17, 24, 39, 0.16);
   --shadow-2xl: 0 40px 100px rgba(17, 24, 39, 0.20);
+   --shadow-medium: var(--shadow-md);
+   --shadow-heavy: var(--shadow-lg);
 
   /* Brand glow (use sparingly) */
   --shadow-brand: 0 18px 45px rgba(255, 192, 0, 0.18);
@@ -255,6 +260,9 @@
     --text-body: #e6edf3;
     --text-secondary: #adbac7;
     --text-tertiary: #7f8ea3;
+   --text-primary: var(--text-heading);
+   --text-muted: var(--text-secondary);
+   --text-subtle: var(--text-tertiary);
     --text-placeholder: #5b6778;
     --text-disabled: #485466;
 
@@ -270,6 +278,8 @@
     --shadow-lg: 0 22px 46px rgba(0, 0, 0, 0.65);
     --shadow-xl: 0 30px 70px rgba(0, 0, 0, 0.72);
     --shadow-2xl: 0 44px 110px rgba(0, 0, 0, 0.78);
+   --shadow-medium: var(--shadow-md);
+   --shadow-heavy: var(--shadow-lg);
 
     /* Semantic backgrounds (more subtle in dark) */
     --success-bg: rgba(17, 138, 90, 0.18);
@@ -331,6 +341,9 @@
   --text-body: #e6edf3;
   --text-secondary: #adbac7;
   --text-tertiary: #7f8ea3;
+   --text-primary: var(--text-heading);
+   --text-muted: var(--text-secondary);
+   --text-subtle: var(--text-tertiary);
   --text-placeholder: #5b6778;
   --text-disabled: #485466;
 
@@ -344,6 +357,8 @@
   --shadow-lg: 0 22px 46px rgba(0, 0, 0, 0.65);
   --shadow-xl: 0 30px 70px rgba(0, 0, 0, 0.72);
   --shadow-2xl: 0 44px 110px rgba(0, 0, 0, 0.78);
+   --shadow-medium: var(--shadow-md);
+   --shadow-heavy: var(--shadow-lg);
 
   --success-bg: rgba(17, 138, 90, 0.18);
   --warning-bg: rgba(180, 83, 9, 0.18);

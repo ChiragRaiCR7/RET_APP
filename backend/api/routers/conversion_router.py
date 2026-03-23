@@ -60,6 +60,8 @@ from api.services.storage_service import (
     get_session_metadata,
     save_session_metadata,
 )
+from api.services.business_structure_service import build_business_structure
+from api.schemas.business_structure import BusinessStructureResponse
 from api.services.job_service import create_job, get_job, find_active_job
 from api.core.database import get_db
 from api.core.dependencies import get_current_user_id
@@ -955,6 +957,30 @@ def cleanup_session(
     except Exception as e:
         logger.exception("Cleanup failed")
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+
+
+# ============================================================
+# Business Structure
+# ============================================================
+
+@router.get("/business-structure/{session_id}", response_model=BusinessStructureResponse)
+def get_business_structure(
+    session_id: str,
+    current_user_id: str = Depends(get_current_user_id),
+    business_group: Optional[str] = Query(None, description="Business Group label"),
+):
+    """Build 5-layer Business Structure hierarchy from converted CSV contents."""
+    try:
+        return build_business_structure(
+            session_id=session_id,
+            user_id=current_user_id,
+            business_group_name=business_group,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.exception("Business structure build failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================

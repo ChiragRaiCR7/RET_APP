@@ -47,8 +47,9 @@ body {
 
   /* Subtle enterprise texture (token-friendly). Safe: no hard colors. */
   background-image:
-    radial-gradient(800px 400px at 15% 10%, rgba(99, 102, 241, 0.06), transparent 55%),
-    radial-gradient(800px 400px at 85% 30%, rgba(16, 185, 129, 0.05), transparent 60%);
+    radial-gradient(820px 420px at 12% 10%, color-mix(in srgb, var(--brand-primary), transparent 93%), transparent 58%),
+    radial-gradient(880px 420px at 88% 26%, color-mix(in srgb, var(--info), transparent 94%), transparent 62%),
+    radial-gradient(680px 320px at 50% 0%, color-mix(in srgb, var(--surface-overlay), transparent 18%), transparent 72%);
   background-attachment: fixed;
 
   /* Prevent layout jumping when scrollbar appears (modern UX) */
@@ -222,7 +223,7 @@ select {
   border-radius: var(--radius-md);
   border: 1px solid var(--border-medium);
   background: var(--surface-elevated);
-  color: var(--text-primary);
+  color: var(--text-body);
   padding: 0.625rem 0.75rem;
   transition:
     border-color var(--transition-fast),
@@ -309,7 +310,7 @@ button:disabled {
 input:-webkit-autofill,
 textarea:-webkit-autofill,
 select:-webkit-autofill {
-  -webkit-text-fill-color: var(--text-primary);
+  -webkit-text-fill-color: var(--text-body);
   transition: background-color 9999s ease-in-out 0s;
   box-shadow: 0 0 0px 1000px var(--surface-elevated) inset;
   border: 1px solid var(--border-medium);

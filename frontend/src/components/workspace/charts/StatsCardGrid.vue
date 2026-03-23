@@ -1,17 +1,18 @@
 <template>
   <div class="stats-card-grid">
-    <div 
-      v-for="(stat, idx) in stats" 
-      :key="idx" 
+    <div
+      v-for="(stat, idx) in stats"
+      :key="idx"
       class="stat-card"
-      :class="stat.trend ? `trend-${stat.trend}` : ''"
+      :class="stat.trend ? `trend-${stat.trend}` : 'trend-neutral'"
     >
+      <div class="stat-card__accent"></div>
       <div class="stat-icon" v-if="stat.icon">{{ stat.icon }}</div>
       <div class="stat-content">
         <div class="stat-value">{{ formatValue(stat.value, stat.format) }}</div>
         <div class="stat-label">{{ stat.label }}</div>
         <div v-if="stat.change" class="stat-change" :class="`change-${stat.trend || 'neutral'}`">
-          <span class="change-icon">{{ getTrendIcon(stat.trend) }}</span>
+          <span class="change-icon" aria-hidden="true">{{ getTrendIcon(stat.trend) }}</span>
           <span>{{ stat.change }}</span>
         </div>
       </div>
@@ -24,9 +25,7 @@ const props = defineProps({
   stats: {
     type: Array,
     required: true,
-    validator: (value) => {
-      return value.every(stat => stat.label && stat.value !== undefined)
-    }
+    validator: (value) => Array.isArray(value) && value.length > 0
   }
 })
 
@@ -56,91 +55,108 @@ function getTrendIcon(trend) {
 <style scoped>
 .stats-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 1.25rem;
-  margin: 1.5rem 0;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
 }
 
 .stat-card {
-  background: var(--bg-elevated, #2a2a3e);
-  border: 1px solid var(--border-color, #3a3a4e);
-  border-radius: 12px;
-  padding: 1.5rem;
+  position: relative;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md, 12px);
+  padding: 1.25rem 1.25rem 1.25rem 1.5rem;
   display: flex;
-  gap: 1rem;
-  transition: all 0.3s;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  gap: 0.9rem;
+  align-items: flex-start;
+  transition: box-shadow var(--transition-base, 200ms), border-color var(--transition-base, 200ms),
+              transform var(--transition-base, 200ms);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
 }
 
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(255, 192, 0, 0.15);
-  border-color: #FFC000;
+  box-shadow: var(--shadow-md);
+  border-color: var(--brand-primary);
 }
 
-.stat-card.trend-up {
-  border-left: 3px solid #4CAF50;
+/* Left accent bar */
+.stat-card__accent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: var(--radius-md, 12px) 0 0 var(--radius-md, 12px);
+  background: var(--brand-primary);
 }
 
-.stat-card.trend-down {
-  border-left: 3px solid #F44336;
-}
-
-.stat-card.trend-neutral {
-  border-left: 3px solid #FFC000;
-}
+.stat-card.trend-up    .stat-card__accent { background: var(--success, #118a5a); }
+.stat-card.trend-down  .stat-card__accent { background: var(--error, #dc2626); }
+.stat-card.trend-neutral .stat-card__accent { background: var(--brand-primary); }
 
 .stat-icon {
-  font-size: 2.5rem;
+  font-size: 2rem;
   line-height: 1;
-  opacity: 0.8;
+  opacity: 0.85;
+  flex-shrink: 0;
+  padding-top: 0.1rem;
 }
 
 .stat-content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.2rem;
+  min-width: 0;
 }
 
 .stat-value {
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--text-primary, #fff);
-  line-height: 1.2;
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--text-heading);
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-label {
-  font-size: 0.9rem;
-  color: var(--text-secondary, #b0b0b0);
-  font-weight: 500;
+  font-size: var(--text-xs, 0.75rem);
+  font-weight: 600;
+  color: var(--text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.07em;
 }
 
 .stat-change {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin-top: 0.5rem;
+  font-size: var(--text-xs, 0.75rem);
+  font-weight: 700;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-full, 9999px);
+  width: fit-content;
 }
 
 .change-up {
-  color: #4CAF50;
+  color: var(--success, #118a5a);
+  background: var(--success-bg, rgba(17, 138, 90, 0.12));
 }
-
 .change-down {
-  color: #F44336;
+  color: var(--error, #dc2626);
+  background: var(--error-bg, rgba(220, 38, 38, 0.1));
 }
-
 .change-neutral {
-  color: #FFC000;
+  color: var(--brand-secondary);
+  background: var(--brand-subtle);
 }
 
 .change-icon {
-  font-size: 1.1em;
+  font-size: 1.05em;
 }
 </style>

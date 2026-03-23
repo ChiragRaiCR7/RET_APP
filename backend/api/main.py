@@ -15,7 +15,7 @@ import sys
 import time
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from api.core.config import settings
-from api.core.logging_config import configure_logging
+from api.core.logging_config import configure_logging, get_logger
 
 # ✅ Async-first DB functions (preferred)
 from api.core.database import init_db, close_db, check_db_health
@@ -35,35 +35,14 @@ from api.middleware.rate_limit import RateLimitMiddleware
 from api.middleware.security_headers import SecurityHeadersMiddleware
 from api.middleware.error_handler import global_exception_handler
 
-try:
-    from loguru import logger as loguru_logger  # type: ignore
-    _HAS_LOGURU = True
-except ImportError:
-    loguru_logger = None
-    _HAS_LOGURU = False
+from api.routers import auth_router
+from api.routers import conversion_router
+from api.routers import comparison_router
+from api.routers import admin_router
+from api.routers import job_router
+from api.routers import rag_router
 
-
-# -----------------------------
-# Logging adapter (safe for stdlib + loguru)
-# -----------------------------
-
-_std_logger = logging.getLogger(__name__)
-logger = loguru_logger if _HAS_LOGURU else _std_logger
-
-
-def _log(level: str, msg: str, **fields: Any) -> None:
-    """
-    Unified logging helper:
-    - If loguru exists, logs with structured fields via bind().
-    - Else uses stdlib logger with extra fields (safe).
-    """
-    if _HAS_LOGURU and loguru_logger:
-        loguru_logger.bind(**fields).log(level.upper(), msg)
-        return
-
-    # stdlib logging: put custom fields under `extra`
-    extra = {"extra_fields": fields} if fields else None
-    getattr(_std_logger, level.lower(), _std_logger.info)(msg, extra=extra)
+logger = get_logger(__name__)
 
 
 # -----------------------------
@@ -125,77 +104,86 @@ async def validate_configuration() -> None:
                 errors.append(f"Invalid CORS origin format: {origin}")
 
     for w in warnings:
-        _log("warning", "Configuration warning", warning=w)
+        logger.warning("Configuration warning: %s", w)
 
     if errors:
-        _log("error", "Configuration validation failed", errors=errors)
+        logger.error("Configuration validation failed: %s", errors)
         raise ValueError("Configuration validation failed: " + "; ".join(errors))
 
-    _log("info", "Configuration validation passed")
+    logger.info("Configuration validation passed")
 
 
 async def startup_checks(app: FastAPI) -> None:
     """Run comprehensive startup checks."""
-    _log("info", "Starting application startup checks...")
+    logger.info("Starting application startup checks...")
 
     await validate_configuration()
 
     # Initialize database (async-first)
     try:
-        _log("info", "Initializing database connection...")
+        logger.info("Initializing database connection...")
         await init_db()
-        _log("info", "Database initialized successfully")
+        logger.info("Database initialized successfully")
 
         db_ok = await check_db_health()
         if not db_ok:
-            _log("warning", "Database health check failed - service may be degraded.")
+            logger.warning("Database health check failed - service may be degraded.")
             if getattr(settings, "STRICT_STARTUP", False):
                 raise RuntimeError("STRICT_STARTUP enabled and DB health check failed.")
     except Exception as e:
-        _log("error", "Database initialization failed", error=str(e))
+        logger.error("Database initialization failed: %s", e, exc_info=True)
         if getattr(settings, "STRICT_STARTUP", False):
             raise
-        _log("warning", "Continuing startup despite database issues (STRICT_STARTUP is off).")
+        logger.warning("Continuing startup despite database issues (STRICT_STARTUP is off).")
 
-    _log("info", "Startup checks completed")
+    logger.info("Startup checks completed")
 
 
 async def shutdown_cleanup(app: FastAPI) -> None:
     """Clean up resources on shutdown."""
-    _log("info", "Starting graceful shutdown...")
+    logger.info("Starting graceful shutdown...")
+
+    # Close per-session log files
+    try:
+        from api.core.logging_config import close_all_session_loggers
+
+        close_all_session_loggers()
+        logger.info("Session loggers closed")
+    except Exception as e:
+        logger.warning("Failed closing session loggers: %s", e)
 
     # Stop async embedding worker
     try:
         from api.workers.embedding_worker import stop_embedding_worker
 
         await stop_embedding_worker()
-        _log("info", "Embedding worker stopped")
+        logger.info("Embedding worker stopped")
     except Exception as e:
-        _log("warning", "Failed stopping embedding worker", error=str(e))
+        logger.warning("Failed stopping embedding worker: %s", e)
 
     # Stop async background task manager
     try:
         from api.workers.celery_app import shutdown_task_manager
 
         await shutdown_task_manager()
-        _log("info", "Background task manager shutdown complete")
+        logger.info("Background task manager shutdown complete")
     except Exception as e:
-        _log("warning", "Failed shutting down background task manager", error=str(e))
+        logger.warning("Failed shutting down background task manager: %s", e)
 
     # Shutdown async Azure chat service (closes HTTP client)
     try:
         from api.services.ai.async_azure_openai_service import shutdown_async_chat_service
 
         await shutdown_async_chat_service()
-        _log("info", "Async Azure chat service shutdown complete")
+        logger.info("Async Azure chat service shutdown complete")
     except Exception as e:
-        _log("warning", "Failed shutting down async chat service", error=str(e))
+        logger.warning("Failed shutting down async chat service: %s", e)
 
     try:
         await close_db()
     except Exception as e:
-        _log("error", "Error during shutdown cleanup", error=str(e))
-    _log("info", "Shutdown completed")
+        logger.error("Error during shutdown cleanup: %s", e)
+    logger.info("Shutdown completed")
 
 
 # -----------------------------
@@ -211,23 +199,23 @@ async def lifespan(app: FastAPI):
     try:
         from api.core.session_cache import get_session_cache
         await get_session_cache()
-        _log("info", "Session cache initialized")
+        logger.info("Session cache initialized")
     except Exception as e:
-        _log("warning", "Session cache init failed (non-fatal)", error=str(e))
+        logger.warning("Session cache init failed (non-fatal): %s", e)
 
     # Initialize LLM response cache
     try:
         from api.services.ai.langgraph.cache import configure_llm_cache
         configure_llm_cache()
     except Exception as e:
-        _log("warning", "LLM cache init failed (non-fatal)", error=str(e))
+        logger.warning("LLM cache init failed (non-fatal): %s", e)
 
     # Configure LangSmith tracing (sets env vars when enabled)
     try:
         from api.services.ai.langgraph.tracing import configure_langsmith
         configure_langsmith()
     except Exception as e:
-        _log("warning", "LangSmith tracing init failed (non-fatal)", error=str(e))
+        logger.warning("LangSmith tracing init failed (non-fatal): %s", e)
 
     # Configure DSPy modules and load optimised prompts when enabled
     if getattr(settings, "FEATURE_DSPY_ENABLED", False):
@@ -238,20 +226,24 @@ async def lifespan(app: FastAPI):
             from api.services.ai.langgraph.optimize_prompts import load_optimised_modules
             loaded = load_optimised_modules("eval/optimised")
             if any(loaded.values()):
-                _log("info", "DSPy optimised modules loaded", modules=loaded)
+                logger.info("DSPy optimised modules loaded: %s", loaded)
             else:
-                _log("info", "DSPy enabled (no optimised prompts found; using defaults)")
+                logger.info("DSPy enabled (no optimised prompts found; using defaults)")
         except Exception as e:
-            _log("warning", "DSPy init failed (non-fatal)", error=str(e))
+            logger.warning("DSPy init failed (non-fatal): %s", e)
 
     try:
         await startup_checks(app)
-        _log("info", "App started successfully", app=settings.APP_NAME, env=getattr(settings, "ENVIRONMENT", None))
+        logger.info(
+            "App started: %s (env=%s)",
+            settings.APP_NAME,
+            getattr(settings, "ENVIRONMENT", None),
+        )
     except Exception as e:
-        _log("error", "Startup failed", error=str(e))
+        logger.error("Startup failed: %s", e, exc_info=True)
         if getattr(settings, "STRICT_STARTUP", False):
             sys.exit(1)
-        _log("warning", "Continuing despite startup errors (STRICT_STARTUP is off).")
+        logger.warning("Continuing despite startup errors (STRICT_STARTUP is off).")
 
     yield
 
@@ -274,8 +266,8 @@ def create_app() -> FastAPI:
             "A robust API for file conversion, comparison, and workflow management "
             "with advanced features and security."
         ),
-        docs_url="/docs" if getattr(settings, "DEBUG", False) else None,
-        redoc_url="/redoc" if getattr(settings, "DEBUG", False) else None,
+        docs_url="/docs" if getattr(settings, "DOCS_ENABLED", True) else None,
+        redoc_url="/redoc" if getattr(settings, "DOCS_ENABLED", True) else None,
         lifespan=lifespan,
         redirect_slashes=False,
     )
@@ -308,12 +300,11 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """Handle request validation errors with detailed feedback."""
-        _log(
-            "warning",
-            "Validation error",
-            method=request.method,
-            path=request.url.path,
-            errors=exc.errors(),
+        logger.warning(
+            "Validation error %s %s",
+            request.method,
+            request.url.path,
+            extra={"extra_fields": {"errors": exc.errors()}},
         )
 
         return JSONResponse(
@@ -336,13 +327,12 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def general_exception_handler(request: Request, exc: Exception):
         """Handle all unhandled exceptions and delegate to global exception handler."""
-        _log(
-            "error",
-            "Unhandled exception",
-            path=request.url.path,
-            method=request.method,
-            client=(request.client.host if request.client else None),
-            error=str(exc),
+        logger.error(
+            "Unhandled exception %s %s: %s",
+            request.method,
+            request.url.path,
+            exc,
+            exc_info=True,
         )
         return await global_exception_handler(request, exc)
 
@@ -394,7 +384,7 @@ def create_app() -> FastAPI:
                 )
             return {"status": "ready"}
         except Exception as e:
-            _log("error", "Readiness check failed", error=str(e))
+            logger.error("Readiness check failed: %s", e)
             return JSONResponse(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={"status": "not_ready", "reason": str(e)},
@@ -411,31 +401,30 @@ def create_app() -> FastAPI:
     # ✅ Prefix drift fix: do not hardcode "/api/v1"
     API_PREFIX = getattr(settings, "API_PREFIX", "/api/v1")
 
-    from api.routers import auth_router
-    from api.routers import conversion_router
-    from api.routers import comparison_router
-    from api.routers import admin_router
-    from api.routers import job_router
-    from api.routers import rag_router
-
     # Include conversion sub-routers if present in your conversion_router.py
     try:
         from api.routers.conversion_router import workflow_router  # type: ignore
         app.include_router(workflow_router, prefix=API_PREFIX)
-    except Exception:
-        _log("warning", "workflow_router not available in conversion_router.py (skipping).")
+    except ImportError:
+        logger.debug("workflow_router not defined in conversion_router.py (skipping).")
+    except Exception as e:
+        logger.warning("Unexpected error loading workflow_router: %s", e)
 
     try:
         from api.routers.conversion_router import files_router  # type: ignore
         app.include_router(files_router, prefix=API_PREFIX)
-    except Exception:
-        _log("info", "files_router not available in conversion_router.py (skipping).")
+    except ImportError:
+        logger.debug("files_router not defined in conversion_router.py (skipping).")
+    except Exception as e:
+        logger.warning("Unexpected error loading files_router: %s", e)
 
     try:
         from api.routers.conversion_router import advanced_router  # type: ignore
         app.include_router(advanced_router, prefix=API_PREFIX)
-    except Exception:
-        _log("info", "advanced_router not available in conversion_router.py (skipping).")
+    except ImportError:
+        logger.debug("advanced_router not defined in conversion_router.py (skipping).")
+    except Exception as e:
+        logger.warning("Unexpected error loading advanced_router: %s", e)
 
     # Core routers
     app.include_router(auth_router.router, prefix=API_PREFIX)
@@ -445,8 +434,8 @@ def create_app() -> FastAPI:
     app.include_router(job_router.router, prefix=API_PREFIX)
     app.include_router(rag_router.router, prefix=API_PREFIX)
 
-    _log("info", "FastAPI application created", app=settings.APP_NAME, api_prefix=API_PREFIX)
-    _log("info", "API routes available", prefix=f"{API_PREFIX}/*")
+    logger.info("FastAPI application created: %s (prefix=%s)", settings.APP_NAME, API_PREFIX)
+    logger.info("API routes available: %s/*", API_PREFIX)
 
     return app
 

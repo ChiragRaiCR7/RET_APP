@@ -94,6 +94,7 @@ class FileComparisonDetail(BaseModel):
     Includes:
     - record delta counts (added_rows/removed_rows/modified_rows)
     - drilldown CSV paths (csv_path_a/csv_path_b)
+    - Oracle EBS module metadata enrichment
     """
     group: str = Field("", description="Inferred group/module")
     filename: str = Field("", description="Logical filename used for matching")
@@ -118,6 +119,10 @@ class FileComparisonDetail(BaseModel):
 
     csv_path_a: str = Field("", description="Local CSV path for drilldown side A")
     csv_path_b: str = Field("", description="Local CSV path for drilldown side B")
+
+    # Oracle EBS module metadata
+    oracle_module_name: Optional[str] = Field(None, description="Oracle module human name")
+    oracle_business_domain: Optional[str] = Field(None, description="Oracle business domain")
 
 
 # ============================================================
@@ -182,6 +187,9 @@ class ComparisonSummary(BaseModel):
     removed: NonNegativeInt = Field(0)
 
     overall_similarity: PercentFloat = Field(0.0, description="Overall similarity percent (0-100)")
+
+    # Oracle EBS domain breakdown: {"Finance & Accounting": 12, ...}
+    by_oracle_domain: Optional[Dict[str, int]] = Field(None, description="File count by Oracle business domain")
 
 
 class FolderChange(BaseModel):

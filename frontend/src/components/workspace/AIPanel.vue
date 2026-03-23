@@ -282,6 +282,7 @@
                   :class="{
                     'groupRow--indexed': group.isIndexed,
                     'groupRow--auto': group.isAutoEmbedded,
+                    'groupRow--excluded': group.isExcludedByAdmin,
                     'groupRow--selected': selectedGroupsForIndex.includes(group.name)
                   }"
                 >
@@ -290,19 +291,27 @@
                     type="checkbox"
                     :value="group.name"
                     v-model="selectedGroupsForIndex"
-                    :disabled="indexing || group.isAutoEmbedded"
+                    :disabled="indexing || group.isAutoEmbedded || group.isExcludedByAdmin"
                   />
                   <div class="groupRow__main">
                     <div class="groupRow__name">
-                      {{ group.name }}
+                      <span v-if="indexing && selectedGroupsForIndex.includes(group.name) && !group.isIndexed" class="spinner spinner--inline" aria-hidden="true"></span>
+                      {{ getGroupDisplayName(group.name) }}
+                      <span
+                        v-if="group.oracle_domain"
+                        class="tag tag--domain"
+                        :style="{ background: getDomainColor(group.oracle_domain), color: '#fff' }"
+                      >{{ group.oracle_domain }}</span>
                       <span v-if="group.isAutoEmbedded" class="tag tag--auto">Auto</span>
+                      <span v-if="group.isExcludedByAdmin" class="tag tag--danger">Excluded</span>
                     </div>
 
                     <div class="groupRow__status">
+                      <span v-if="group.isExcludedByAdmin" class="tag tag--danger">🚫 Excluded by admin</span>
                       <span v-if="group.isIndexed" class="tag tag--ok">
                         ✅ {{ group.chunkCount ? group.chunkCount + ' chunks' : 'Indexed' }}
                       </span>
-                      <span v-else class="tag tag--muted">○ Not indexed</span>
+                      <span v-else-if="!group.isExcludedByAdmin" class="tag tag--muted">○ Not indexed</span>
                     </div>
                   </div>
                 </label>
@@ -324,10 +333,20 @@
                 class="btn btn--primary embed__indexBtn"
                 type="button"
                 @click="indexConvertedFiles"
-                :disabled="indexing || selectedGroupsForIndex.length === 0"
+                :disabled="indexing || stoppingIndexing || selectedGroupsForIndex.length === 0"
               >
                 <span v-if="indexing" class="spinner" aria-hidden="true"></span>
                 {{ indexing ? 'Indexing…' : `🚀 Index ${selectedGroupsForIndex.length} group(s)` }}
+              </button>
+
+              <button
+                v-if="indexing"
+                class="btn btn--danger btn--sm"
+                type="button"
+                @click="stopIndexing"
+                :disabled="stoppingIndexing"
+              >
+                {{ stoppingIndexing ? 'Stopping…' : '⏹ Stop' }}
               </button>
 
               <p v-if="indexedGroupsList.length > 0" class="callout">
@@ -399,6 +418,8 @@
 import { ref, nextTick, onMounted, onUnmounted, watch, computed, h, render } from 'vue'
 import api from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
+import { formatOracleGroupLabel, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
+import { normalizeGroupName } from '@/utils/groups'
 import MessageRenderer from './charts/MessageRenderer.vue'
 import ChartRenderer from './charts/ChartRenderer.vue'
 import DataTable from './charts/DataTable.vue'
@@ -434,9 +455,11 @@ const availableGroups = ref([])          // all groups from API (+ scanned)
 const selectedGroupsForIndex = ref([])   // selection for manual indexing
 const loadingGroups = ref(false)
 const indexing = ref(false)
+const stoppingIndexing = ref(false)
 const indexedGroupsList = ref([])        // which are already indexed
 const groupChunkCounts = ref({})         // group -> chunks
 const autoEmbeddedGroups = ref([])       // from API
+const adminExcludedGroups = ref([])      // from API
 const groupSearch = ref('')
 
 let embedPollTimer = null
@@ -465,7 +488,9 @@ const groupsWithStatus = computed(() =>
     name,
     isIndexed: indexedGroupsList.value.includes(name),
     chunkCount: groupChunkCounts.value[name] || 0,
-    isAutoEmbedded: autoEmbeddedGroups.value.map(x => String(x).toUpperCase()).includes(String(name).toUpperCase())
+    isAutoEmbedded: autoEmbeddedGroups.value.map(normalizeGroupName).includes(normalizeGroupName(name)),
+    isExcludedByAdmin: adminExcludedGroups.value.map(normalizeGroupName).includes(normalizeGroupName(name)),
+    oracle_domain: getOracleBusinessDomain(name)
   }))
 )
 
@@ -487,6 +512,7 @@ watch(
     indexedGroupsList.value = []
     groupChunkCounts.value = {}
     autoEmbeddedGroups.value = []
+    adminExcludedGroups.value = []
     availableGroups.value = []
     messages.value = []
 
@@ -538,6 +564,10 @@ function normalizeGroupNames(groups) {
   return groups.map(g => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
 }
 
+function getGroupDisplayName(group) {
+  return formatOracleGroupLabel(group)
+}
+
 function mergeGroupNames(base, incoming) {
   return Array.from(new Set([...(base || []), ...(incoming || [])]))
 }
@@ -549,8 +579,10 @@ function refreshSelection() {
   // If empty, pick first non-indexed, non-auto few groups for convenience
   if (!selectedGroupsForIndex.value.length) {
     const autoSet = new Set(autoEmbeddedGroups.value.map(x => String(x).toUpperCase()))
+    const excludedSet = new Set(adminExcludedGroups.value.map(x => String(x).toUpperCase()))
     selectedGroupsForIndex.value = availableGroups.value
       .filter(g => !autoSet.has(String(g).toUpperCase()))
+      .filter(g => !excludedSet.has(String(g).toUpperCase()))
       .filter(g => !indexedGroupsList.value.includes(g))
       .slice(0, 5)
   }
@@ -636,9 +668,22 @@ function normalizeVisualizationBlocks(text) {
 }
 
 // ----- Programmatic render mounts -----
+function _markVizError(id, msg) {
+  nextTick().then(() => {
+    const el = document.getElementById(id)
+    if (!el) return
+    el.innerHTML = `<div class="viz-render-error"><span aria-hidden="true">⚠</span> ${msg}</div>`
+  })
+}
+
 async function renderIntoContainer(id, component, propsObj) {
   await nextTick()
-  const el = document.getElementById(id)
+  let el = document.getElementById(id)
+  if (!el) {
+    // Give the DOM one more animation frame to commit v-html output
+    await new Promise(r => requestAnimationFrame(r))
+    el = document.getElementById(id)
+  }
   if (!el) return
   render(null, el)
   render(h(component, propsObj), el)
@@ -646,28 +691,129 @@ async function renderIntoContainer(id, component, propsObj) {
 }
 
 function handleChartRender({ id, config }) {
-  if (!config || !config.type || !config.data) return
+  if (!config || !config.type || !config.data) {
+    _markVizError(id, 'Chart data unavailable')
+    return
+  }
   renderIntoContainer(id, ChartRenderer, { chartConfig: config })
 }
 
+function normalizeTableConfig(raw) {
+  if (!raw) return null
+
+  let cfg = raw
+  if (Array.isArray(raw)) {
+    cfg = { data: raw }
+  }
+
+  if (typeof cfg === 'string') {
+    try {
+      cfg = JSON.parse(cfg)
+    } catch {
+      return null
+    }
+  }
+
+  let columns = Array.isArray(cfg.columns) ? cfg.columns : []
+  let rows = Array.isArray(cfg.data) ? cfg.data : (Array.isArray(cfg.rows) ? cfg.rows : [])
+
+  if (!rows.length) return null
+
+  // rows as arrays → convert to objects for DataTable
+  if (Array.isArray(rows[0])) {
+    const normalizedColumns = columns.length
+      ? columns.map((c, idx) => {
+          if (typeof c === 'string') return { key: c, label: c }
+          if (c && typeof c === 'object') return { key: c.key || c.label || `col_${idx + 1}`, label: c.label || c.key || `Column ${idx + 1}` }
+          return { key: `col_${idx + 1}`, label: `Column ${idx + 1}` }
+        })
+      : rows[0].map((_, idx) => ({ key: `col_${idx + 1}`, label: `Column ${idx + 1}` }))
+
+    const normalizedRows = rows.map(r => {
+      const obj = {}
+      normalizedColumns.forEach((c, i) => {
+        obj[c.key] = r[i]
+      })
+      return obj
+    })
+
+    return {
+      ...cfg,
+      columns: normalizedColumns,
+      data: normalizedRows
+    }
+  }
+
+  // rows as objects
+  if (typeof rows[0] === 'object' && rows[0] !== null) {
+    const normalizedColumns = columns.length
+      ? columns.map((c, idx) => {
+          if (typeof c === 'string') return { key: c, label: c }
+          if (c && typeof c === 'object') return { key: c.key || c.label || `col_${idx + 1}`, label: c.label || c.key || `Column ${idx + 1}` }
+          return { key: `col_${idx + 1}`, label: `Column ${idx + 1}` }
+        })
+      : Object.keys(rows[0]).map(k => ({ key: k, label: k }))
+
+    return {
+      ...cfg,
+      columns: normalizedColumns,
+      data: rows
+    }
+  }
+
+  // primitive rows
+  const normalizedRows = rows.map(v => ({ value: v }))
+  return {
+    ...cfg,
+    columns: [{ key: 'value', label: 'Value' }],
+    data: normalizedRows
+  }
+}
+
 function handleTableRender({ id, config }) {
-  if (!config || !Array.isArray(config.data)) return
+  const normalized = normalizeTableConfig(config)
+  if (!normalized || !Array.isArray(normalized.data) || !normalized.data.length) {
+    _markVizError(id, 'Table data unavailable or empty')
+    return
+  }
+
   renderIntoContainer(id, DataTable, {
-    data: config.data,
-    columns: config.columns || [],
-    title: config.title || null,
-    sortable: config.sortable !== false,
-    exportable: config.exportable !== false,
-    showSummary: config.showSummary === true,
-    summary: config.summary || null,
-    maxRows: config.maxRows || 10,
-    tableClass: config.tableClass || ''
+    data: normalized.data,
+    columns: normalized.columns || [],
+    title: normalized.title || null,
+    sortable: normalized.sortable !== false,
+    exportable: normalized.exportable !== false,
+    showSummary: normalized.showSummary === true,
+    summary: normalized.summary || null,
+    maxRows: normalized.maxRows || 15,
+    tableClass: normalized.tableClass || ''
   })
 }
 
 function handleStatsRender({ id, config }) {
-  if (!config || !Array.isArray(config.stats)) return
-  renderIntoContainer(id, StatsCardGrid, { stats: config.stats })
+  if (!config) return
+
+  let stats = null
+
+  if (Array.isArray(config.stats)) {
+    // Documented shape: { stats: [{label, value, change?, trend?, icon?}] }
+    stats = config.stats
+  } else if (Array.isArray(config.cards)) {
+    // Backend sometimes uses 'cards' key
+    stats = config.cards
+  } else if (typeof config === 'object' && !Array.isArray(config)) {
+    // Flat key→value object emitted by LLM: { "Distinct Fields": 80, ... }
+    stats = Object.entries(config)
+      .filter(([k]) => !['title', 'description', 'subtitle'].includes(k.toLowerCase()))
+      .map(([label, value]) => ({ label, value: value == null ? '—' : String(value) }))
+  }
+
+  if (!stats || !stats.length) {
+    _markVizError(id, 'No statistics data available')
+    return
+  }
+
+  renderIntoContainer(id, StatsCardGrid, { stats })
 }
 
 // ----- Backend-aligned: chat history -----
@@ -863,8 +1009,11 @@ async function copyMessage(content) {
 // ----- Group selection -----
 function selectAllGroups() {
   // Select all non-auto groups
-  const autoSet = new Set(autoEmbeddedGroups.value.map(x => String(x).toUpperCase()))
-  selectedGroupsForIndex.value = availableGroups.value.filter(g => !autoSet.has(String(g).toUpperCase()))
+  const autoSet = new Set(autoEmbeddedGroups.value.map(normalizeGroupName))
+  const excludedSet = new Set(adminExcludedGroups.value.map(normalizeGroupName))
+  selectedGroupsForIndex.value = availableGroups.value.filter(
+    g => !autoSet.has(normalizeGroupName(g)) && !excludedSet.has(normalizeGroupName(g))
+  )
 }
 function selectAutoGroups() {
   // Auto groups are not selectable for manual indexing (backend skips them anyway),
@@ -889,6 +1038,7 @@ async function loadSessionGroups() {
     const allNames = all.map(g => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
 
     autoEmbeddedGroups.value = (res.data.auto_embedded_groups || []).map(x => String(x))
+    adminExcludedGroups.value = (res.data.excluded_groups || []).map(x => String(x))
     availableGroups.value = mergeGroupNames(allNames, scannedGroupNames.value)
 
     // Build indexed list + chunk counts from all_groups
@@ -925,10 +1075,13 @@ async function indexConvertedFiles() {
   if (!selectedGroupsForIndex.value.length) return
 
   // Strip auto-embedded groups (backend skips them; we avoid confusing UX)
-  const autoSet = new Set(autoEmbeddedGroups.value.map(x => String(x).toUpperCase()))
-  const groupsToIndex = selectedGroupsForIndex.value.filter(g => !autoSet.has(String(g).toUpperCase()))
+  const autoSet = new Set(autoEmbeddedGroups.value.map(normalizeGroupName))
+  const excludedSet = new Set(adminExcludedGroups.value.map(normalizeGroupName))
+  const groupsToIndex = selectedGroupsForIndex.value.filter(
+    g => !autoSet.has(normalizeGroupName(g)) && !excludedSet.has(normalizeGroupName(g))
+  )
   if (!groupsToIndex.length) {
-    toast.info('Selected groups are auto-embedded or already managed by admin.')
+    toast.info('Selected groups are auto-embedded or excluded by admin.')
     return
   }
 
@@ -994,33 +1147,72 @@ function startEmbeddingTaskPoll(taskId) {
     }
   }, 2500)
 }
+
+async function stopIndexing() {
+  if (!conversionSessionId.value || stoppingIndexing.value) return
+  stoppingIndexing.value = true
+
+  try {
+    const res = await api.post(`/v2/ai/auto-embed/stop/${conversionSessionId.value}`)
+    const stopped = Boolean(res?.data?.stopped)
+
+    if (!stopped) {
+      throw new Error(res?.data?.message || 'Stop request was not acknowledged by the server.')
+    }
+
+    if (embedPollTimer) {
+      clearInterval(embedPollTimer)
+      embedPollTimer = null
+    }
+
+    indexing.value = false
+
+    const cancelled = Number(res?.data?.worker_tasks_cancelled || 0)
+    const suppressed = Boolean(res?.data?.auto_embed_suppressed)
+
+    let message = cancelled > 0
+      ? `Embedding stopped. Cancelled ${cancelled} background task(s).`
+      : 'Embedding stopped.'
+
+    if (suppressed) {
+      message += ' Auto-embedding is paused for this session until you manually index again.'
+    }
+
+    toast.info(message)
+    await loadSessionGroups()
+  } catch (e) {
+    toast.error('Failed to stop embedding: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    stoppingIndexing.value = false
+  }
+}
 </script>
 <style scoped>
 /* =========================
    Enterprise Tokens (fallbacks)
    ========================= */
 .ret-ai {
-  --bg0: var(--surface-base, #0b1220);
-  --bg1: var(--surface-elevated, #0f1a2e);
-  --bg2: var(--surface-active, #121f38);
+  --bg0: var(--surface-base, #ffffff);
+  --bg1: var(--surface-elevated, #f8fafc);
+  --bg2: var(--surface-hover, #eef2f7);
 
-  --text: var(--text-heading, rgba(255,255,255,0.92));
-  --muted: var(--text-secondary, rgba(255,255,255,0.62));
-  --muted2: var(--text-tertiary, rgba(255,255,255,0.48));
+  --text: var(--text-heading, #111827);
+  --muted: var(--text-secondary, #374151);
+  --muted2: var(--text-tertiary, #6b7280);
 
-  --border: var(--border-light, rgba(255,255,255,0.10));
-  --border2: var(--border-medium, rgba(255,255,255,0.14));
+  --border: var(--border-light, #dbe3ee);
+  --border2: var(--border-medium, #c4cfde);
 
-  --primary: var(--brand-primary, #6d5efc);
-  --primary2: var(--brand-light, #8b7bff);
+  --primary: var(--brand-primary, #ffc000);
+  --primary2: var(--brand-secondary, #f59e0b);
   --success: var(--success, #22c55e);
   --warn: var(--warning, #f59e0b);
 
   --r12: 12px;
   --r16: 16px;
 
-  --shadow: var(--shadow-heavy, 0 10px 30px rgba(0,0,0,0.35));
-  --shadow2: var(--shadow-medium, 0 6px 18px rgba(0,0,0,0.25));
+  --shadow: var(--shadow-heavy, 0 18px 40px rgba(17, 24, 39, 0.14));
+  --shadow2: var(--shadow-medium, 0 10px 24px rgba(17, 24, 39, 0.10));
 
   height: 100%;
   display: flex;
@@ -1029,8 +1221,8 @@ function startEmbeddingTaskPoll(taskId) {
   border: 1px solid var(--border);
   overflow: hidden;
   background:
-    radial-gradient(1200px 600px at 20% -10%, rgba(109, 94, 252, 0.22), transparent 55%),
-    radial-gradient(900px 500px at 110% 10%, rgba(34, 197, 94, 0.10), transparent 60%),
+    radial-gradient(1200px 600px at 20% -10%, color-mix(in srgb, var(--brand-primary), transparent 92%), transparent 55%),
+    radial-gradient(900px 500px at 110% 10%, color-mix(in srgb, var(--info), transparent 94%), transparent 60%),
     linear-gradient(180deg, var(--bg0), var(--bg1));
   box-shadow: var(--shadow);
 }
@@ -1043,7 +1235,7 @@ function startEmbeddingTaskPoll(taskId) {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand-primary), transparent 96%), transparent);
   backdrop-filter: blur(10px);
 }
 .ret-ai__titleRow { display: flex; align-items: center; gap: 10px; }
@@ -1052,7 +1244,7 @@ function startEmbeddingTaskPoll(taskId) {
   border-radius: 14px;
   display: grid; place-items: center;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.04);
+  background: var(--surface-elevated);
 }
 .ret-ai__title { margin: 0; font-size: 1.02rem; color: var(--text); letter-spacing: 0.2px; }
 .ret-ai__badge {
@@ -1060,9 +1252,9 @@ function startEmbeddingTaskPoll(taskId) {
   font-weight: 800;
   padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(109,94,252,0.35);
-  background: rgba(109,94,252,0.14);
-  color: rgba(230,226,255,0.95);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border2) 55%);
+  background: var(--brand-subtle);
+  color: var(--text-heading);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -1075,11 +1267,11 @@ function startEmbeddingTaskPoll(taskId) {
   padding: 8px 10px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-base);
   color: var(--muted);
 }
-.ret-ai__dot { width: 8px; height: 8px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 4px rgba(245,158,11,0.15); }
-.ret-ai__sessionPill--ok .ret-ai__dot { background: var(--success); box-shadow: 0 0 0 4px rgba(34,197,94,0.15); }
+.ret-ai__dot { width: 8px; height: 8px; border-radius: 999px; background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warning), transparent 80%); }
+.ret-ai__sessionPill--ok .ret-ai__dot { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success), transparent 80%); }
 
 /* Tools */
 .ret-ai__tools {
@@ -1088,25 +1280,25 @@ function startEmbeddingTaskPoll(taskId) {
   justify-content: space-between;
   gap: 12px;
   border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,0.02);
+  background: var(--surface-base);
 }
 .ret-ai__toolGroup { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ret-ai__toolGroup--right { justify-content: flex-end; }
 .ret-ai__toolLabel { color: var(--muted2); font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 4px; }
 .ret-ai__hintPill {
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.18);
+  background: var(--surface-elevated);
   color: var(--muted);
   padding: 7px 10px;
   border-radius: 999px;
   font-size: 0.78rem;
 }
 .ret-ai__hintPill code {
-  background: rgba(255,255,255,0.05);
+  background: var(--surface-base);
   padding: 2px 6px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  color: rgba(255,255,255,0.86);
+  color: var(--text-primary);
 }
 
 /* Layout */
@@ -1130,7 +1322,7 @@ function startEmbeddingTaskPoll(taskId) {
   flex-direction: column;
   border-radius: var(--r16);
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.02);
+  background: var(--surface-base);
   overflow: hidden;
 }
 .ret-ai__chatHeader {
@@ -1140,7 +1332,7 @@ function startEmbeddingTaskPoll(taskId) {
   justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-elevated);
 }
 .ret-ai__chat { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; scroll-behavior: smooth; }
 
@@ -1152,22 +1344,22 @@ function startEmbeddingTaskPoll(taskId) {
   border-radius: 14px;
   display: grid; place-items: center;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-elevated);
 }
 .msg--user .msg__avatar {
-  background: linear-gradient(135deg, rgba(109,94,252,0.9), rgba(139,123,255,0.8));
-  border-color: rgba(255,255,255,0.22);
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+  border-color: var(--border2);
 }
 .msg__card {
   flex: 1;
   border-radius: 16px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-elevated);
   padding: 10px 12px;
 }
 .msg--user .msg__card {
-  background: linear-gradient(180deg, rgba(109,94,252,0.12), rgba(255,255,255,0.03));
-  border-color: rgba(109,94,252,0.34);
+  background: color-mix(in srgb, var(--brand-subtle), var(--surface-elevated) 60%);
+  border-color: var(--border-light);
 }
 .msg__header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .msg__meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
@@ -1181,9 +1373,9 @@ function startEmbeddingTaskPoll(taskId) {
   font-weight: 800;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(109,94,252,0.35);
-  background: rgba(109,94,252,0.12);
-  color: rgba(230,226,255,0.95);
+  border: 1px solid color-mix(in srgb, var(--info), var(--border) 55%);
+  background: var(--info-bg);
+  color: var(--info);
   text-transform: capitalize;
 }
 
@@ -1192,18 +1384,18 @@ function startEmbeddingTaskPoll(taskId) {
   height: 34px;
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-base);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
 }
-.iconBtn:hover { background: rgba(255,255,255,0.06); border-color: var(--border2); }
+.iconBtn:hover { background: var(--surface-hover); border-color: var(--border2); }
 .iconBtn:active { transform: translateY(1px); }
-.iconBtn:focus-visible { outline: 2px solid rgba(109,94,252,0.6); outline-offset: 2px; }
+.iconBtn:focus-visible { outline: 2px solid color-mix(in srgb, var(--brand-primary), transparent 25%); outline-offset: 2px; }
 
 /* Typing */
 .msg--typing .msg__card { padding: 14px 12px; }
 .typing { display: inline-flex; gap: 6px; align-items: center; }
-.typing span { width: 8px; height: 8px; border-radius: 999px; background: rgba(255,255,255,0.35); animation: bounce 1.1s infinite ease-in-out; }
+.typing span { width: 8px; height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--brand-primary), transparent 35%); animation: bounce 1.1s infinite ease-in-out; }
 .typing span:nth-child(2){ animation-delay: 0.12s; }
 .typing span:nth-child(3){ animation-delay: 0.24s; }
 @keyframes bounce { 0%,100%{ transform: translateY(0); opacity: 0.5; } 50%{ transform: translateY(-5px); opacity: 1; } }
@@ -1215,7 +1407,7 @@ function startEmbeddingTaskPoll(taskId) {
   padding: 18px;
   border-radius: 18px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand-subtle), var(--surface-base) 25%), var(--surface-elevated));
   text-align: center;
 }
 .welcome__icon {
@@ -1223,8 +1415,8 @@ function startEmbeddingTaskPoll(taskId) {
   margin: 0 auto 10px;
   border-radius: 18px;
   display: grid; place-items: center;
-  background: rgba(109,94,252,0.14);
-  border: 1px solid rgba(109,94,252,0.30);
+  background: var(--brand-subtle);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border2) 55%);
 }
 .welcome__title { margin: 0; color: var(--text); }
 .welcome__text { margin: 8px auto 0; color: var(--muted); line-height: 1.6; max-width: 62ch; }
@@ -1235,16 +1427,16 @@ function startEmbeddingTaskPoll(taskId) {
   padding: 8px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-base);
   color: var(--muted);
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
-.pill:hover { background: rgba(109,94,252,0.10); border-color: rgba(109,94,252,0.30); color: var(--text); }
+.pill:hover { background: var(--brand-subtle); border-color: color-mix(in srgb, var(--brand-primary), var(--border2) 50%); color: var(--text); }
 .pill:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Composer */
-.ret-ai__composer { padding: 12px; border-top: 1px solid var(--border); background: rgba(255,255,255,0.02); }
+.ret-ai__composer { padding: 12px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--surface-base), var(--surface-overlay) 45%); }
 .composer { display: flex; gap: 10px; align-items: flex-end; }
 .composer__input {
   flex: 1;
@@ -1253,26 +1445,26 @@ function startEmbeddingTaskPoll(taskId) {
   max-height: 160px;
   border-radius: 16px;
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.18);
+  background: var(--surface-base);
   color: var(--text);
   padding: 12px 12px;
   line-height: 1.5;
 }
 .composer__input:focus {
   outline: none;
-  border-color: rgba(109,94,252,0.55);
-  box-shadow: 0 0 0 4px rgba(109,94,252,0.18);
+  border-color: color-mix(in srgb, var(--brand-primary), var(--border2) 35%);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-primary), transparent 80%);
 }
 .composer__send { width: 52px; height: 46px; border-radius: 16px; display: inline-flex; justify-content: center; align-items: center; }
 .composer__footer { margin-top: 8px; display: flex; justify-content: space-between; font-size: 0.78rem; }
 .counter { color: var(--muted2); }
-.counter--warn { color: rgba(255, 240, 205, 0.95); }
+.counter--warn { color: var(--warning); }
 
 /* Buttons */
 .btn {
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.04);
+  background: var(--surface-elevated);
   color: var(--text);
   padding: 9px 12px;
   cursor: pointer;
@@ -1281,25 +1473,28 @@ function startEmbeddingTaskPoll(taskId) {
   gap: 8px;
   transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
 }
-.btn:hover { background: rgba(255,255,255,0.06); border-color: var(--border2); }
+.btn:hover { background: var(--surface-hover); border-color: var(--border2); box-shadow: var(--shadow-xs); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
-.btn:focus-visible { outline: 2px solid rgba(109,94,252,0.65); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid color-mix(in srgb, var(--brand-primary), transparent 25%); outline-offset: 2px; }
 
 .btn--primary {
   background: linear-gradient(135deg, var(--primary), var(--primary2));
-  border-color: rgba(255,255,255,0.20);
+  border-color: color-mix(in srgb, var(--brand-primary), #000 8%);
+  color: var(--brand-on);
 }
 .btn--ghost { background: transparent; }
-.btn--soft { background: rgba(255,255,255,0.03); }
+.btn--soft { background: linear-gradient(180deg, var(--surface-base), var(--surface-raised)); }
 .btn--sm { padding: 7px 10px; font-size: 0.85rem; }
+.btn--danger { background: var(--error-bg); border-color: var(--error-border); color: var(--error); }
+.btn--danger:hover { background: color-mix(in srgb, var(--error-bg), var(--surface-hover) 25%); }
 
 /* Side panel column */
 .ret-ai__side { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .panel {
   border-radius: var(--r16);
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.02);
+  background: var(--surface-base);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1312,7 +1507,7 @@ function startEmbeddingTaskPoll(taskId) {
   justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,0.03);
+  background: var(--surface-elevated);
 }
 .panel__title { display: flex; align-items: center; gap: 8px; color: var(--text); }
 .panel__content { padding: 12px; overflow: auto; }
@@ -1324,7 +1519,7 @@ function startEmbeddingTaskPoll(taskId) {
 .source {
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.18);
+  background: var(--surface-elevated);
   padding: 10px;
 }
 .source__top { display: flex; align-items: center; gap: 8px; }
@@ -1332,10 +1527,10 @@ function startEmbeddingTaskPoll(taskId) {
   width: 28px; height: 28px;
   border-radius: 10px;
   display: grid; place-items: center;
-  border: 1px solid rgba(109,94,252,0.25);
-  background: rgba(109,94,252,0.12);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border2) 55%);
+  background: var(--brand-subtle);
   font-weight: 900;
-  color: rgba(230,226,255,0.95);
+  color: var(--text-heading);
 }
 .source__doc {
   flex: 1;
@@ -1356,11 +1551,11 @@ function startEmbeddingTaskPoll(taskId) {
   padding: 3px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.04);
+  background: var(--surface-raised);
   white-space: nowrap;
 }
-.score--high { border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.12); color: rgba(196, 255, 219, 0.95); }
-.score--mid  { border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.12); color: rgba(255, 240, 205, 0.95); }
+.score--high { border-color: var(--success-border); background: var(--success-bg); color: var(--success); }
+.score--mid  { border-color: var(--warning-border); background: var(--warning-bg); color: var(--warning); }
 .score--low  { color: var(--muted2); }
 
 /* Embedding list */
@@ -1375,7 +1570,7 @@ function startEmbeddingTaskPoll(taskId) {
   flex: 1;
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.18);
+  background: var(--surface-base);
   padding: 8px 10px;
 }
 .search__input {
@@ -1390,7 +1585,7 @@ function startEmbeddingTaskPoll(taskId) {
 .embed__list {
   border-radius: 14px;
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.12);
+  background: var(--surface-base);
   overflow: auto;
   max-height: 320px;
 }
@@ -1408,13 +1603,14 @@ function startEmbeddingTaskPoll(taskId) {
   gap: 10px;
   padding: 10px;
   cursor: pointer;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--border);
 }
 .groupRow:last-child { border-bottom: none; }
-.groupRow:hover { background: rgba(255,255,255,0.03); }
-.groupRow--selected { background: rgba(109,94,252,0.10); }
-.groupRow--indexed { border-left: 3px solid rgba(34,197,94,0.85); }
-.groupRow--auto { border-left: 3px solid rgba(109,94,252,0.85); }
+.groupRow:hover { background: var(--surface-hover); }
+.groupRow--selected { background: var(--brand-subtle); }
+.groupRow--indexed { border-left: 4px solid var(--success); background: color-mix(in srgb, var(--success), transparent 92%); }
+.groupRow--auto { border-left: 3px solid var(--brand-primary); }
+.groupRow--excluded { border-left: 3px solid var(--error); background: color-mix(in srgb, var(--error), transparent 92%); }
 
 .groupRow__check { width: 18px; height: 18px; accent-color: var(--primary); }
 .groupRow__main { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -1427,12 +1623,14 @@ function startEmbeddingTaskPoll(taskId) {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255,255,255,0.04);
+  background: var(--surface-elevated);
   color: var(--muted);
 }
-.tag--auto { border-color: rgba(109,94,252,0.35); background: rgba(109,94,252,0.14); color: rgba(230,226,255,0.95); }
-.tag--ok { border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.12); color: rgba(196, 255, 219, 0.95); }
+.tag--auto { border-color: color-mix(in srgb, var(--brand-primary), var(--border2) 55%); background: var(--brand-subtle); color: var(--text-heading); }
+.tag--ok { border-color: var(--success-border); background: var(--success-bg); color: var(--success); }
 .tag--muted { color: var(--muted2); }
+.tag--danger { border-color: var(--error-border); background: var(--error-bg); color: var(--error); }
+.tag--domain { border-color: transparent; font-size: 0.7rem; padding: 1px 6px; font-weight: 700; }
 
 .embed__actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .embed__indexBtn { width: 100%; justify-content: center; }
@@ -1442,11 +1640,11 @@ function startEmbeddingTaskPoll(taskId) {
   margin: 0;
   padding: 10px;
   border-radius: 14px;
-  border: 1px solid rgba(34,197,94,0.25);
-  background: rgba(34,197,94,0.08);
-  color: rgba(196, 255, 219, 0.95);
+  border: 1px solid var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
 }
-.callout__names { color: rgba(196, 255, 219, 0.95); font-weight: 700; }
+.callout__names { color: inherit; font-weight: 700; }
 
 /* Empty */
 .empty {
@@ -1464,9 +1662,9 @@ function startEmbeddingTaskPoll(taskId) {
   right: 16px;
   bottom: 86px; /* above composer */
   border-radius: 999px;
-  border: 1px solid rgba(109,94,252,0.35);
-  background: rgba(109,94,252,0.18);
-  color: rgba(255,255,255,0.92);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border2) 55%);
+  background: color-mix(in srgb, var(--brand-subtle), var(--surface-base) 18%);
+  color: var(--text-heading);
   padding: 10px 14px;
   cursor: pointer;
   box-shadow: var(--shadow2);
@@ -1477,7 +1675,7 @@ function startEmbeddingTaskPoll(taskId) {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.55);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   z-index: 1200;
@@ -1487,7 +1685,7 @@ function startEmbeddingTaskPoll(taskId) {
   width: min(720px, 96vw);
   border-radius: 18px;
   border: 1px solid var(--border);
-  background: rgba(18,31,56,0.92);
+  background: var(--surface-elevated);
   box-shadow: var(--shadow);
   outline: none;
 }
@@ -1505,15 +1703,15 @@ function startEmbeddingTaskPoll(taskId) {
   margin-top: 10px;
   border-radius: 16px;
   border: 1px solid var(--border);
-  background: rgba(0,0,0,0.20);
+  background: var(--surface-base);
   color: var(--text);
   padding: 12px;
   resize: vertical;
 }
 .modal__textarea:focus {
   outline: none;
-  border-color: rgba(109,94,252,0.55);
-  box-shadow: 0 0 0 4px rgba(109,94,252,0.18);
+  border-color: color-mix(in srgb, var(--brand-primary), var(--border2) 35%);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand-primary), transparent 80%);
 }
 .modal__footer {
   padding: 12px 14px;
@@ -1527,14 +1725,29 @@ function startEmbeddingTaskPoll(taskId) {
 .spinner {
   width: 18px; height: 18px;
   border-radius: 999px;
-  border: 2px solid rgba(255,255,255,0.30);
-  border-top-color: rgba(255,255,255,0.90);
+  border: 2px solid color-mix(in srgb, var(--text-secondary), transparent 70%);
+  border-top-color: var(--text-primary);
   display: inline-block;
   animation: spin 0.75s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.spinner--inline { width: 12px; height: 12px; border-width: 1.5px; flex-shrink: 0; }
 
 .muted { color: var(--muted2); }
+
+/* Inline visualization error — shown when a block cannot render */
+.viz-render-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  padding: 0.5rem 0.9rem;
+  background: var(--error-bg, rgba(220, 38, 38, 0.1));
+  border: 1px solid var(--error-border, rgba(220, 38, 38, 0.25));
+  border-radius: var(--r12, 10px);
+  color: var(--error, #dc2626);
+  font-size: 0.83rem;
+  margin: 0.5rem 0;
+}
 
 .srOnly {
   position: absolute !important;

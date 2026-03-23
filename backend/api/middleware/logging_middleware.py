@@ -1,42 +1,91 @@
-import time
-import logging
-from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+"""
+HTTP request/response logging middleware.
 
+Improvements:
+- time.monotonic() for accurate, clock-drift-immune duration measurement.
+- Client IP included in every log entry for abuse detection.
+- try/except around call_next ensures exceptions are logged before re-raising.
+- Removes legacy thread_id field (dropped from RequestContext).
+- Adds response_bytes from Content-Length when available.
+- Type annotation for call_next parameter.
+- Uses get_logger() for consistent structured logging.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Awaitable, Callable
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+from api.core.logging_config import get_logger
 from api.core.request_context import get_request_context
 
-# Try to import loguru, fall back to standard logging
-try:
-    from loguru import logger
-    HAS_LOGURU = True
-except ImportError:
-    HAS_LOGURU = False
-    logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
 
 class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        start = time.time()
-        response = await call_next(request)
-        duration = round((time.time() - start) * 1000, 2)
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        start = time.monotonic()
+        client_ip = request.client.host if request.client else "unknown"
 
+        # Bind session context so the SessionSink routes to per-session files
         ctx = get_request_context()
+        req_logger = (
+            logger.bind(session_id=ctx.session_id)
+            if ctx.session_id and hasattr(logger, "bind")
+            else logger
+        )
 
-        fields = {
-            "correlation_id": ctx.correlation_id or getattr(request.state, "correlation_id", None),
-            "user_id": ctx.user_id,
-            "session_id": ctx.session_id,
-            "thread_id": ctx.thread_id,
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            duration = round((time.monotonic() - start) * 1000, 2)
+            req_logger.error(
+                "%s %s - error (%sms) [%s]",
+                request.method,
+                request.url.path,
+                duration,
+                client_ip,
+                extra={
+                    "extra_fields": {
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status": 500,
+                        "duration_ms": duration,
+                        "client_ip": client_ip,
+                        "error": type(exc).__name__,
+                    }
+                },
+            )
+            raise
+
+        duration = round((time.monotonic() - start) * 1000, 2)
+        status_code = response.status_code
+
+        extra_fields: dict = {
             "method": request.method,
             "path": request.url.path,
-            "status": response.status_code,
+            "status": status_code,
             "duration_ms": duration,
+            "client_ip": client_ip,
         }
 
-        msg = f"{request.method} {request.url.path} - {response.status_code} ({duration}ms)"
+        content_length = response.headers.get("content-length")
+        if content_length:
+            extra_fields["response_bytes"] = int(content_length)
 
-        if HAS_LOGURU:
-            logger.info(msg, extra=fields)
+        msg = "%s %s - %d (%sms) [%s]"
+        log_args = (request.method, request.url.path, status_code, duration, client_ip)
+        if status_code >= 500:
+            req_logger.error(msg, *log_args, extra={"extra_fields": extra_fields})
         else:
-            logger.info(msg, extra={"extra_fields": fields})
+            req_logger.info(msg, *log_args, extra={"extra_fields": extra_fields})
 
         return response

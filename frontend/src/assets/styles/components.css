@@ -391,6 +391,11 @@
   box-shadow: var(--ret-elev-2);
 }
 
+.btn-secondary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: var(--ret-elev-1);
+}
+
 .btn-success {
   background: color-mix(in srgb, var(--success), #fff 6%);
   color: #fff;
@@ -404,6 +409,41 @@
   border-color: color-mix(in srgb, var(--error), #000 6%);
 }
 .btn-danger:hover:not(:disabled) { filter: brightness(1.05); box-shadow: var(--ret-elev-2); }
+
+/* -------------------- Toggle / Checkbox Cards -------------------- */
+
+.toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 52px;
+  padding: 0.8rem 0.95rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-medium);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
+  color: var(--text-body);
+  font-weight: 800;
+  box-shadow: var(--ret-elev-1);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.toggle-inline:hover {
+  border-color: color-mix(in srgb, var(--brand-primary), var(--border-medium) 45%);
+  box-shadow: var(--ret-elev-2);
+}
+
+.toggle-inline:has(input:checked) {
+  border-color: color-mix(in srgb, var(--brand-primary), var(--border-medium) 20%);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--brand-subtle), var(--surface-base) 25%), var(--surface-raised));
+}
+
+.toggle-inline input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
+  margin: 0;
+  accent-color: var(--brand-primary);
+  flex-shrink: 0;
+}
 
 .btn-sm { padding: 0.5rem 0.8rem; font-size: 0.875rem; }
 .btn-lg { padding: 0.82rem 1.2rem; font-size: 1rem; }

@@ -171,12 +171,32 @@ function formatLabel(key) {
 
 function formatCell(value, column) {
   if (value == null) return '—'
-  
+
+  // Array: show as comma list, truncate long arrays
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '—'
+    const items = value.map(v => (v == null ? '' : String(v).trim())).filter(Boolean)
+    if (items.length > 6) return items.slice(0, 6).join(', ') + `… +${items.length - 6}`
+    return items.join(', ')
+  }
+
+  // Object: key→value pairs, truncated
+  if (typeof value === 'object') {
+    try {
+      const entries = Object.entries(value)
+      if (!entries.length) return '—'
+      const parts = entries.slice(0, 4).map(([k, v]) => `${k}: ${v}`)
+      return parts.join(' · ') + (entries.length > 4 ? '…' : '')
+    } catch {
+      return '[Object]'
+    }
+  }
+
   // Custom formatter
   if (column.formatter && typeof column.formatter === 'function') {
     return column.formatter(value)
   }
-  
+
   // Number formatting
   if (typeof value === 'number') {
     if (column.type === 'currency') {
@@ -190,7 +210,7 @@ function formatCell(value, column) {
     }
     return value.toLocaleString()
   }
-  
+
   // Date formatting
   if (column.type === 'date' && value) {
     const date = new Date(value)
@@ -198,12 +218,7 @@ function formatCell(value, column) {
       return date.toLocaleDateString()
     }
   }
-  
-  // URL formatting
-  if (column.type === 'url' && value) {
-    return value
-  }
-  
+
   return String(value)
 }
 
@@ -271,52 +286,53 @@ function exportToCSV() {
 
 <style scoped>
 .data-table-wrapper {
-  margin: 1.5rem 0;
-  background: var(--bg-elevated, #2a2a3e);
-  border: 1px solid var(--border-color, #3a3a4e);
-  border-radius: 12px;
+  margin: 1rem 0;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md, 12px);
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--shadow-sm);
 }
 
 .table-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1rem 1.5rem;
-  background: var(--bg-panel, #1a1a2e);
-  border-bottom: 1px solid var(--border-color, #3a3a4e);
+  padding: 0.75rem 1.25rem;
+  background: var(--surface-raised);
+  border-bottom: 2px solid var(--brand-primary);
 }
 
 .table-header h4 {
   margin: 0;
-  color: var(--text-primary, #fff);
-  font-size: 1.1rem;
-  font-weight: 600;
+  color: var(--text-heading);
+  font-size: var(--text-base, 1rem);
+  font-weight: 700;
+  font-family: var(--font-display);
 }
 
 .table-actions {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .btn-export,
 .btn-toggle {
-  padding: 0.4rem 0.9rem;
-  background: var(--bg-button, #3a3a4e);
-  border: 1px solid var(--border-color, #4a4a5e);
-  border-radius: 6px;
-  color: var(--text-primary, #fff);
-  font-size: 0.85rem;
+  padding: 0.35rem 0.8rem;
+  background: var(--surface-base);
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-secondary);
+  font-size: var(--text-sm, 0.875rem);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all var(--transition-fast, 150ms);
 }
 
 .btn-export:hover,
 .btn-toggle:hover {
-  background: var(--bg-button-hover, #4a4a5e);
-  border-color: #FFC000;
-  transform: translateY(-1px);
+  border-color: var(--brand-primary);
+  color: var(--text-heading);
+  background: var(--brand-subtle);
 }
 
 .table-container {
@@ -325,92 +341,102 @@ function exportToCSV() {
 }
 
 .table-container.scrollable {
-  max-height: 500px;
+  max-height: 480px;
   overflow-y: auto;
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: var(--text-sm, 0.875rem);
 }
 
 .data-table thead {
   position: sticky;
   top: 0;
-  background: var(--bg-panel, #1a1a2e);
+  background: var(--surface-active);
   z-index: 10;
 }
 
 .data-table th {
-  padding: 0.9rem 1rem;
+  padding: 0.7rem 1rem;
   text-align: left;
-  font-weight: 600;
-  color: var(--text-primary, #fff);
-  border-bottom: 2px solid #FFC000;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-heading);
+  border-bottom: 2px solid var(--brand-primary);
   white-space: nowrap;
   user-select: none;
 }
 
 .data-table th.sortable {
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background var(--transition-fast, 150ms);
 }
 
 .data-table th.sortable:hover {
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--brand-subtle);
 }
 
 .sort-indicator {
-  margin-left: 0.5rem;
-  color: #FFC000;
-  font-size: 1.1em;
+  margin-left: 0.4rem;
+  color: var(--brand-primary);
+  font-size: 0.95em;
 }
 
 .data-table td {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-color, #3a3a4e);
-  color: var(--text-secondary, #e0e0e0);
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-body);
+  /* Critical fix: allow content to wrap instead of one giant no-wrap string */
+  white-space: normal;
+  word-break: break-word;
+  max-width: 360px;
+  vertical-align: top;
 }
 
 .row-alternate {
-  background: var(--bg-row-alt, rgba(255, 192, 0, 0.03));
+  background: var(--brand-subtle-2);
 }
 
-.data-table tbody tr:hover {
-  background: var(--bg-hover, rgba(255, 192, 0, 0.08));
+.data-table tbody tr:hover td {
+  background: var(--brand-subtle);
 }
 
 .cell-numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
 }
 
 .cell-link {
-  color: #66B5F5;
+  color: var(--link);
   cursor: pointer;
 }
 
-.text-left { text-align: left; }
+.text-left   { text-align: left; }
 .text-center { text-align: center; }
-.text-right { text-align: right; }
+.text-right  { text-align: right; }
 
 .summary-row {
-  font-weight: 600;
-  background: var(--bg-panel, #1a1a2e);
-  border-top: 2px solid #FFC000;
+  font-weight: 700;
+  background: var(--surface-active);
+  border-top: 2px solid var(--brand-primary);
 }
 
 .summary-cell {
-  color: var(--text-primary, #fff);
+  color: var(--text-heading);
 }
 
 .table-footer {
-  padding: 0.75rem 1.5rem;
-  background: var(--bg-panel, #1a1a2e);
-  border-top: 1px solid var(--border-color, #3a3a4e);
-  color: var(--text-secondary, #b0b0b0);
-  font-size: 0.85rem;
+  padding: 0.6rem 1.25rem;
+  background: var(--surface-raised);
+  border-top: 1px solid var(--border-light);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs, 0.75rem);
   text-align: center;
 }
 </style>

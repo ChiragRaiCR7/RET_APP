@@ -214,9 +214,9 @@
             <thead>
               <tr>
                 <th>#</th>
-                <th>Dot</th>
                 <th>Status</th>
                 <th>File name</th>
+                <th>Oracle Module</th>
                 <th>Similarity%</th>
 
                 <th class="num">Records (ZIP 1)</th>
@@ -235,15 +235,22 @@
                 <td>{{ idx + 1 }}</td>
 
                 <td>
-                  <span class="dot tiny" :class="statusDotClass(c.status)" :title="c.status">●</span>
-                </td>
-
-                <td>
                   <span class="status-badge" :class="badgeClass(c.status)">{{ c.status }}</span>
                 </td>
 
                 <td class="file-cell">
                   <span class="file-name-only" :title="basename(c.filename)">{{ basename(c.filename) }}</span>
+                </td>
+
+                <td class="oracle-cell">
+                  <span v-if="c.oracle_module_name" class="oracle-module-chip">{{ c.oracle_module_name }}</span>
+                  <span
+                    v-if="c.oracle_business_domain"
+                    class="domain-dot"
+                    :title="c.oracle_business_domain"
+                    :style="{ background: getDomainColor(c.oracle_business_domain) }"
+                  ></span>
+                  <span v-if="!c.oracle_module_name" class="muted">—</span>
                 </td>
 
                 <td>{{ c.similarity ?? '-' }}</td>
@@ -271,7 +278,7 @@
               </tr>
 
               <tr v-if="filteredChanges.length === 0">
-                <td colspan="11" class="no-data">No files match the filter.</td>
+                <td colspan="10" class="no-data">No files match the filter.</td>
               </tr>
             </tbody>
           </table>
@@ -499,6 +506,7 @@ import { ref, reactive, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { apiCall, pollJob } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
+import { getOracleAppName, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
 
 const toast = useToastStore()
 const router = useRouter()
@@ -1312,6 +1320,10 @@ function onScrollB(e) {
 .file-cell { max-width: 320px; }
 .file-name-only { font-weight: 900; max-width: 320px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .muted { color: var(--text-tertiary); }
+
+.oracle-cell { white-space: nowrap; }
+.oracle-module-chip { font-size: 0.78rem; font-weight: 600; color: var(--text-primary); margin-right: 4px; }
+.domain-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
 .no-data { text-align: center; color: var(--text-tertiary); font-style: italic; padding: 18px; }
 
 .compare-action-cell {

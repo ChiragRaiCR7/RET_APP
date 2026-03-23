@@ -18,6 +18,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from api.core.config import settings
+from api.core.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -32,6 +35,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Skip entirely when disabled (commonly for development)
         if not settings.ENABLE_SECURITY_HEADERS:
+            logger.debug("Security headers disabled; skipping for %s", request.url.path)
             return response
 
         # -------------------------
@@ -46,6 +50,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         # Prevent MIME-sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent Flash/Acrobat cross-domain data loading
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
 
         # -------------------------
         # HSTS (HTTPS only)
@@ -130,7 +137,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # -------------------------
         api_prefix = getattr(settings, "API_PREFIX", "/api")
         if request.url.path.startswith(api_prefix):
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private, max-age=0"
             response.headers["Pragma"] = "no-cache"
 
+        logger.debug("Security headers applied for %s", request.url.path)
         return response

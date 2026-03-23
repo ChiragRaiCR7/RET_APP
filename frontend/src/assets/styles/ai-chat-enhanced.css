@@ -45,12 +45,12 @@
 
 .source-count {
   padding: 0.25rem 0.75rem;
-  background: rgba(255, 192, 0, 0.12);
-  border: 1px solid rgba(255, 192, 0, 0.25);
+  background: var(--brand-subtle);
+  border: 1px solid var(--brand-subtle-2);
   border-radius: 12px;
   font-size: 0.85rem;
   color: var(--brand-primary);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .toggle-inspector-btn {
@@ -78,9 +78,9 @@
 }
 
 .source-card {
-  background: var(--surface-base);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
   border: 1px solid var(--border-light);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: var(--space-md, 16px);
   transition: all 0.25s;
 }
@@ -105,26 +105,33 @@
   justify-content: center;
   width: 26px;
   height: 26px;
-  background: linear-gradient(135deg, var(--brand-primary), var(--brand-light));
-  color: #000;
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+  color: var(--brand-on);
   border-radius: 50%;
   font-weight: 800;
   font-size: 0.8rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
 .source-filename {
   flex: 1;
   color: var(--text-heading);
-  font-weight: 600;
-  font-size: 0.88rem;
+  font-weight: 700;
+  font-size: 0.9rem;
   word-break: break-all;
 }
 
 .source-meta {
   display: flex;
-  gap: var(--space-xs, 4px);
+  gap: var(--space-sm, 8px);
   margin-bottom: var(--space-sm, 8px);
   font-size: 0.82rem;
+  flex-wrap: wrap;
+}
+
+.meta-item {
+  display: flex;
+  gap: 4px;
 }
 
 .meta-label {
@@ -132,23 +139,23 @@
 }
 
 .meta-value {
-  color: var(--chat-link-color, #2563eb);
+  color: var(--link);
   font-weight: 600;
 }
 
 .source-snippet {
   margin-top: var(--space-sm, 8px);
   padding: var(--space-sm, 8px);
-  background: var(--surface-overlay);
+  background: var(--surface-raised);
   border-left: 3px solid var(--brand-primary);
   border-radius: 4px;
 }
 
 .source-snippet p {
   margin: 0;
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.5;
+  color: var(--text-body);
+  font-size: 0.85rem;
+  line-height: 1.6;
 }
 
 /* ── Retrieval Method Badges ── */
@@ -159,21 +166,21 @@
 }
 
 .method-hybrid {
-  background: rgba(16, 185, 129, 0.12);
+  background: var(--success-bg);
   color: var(--success);
-  border: 1px solid rgba(16, 185, 129, 0.25);
+  border: 1px solid var(--success-border);
 }
 
 .method-vector {
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--info-bg);
   color: var(--info);
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  border: 1px solid var(--info-border);
 }
 
 .method-lexical {
-  background: rgba(245, 158, 11, 0.12);
+  background: var(--warning-bg);
   color: var(--warning);
-  border: 1px solid rgba(245, 158, 11, 0.25);
+  border: 1px solid var(--warning-border);
 }
 
 /* ── CSV Reference Badge ── */
@@ -181,8 +188,8 @@
   display: inline-flex;
   align-items: center;
   padding: 0.15em 0.45em;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.25);
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
   border-radius: 8px;
   font-size: 0.82em;
   font-weight: 600;

@@ -102,6 +102,8 @@
             <thead>
               <tr>
                 <th>Group Name</th>
+                <th>Oracle Module</th>
+                <th>Domain</th>
                 <th>Files</th>
                 <th>Size</th>
               </tr>
@@ -109,11 +111,37 @@
             <tbody>
               <tr v-for="group in scanResults.groups" :key="group.name">
                 <td><strong>{{ group.name }}</strong></td>
+                <td>
+                  <span v-if="group.oracle_module_name" class="oracle-module-name">{{ group.oracle_module_name }}</span>
+                  <span v-else class="oracle-module-unknown">—</span>
+                </td>
+                <td>
+                  <span
+                    v-if="group.oracle_business_domain"
+                    class="domain-badge"
+                    :style="{ background: getDomainColor(group.oracle_business_domain) }"
+                  >{{ group.oracle_business_domain }}</span>
+                  <span v-else class="oracle-module-unknown">—</span>
+                </td>
                 <td>{{ group.file_count }}</td>
                 <td>{{ prettySize(group.size) }}</td>
               </tr>
             </tbody>
           </table>
+
+          <!-- Oracle domain distribution summary -->
+          <div v-if="oracleSummary" class="oracle-summary-strip">
+            <span class="oracle-summary-label">Oracle domains detected:</span>
+            <span
+              v-for="(count, domain) in oracleSummary.domain_breakdown"
+              :key="domain"
+              class="domain-chip"
+              :style="{ borderColor: getDomainColor(domain), color: getDomainColor(domain) }"
+            >{{ domain }} ({{ count }})</span>
+            <span v-if="oracleSummary.custom_count > 0" class="domain-chip domain-chip-custom">
+              Custom / Unknown ({{ oracleSummary.custom_count }})
+            </span>
+          </div>
         </div>
 
         <!-- Optional: show scan warnings -->
@@ -143,8 +171,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import api, { longApi } from '@/utils/api'
+import { getOracleAppName, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
 
 const input = ref(null)
 const files = ref([])
@@ -166,6 +195,8 @@ const scanLimits = {
 
 // Define emits - 'files-added' for raw files, 'uploaded'/'scanned' for scan results
 const emit = defineEmits(['uploaded', 'scanned', 'files-added'])
+
+const oracleSummary = computed(() => scanResults.value?.oracle_summary ?? null)
 
 function open() {
   input.value?.click()
@@ -363,5 +394,61 @@ async function scanFile(file) {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.oracle-module-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.oracle-module-unknown {
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+}
+
+.domain-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.oracle-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+}
+
+.oracle-summary-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-right: 4px;
+}
+
+.domain-chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1.5px solid;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.domain-chip-custom {
+  border-color: var(--text-tertiary);
+  color: var(--text-tertiary);
 }
 </style>

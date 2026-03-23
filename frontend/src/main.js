@@ -4,7 +4,7 @@
  *
  * Bootstraps:
  *   - Vue 3 app instance
- *   - Pinia state management (authStore, toastStore, conversionStore)
+ *   - Pinia state management (authStore, toastStore)
  *   - Vue Router (lazy-loaded MainView + AdminView, eager LoginView)
  *   - Global CSS: design tokens → base → components → ai-chat-enhanced
  *

@@ -18,13 +18,27 @@
 
 **RET v4** (Resource Extraction Tool v4) is a professional enterprise web application that provides:
 
+> **Documentation refresh note**
+>
+> This README has been updated to reflect the current FastAPI backend structure. The canonical cross-repository file guide remains [`../documentation.md`](../documentation.md), and there is no editable PDF user-guide source tracked in this repository.
+
 ### Core Features
 - **XML to CSV/XLSX Conversion Pipeline**: Process bulk ZIP archives with nested XML files
+- **Business Structure Hierarchy API**: Derive a 5-layer organization tree from converted CSV contents
 - **Multi-tenant User Management**: Role-based access control (RBAC) with 3 user roles
 - **Azure OpenAI Integration**: AI-powered RAG (Retrieval-Augmented Generation) chat
 - **Secure Authentication**: JWT-based with refresh tokens and HttpOnly cookies
 - **Comprehensive Audit Logging**: Track all user actions and system events
 - **Session Management**: Secure session handling with automatic cleanup
+
+### Recently updated backend code paths
+
+| Path | Current responsibility |
+|---|---|
+| `api/schemas/business_structure.py` | Defines `BusinessStructureNode` and `BusinessStructureResponse` for the hierarchy endpoint. |
+| `api/services/business_structure_service.py` | Reads converted CSV files from `runtime/sessions/{session_id}/output/` and builds the 5-layer tree. |
+| `api/routers/conversion_router.py` | Exposes `GET /api/v1/conversion/business-structure/{session_id}`. |
+| `api/services/storage_service.py` | Resolves session directories and metadata used by the hierarchy builder. |
 
 ### Technology Stack
 ```
@@ -316,7 +330,7 @@ Once running, access:
 #### 1. Login & Get Tokens
 
 ```bash
-curl -X POST "http://localhost:8000/api/auth/login" \
+curl -X POST "http://localhost:8000/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
@@ -341,7 +355,7 @@ curl -X POST "http://localhost:8000/api/auth/login" \
 #### 2. Use Access Token
 
 ```bash
-curl -X GET "http://localhost:8000/api/auth/me" \
+curl -X GET "http://localhost:8000/api/v1/auth/me" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -349,13 +363,13 @@ curl -X GET "http://localhost:8000/api/auth/me" \
 
 ```bash
 # Refresh token is HttpOnly cookie (auto-sent)
-curl -X POST "http://localhost:8000/api/auth/refresh" \
+curl -X POST "http://localhost:8000/api/v1/auth/refresh" \
   -H "Cookie: refresh_token=YOUR_REFRESH_TOKEN"
 ```
 
 ### Main API Endpoints
 
-#### Authentication (`/api/auth`)
+#### Authentication (`/api/v1/auth`)
 - `POST /login` - Login and get JWT
 - `GET /me` - Get current user info
 - `POST /logout` - Logout and revoke tokens
@@ -363,20 +377,45 @@ curl -X POST "http://localhost:8000/api/auth/refresh" \
 - `POST /password-reset/request` - Request password reset
 - `POST /password-reset/confirm` - Confirm with reset token
 
-#### Conversion (`/api/conversion`)
+#### Conversion (`/api/v1/conversion`)
 - `POST /scan` - Scan ZIP file for XML structure
 - `POST /convert` - Convert XML files to CSV/XLSX
+- `GET /business-structure/{session_id}` - Build the 5-layer Business Structure graph from converted CSV outputs
 - `GET /download/{session_id}` - Download converted files
 - `GET /groups/{session_id}` - List available groups
 
-#### AI & RAG (`/api/v2/ai`)
+### Business Structure endpoint behavior
+
+The Business Structure API uses converted output files, not archive path names.
+
+**Input CSVs**
+
+- `FUN_BUSINESS_UNIT.CSV`
+- `INVENTORYORGANIZATIONMASTER.CSV`
+- `INVENTORYORGANIZATIONCHILD.CSV`
+
+**Hierarchy produced**
+
+1. Business Group
+2. Ledger
+3. Legal Entity
+4. Operating Unit
+5. Inventory Organization
+
+**Join rules**
+
+- `BusinessUnitName` is the Operating Unit bridge between FUN and inventory CSVs
+- inventory master + child data are unioned and deduplicated
+- a configurable Business Group label is used as the root node until a dedicated source file is introduced
+
+#### AI & RAG (`/api/v1/v2/ai`)
 - `POST /chat` - Chat with RAG engine
 - `POST /index/groups` - Index documents for search
 - `GET /index/groups` - Get indexable groups
 - `GET /sessions` - List AI sessions
 - `POST /transcript/download` - Export chat history
 
-#### Admin (`/api/admin`)
+#### Admin (`/api/v1/admin`)
 - `GET /users` - List all users
 - `POST /users` - Create new user
 - `PUT /users/{user_id}` - Update user
@@ -533,7 +572,7 @@ backend/
 ┌─────────┐
 │ Browser │
 └────┬────┘
-     │ 1. POST /api/auth/login
+    │ 1. POST /api/v1/auth/login
      │    {username, password}
      ▼
 ┌──────────────────────┐
@@ -866,7 +905,7 @@ python start.py
 ### 2. Login
 
 ```bash
-curl -X POST "http://localhost:8000/api/auth/login" \
+curl -X POST "http://localhost:8000/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin123"}' \
   -c cookies.txt
@@ -876,18 +915,18 @@ curl -X POST "http://localhost:8000/api/auth/login" \
 
 ```bash
 # Scan ZIP
-curl -X POST "http://localhost:8000/api/conversion/scan" \
+curl -X POST "http://localhost:8000/api/v1/conversion/scan" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -F "file=@mydata.zip"
 
 # Convert XML to CSV
-curl -X POST "http://localhost:8000/api/conversion/convert" \
+curl -X POST "http://localhost:8000/api/v1/conversion/convert" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"session_id": "...", "groups": ["articles"]}'
 
 # Download results
-curl -X GET "http://localhost:8000/api/conversion/download/SESSION_ID" \
+curl -X GET "http://localhost:8000/api/v1/conversion/download/SESSION_ID" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -o results.zip
 ```
@@ -896,13 +935,13 @@ curl -X GET "http://localhost:8000/api/conversion/download/SESSION_ID" \
 
 ```bash
 # Index documents
-curl -X POST "http://localhost:8000/api/v2/ai/index/groups" \
+curl -X POST "http://localhost:8000/api/v1/v2/ai/index/groups" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"session_id": "...", "groups": ["articles"]}'
 
 # Chat
-curl -X POST "http://localhost:8000/api/v2/ai/chat" \
+curl -X POST "http://localhost:8000/api/v1/v2/ai/chat" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

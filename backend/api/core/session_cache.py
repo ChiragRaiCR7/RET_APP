@@ -68,6 +68,11 @@ class SessionCache:
         self._write_count = 0
         self._initialized = False
 
+        # Cache performance counters
+        self._hits = 0
+        self._misses = 0
+        self._evictions = 0
+
     async def initialize(self) -> None:
         """Create DB dir and init schema. Must be called once before use."""
         if self._initialized:
@@ -115,6 +120,7 @@ class SessionCache:
 
     async def set(self, key: str, value: Any, ttl_seconds: Optional[int] = None) -> None:
         """Set a cache entry with optional TTL."""
+        trigger_cleanup = False
         async with self.lock:
             if not self._initialized:
                 await self.initialize()
@@ -132,7 +138,12 @@ class SessionCache:
 
             self._write_count += 1
             if self._write_count % _CLEANUP_EVERY_N_WRITES == 0:
-                await self._cleanup_expired(limit=_CLEANUP_DELETE_LIMIT)
+                trigger_cleanup = True
+
+        # Schedule expired-row cleanup outside the write lock so it does not
+        # block concurrent writers for the duration of the DB DELETE.
+        if trigger_cleanup:
+            asyncio.ensure_future(self._cleanup_expired(limit=_CLEANUP_DELETE_LIMIT))
 
     async def get(self, key: str) -> Optional[Any]:
         """Get a cache entry, returns None if not found or expired."""
@@ -143,6 +154,7 @@ class SessionCache:
             if key in self.cache:
                 value, _ = self.cache[key]
                 self.access_times[key] = time.time()
+                self._hits += 1
                 return value
 
             value = await self._load_from_db(key)
@@ -150,8 +162,10 @@ class SessionCache:
                 now = time.time()
                 self.cache[key] = (value, now)
                 self.access_times[key] = now
+                self._hits += 1
                 return value
 
+            self._misses += 1
             return None
 
     async def delete(self, key: str) -> bool:
@@ -167,29 +181,33 @@ class SessionCache:
             return existed
 
     async def clear_pattern(self, pattern: str) -> int:
-        """Delete all cache entries matching a key prefix."""
+        """Delete all cache entries matching a key prefix.
+
+        Returns the number of rows deleted from the persistent store (more
+        accurate than the in-memory key count when entries were written
+        directly to SQLite by another process).
+        """
         async with self.lock:
             if not self._initialized:
                 await self.initialize()
 
-            keys_to_delete = [k for k in list(self.cache.keys()) if k.startswith(pattern)]
-            for key in keys_to_delete:
+            for key in [k for k in list(self.cache.keys()) if k.startswith(pattern)]:
                 self.cache.pop(key, None)
                 self.access_times.pop(key, None)
 
             try:
                 conn = await self._get_conn()
                 try:
-                    await conn.execute(
+                    cursor = await conn.execute(
                         "DELETE FROM session_cache WHERE key LIKE ?", (pattern + "%",)
                     )
                     await conn.commit()
+                    return cursor.rowcount or 0
                 finally:
                     await conn.close()
             except Exception as e:
                 logger.debug("Failed to delete pattern from DB: %s", e, exc_info=True)
-
-            return len(keys_to_delete)
+                return 0
 
     async def clear(self) -> None:
         """Clear entire cache (memory and disk)."""
@@ -328,6 +346,24 @@ class SessionCache:
         self.cache.pop(lru_key, None)
         self.access_times.pop(lru_key, None)
         await self._delete_from_db(lru_key)
+        self._evictions += 1
+
+    def get_stats(self) -> dict:
+        """Return cache performance metrics (hits, misses, evictions, hit_rate)."""
+        total = self._hits + self._misses
+        hit_rate = self._hits / total if total > 0 else 0.0
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "evictions": self._evictions,
+            "hit_rate": round(hit_rate, 4),
+            "in_memory_keys": len(self.cache),
+            "max_size": self.max_size,
+        }
+
+    async def close(self) -> None:
+        """Release resources.  Safe to call multiple times."""
+        self._initialized = False
 
 
 # ---------------------------------------------------------------------------

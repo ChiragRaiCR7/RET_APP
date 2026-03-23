@@ -39,6 +39,7 @@ from api.services.xml_processing_service import (
 from api.services.xlsx_service import get_xlsx_bytes_from_csv
 from api.services.parallel_converter import convert_parallel
 from api.core.config import settings
+from api.utils.oracle_catalog import enrich_group as _oracle_enrich
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,7 @@ def _save_conversion_index(session_id: str, files_index: List[Dict[str, Any]]):
             "logical_path": f.get("logical_path", ""),
             "path": str(p),
             "size_bytes": p.stat().st_size if p.exists() else 0,
+            **_oracle_enrich(f.get("group", "MISC")),
         }
         index["files"].append(file_info)
         index["groups"][file_info["group"]].append(file_info)
@@ -373,6 +375,7 @@ def _build_index_from_output(session_id: str) -> Dict:
             "logical_path": "",
             "path": str(p),
             "size_bytes": p.stat().st_size,
+            **_oracle_enrich(group),
         }
         files.append(file_info)
         groups[group].append(file_info)
@@ -497,9 +500,11 @@ def _scan_zip_with_groups_impl(
         ai_cfg = get_ai_indexing_config_data() or {}
         embed_enabled = bool(ai_cfg.get("auto_embed_enabled"))
         embed_groups = {str(g).strip().upper() for g in (ai_cfg.get("auto_embedded_groups") or []) if g}
+        excluded_groups = {str(g).strip().upper() for g in (ai_cfg.get("excluded_groups") or []) if g}
     except Exception:
         embed_enabled = False
         embed_groups = set()
+        excluded_groups = set()
 
     def _group_entry(name: str, files: list) -> dict:
         entry = {
@@ -507,7 +512,10 @@ def _scan_zip_with_groups_impl(
             "file_count": len(files),
             "size": sum(x.get("size", 0) for x in files),
         }
-        if not embed_enabled:
+        if name.upper() in excluded_groups:
+            entry["auto_embed_eligible"] = False
+            entry["auto_embed_reason"] = "Group excluded by admin"
+        elif not embed_enabled:
             entry["auto_embed_eligible"] = False
             entry["auto_embed_reason"] = "Auto-embedding disabled by admin"
         elif embed_groups and name.upper() not in embed_groups:
@@ -516,7 +524,26 @@ def _scan_zip_with_groups_impl(
         else:
             entry["auto_embed_eligible"] = True
             entry["auto_embed_reason"] = "Admin-configured for auto-embedding"
+        # Oracle EBS module metadata
+        entry.update(_oracle_enrich(name))
         return entry
+
+    # Enrich individual scanned file entries with Oracle metadata
+    for sf in scanned_files:
+        sf.update(_oracle_enrich(sf.get("group", "")))
+
+    # Build oracle_summary for this session
+    canonical_groups = [g for g in groups if _oracle_enrich(g).get("oracle_is_canonical")]
+    domain_breakdown: Dict[str, int] = defaultdict(int)
+    for g, fl in groups.items():
+        domain = _oracle_enrich(g).get("oracle_business_domain") or "Unknown"
+        domain_breakdown[domain] += len(fl)
+    oracle_summary = {
+        "canonical_count": len(canonical_groups),
+        "custom_count": len(groups) - len(canonical_groups),
+        "domain_breakdown": dict(domain_breakdown),
+        "canonical_groups": canonical_groups,
+    }
 
     return {
         "session_id": session_id,
@@ -534,6 +561,7 @@ def _scan_zip_with_groups_impl(
             "totalSize": total_size,
             "typeCounts": dict(type_counts),
         },
+        "oracle_summary": oracle_summary,
     }
 
 
@@ -556,6 +584,7 @@ def _copy_non_xml_inputs_to_output(
     out_dir: Path,
     groups_filter: Optional[List[str]],
     excluded: Set[str],
+    excluded_groups: Optional[Set[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], int]:
     """
     Copy scanned CSV/XLSX/XLS into output for post-conversion display.
@@ -565,6 +594,7 @@ def _copy_non_xml_inputs_to_output(
     Returns: (entries, skipped_count)
     """
     filter_set = set(groups_filter) if groups_filter else None
+    excluded_groups_upper = {str(g).strip().upper() for g in (excluded_groups or set()) if str(g).strip()}
     skipped = 0
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -581,6 +611,10 @@ def _copy_non_xml_inputs_to_output(
             continue
 
         group = f.get("group", "EXTRAS")
+        if str(group).strip().upper() in excluded_groups_upper:
+            skipped += 1
+            continue
+
         if filter_set and group not in filter_set:
             skipped += 1
             continue
@@ -688,7 +722,27 @@ def _convert_session_impl(session_id: str, groups: Optional[List[str]] = None, o
     scanned_files = meta.get(META_SCANNED_FILES) or meta.get(META_XML_FILES) or []
     excluded = _excluded_set(meta)
 
-    copied_entries, skipped_nonxml = _copy_non_xml_inputs_to_output(scanned_files, out_dir, groups, excluded)
+    # Admin-level excluded groups apply globally to conversion and embedding.
+    admin_excluded_groups: Set[str] = set()
+    try:
+        from api.services.admin_service import get_ai_indexing_config_data
+
+        ai_cfg = get_ai_indexing_config_data() or {}
+        admin_excluded_groups = {
+            str(g).strip().upper()
+            for g in (ai_cfg.get("excluded_groups") or [])
+            if str(g).strip()
+        }
+    except Exception as e:
+        logger.debug("Could not load admin excluded groups for conversion: %s", e)
+
+    copied_entries, skipped_nonxml = _copy_non_xml_inputs_to_output(
+        scanned_files,
+        out_dir,
+        groups,
+        excluded,
+        excluded_groups=admin_excluded_groups,
+    )
 
     xml_file_list = list(extract_dir.rglob("*.xml"))
     if not xml_file_list:
@@ -721,6 +775,12 @@ def _convert_session_impl(session_id: str, groups: Optional[List[str]] = None, o
         if lp and lp in excluded:
             skipped_xml += 1
             continue
+
+        group = str(path_to_group.get(str(xp), "MISC")).strip().upper()
+        if group in admin_excluded_groups:
+            skipped_xml += 1
+            continue
+
         filtered_xml.append(xp)
 
     if not filtered_xml:
@@ -851,6 +911,7 @@ def list_converted_files(session_id: str, user_id: str, group: Optional[str] = N
             "file_count": len(files_list),
             "total_rows": sum(f.get("rows", 0) for f in files_list),
             "total_size": sum(f.get("size_bytes", 0) for f in files_list),
+            **_oracle_enrich(g),
         }
         for g, files_list in groups_data.items()
     ]
@@ -869,6 +930,7 @@ def list_converted_files(session_id: str, user_id: str, group: Optional[str] = N
                 "columns": f.get("columns", 0),
                 "file_type": "csv",
                 "size": _format_size(f.get("size_bytes", 0)),
+                **_oracle_enrich(f.get("group", "MISC")),
             }
             for f in files
         ],
@@ -937,6 +999,9 @@ def get_file_preview(session_id: str, user_id: str, filename: str, max_rows: int
     else:
         raise RuntimeError("Unsupported file type for preview")
 
+    # Classify columns for simplified preview mode
+    column_meta, simplified_order = _classify_columns(headers, rows)
+
     return {
         "filename": file_path.name.upper(),
         "headers": list(headers),
@@ -944,7 +1009,77 @@ def get_file_preview(session_id: str, user_id: str, filename: str, max_rows: int
         "total_rows": total_rows,
         "preview_rows": len(rows),
         "columns": len(headers),
+        "column_meta": column_meta,
+        "simplified_order": simplified_order,
     }
+
+
+# ---------------------------------------------------------------------------
+# Column classification for simplified preview
+# ---------------------------------------------------------------------------
+_TRIVIAL_BOOL_VALUES = frozenset({"true", "false", "yes", "no", "0", "1", "y", "n", "t", "f"})
+
+
+def _classify_columns(
+    headers: List[str], rows: List[List[str]]
+) -> tuple:
+    """
+    Classify each column as high_value or low_value.
+
+    Low-value criteria:
+      - all_same: every non-empty value is identical
+      - mostly_empty: >80% of cells are blank
+      - trivial_boolean: all non-empty values are boolean-like with ≤2 distinct values
+            - low_variance_flag: small integers (-99 to 99) with ≤2 distinct values
+
+    Returns (column_meta_list, simplified_order) where simplified_order
+    is a list of column indices with high-value columns first.
+    """
+    if not headers or not rows:
+        return None, None
+
+    num_rows = len(rows)
+    meta = []
+    high_value_idxs = []
+    low_value_idxs = []
+
+    for col_idx, header in enumerate(headers):
+        values = [row[col_idx].strip() if col_idx < len(row) else "" for row in rows]
+        non_empty = [v for v in values if v]
+        empty_ratio = 1.0 - (len(non_empty) / num_rows) if num_rows > 0 else 1.0
+
+        classification = "high_value"
+        reason = ""
+
+        if num_rows > 0 and empty_ratio > 0.8:
+            classification = "low_value"
+            reason = "mostly_empty"
+        elif len(non_empty) > 0:
+            distinct = set(v.lower() for v in non_empty)
+            if len(distinct) == 1:
+                classification = "low_value"
+                reason = "all_same"
+            elif distinct <= _TRIVIAL_BOOL_VALUES and len(distinct) <= 2:
+                classification = "low_value"
+                reason = "trivial_boolean"
+            elif len(distinct) <= 2:
+                # Check if all are small integers (flag columns)
+                all_small_int = all(
+                    v.lstrip("-").isdigit() and -99 <= int(v) <= 99
+                    for v in non_empty
+                )
+                if all_small_int:
+                    classification = "low_value"
+                    reason = "low_variance_flag"
+
+        meta.append({"header": header, "classification": classification, "reason": reason})
+        if classification == "high_value":
+            high_value_idxs.append(col_idx)
+        else:
+            low_value_idxs.append(col_idx)
+
+    simplified_order = high_value_idxs + low_value_idxs
+    return meta, simplified_order
 
 
 def build_download_zip(

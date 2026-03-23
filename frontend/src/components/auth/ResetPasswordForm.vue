@@ -230,7 +230,11 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 import api from '@/utils/api'
 import PasswordStrengthMeter from '@/components/auth/PasswordStrengthMeter.vue'
-import { isStrongPassword } from '@/utils/validators'
+
+function isStrongPassword(s) {
+  if (!s) return false
+  return s.length >= 8 && /[A-Z]/.test(s) && /[0-9]/.test(s)
+}
 
 const emit = defineEmits(['done'])
 

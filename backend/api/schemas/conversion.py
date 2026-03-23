@@ -51,6 +51,13 @@ class ScannedFileEntry(_BaseModel):
     root_folder: Optional[str] = ""
     zip_chain: List[str] = Field(default_factory=list)
 
+    # Oracle EBS module metadata (populated server-side via oracle_catalog)
+    oracle_module_code: Optional[str] = None
+    oracle_module_name: Optional[str] = None
+    oracle_business_domain: Optional[str] = None
+    oracle_is_canonical: Optional[bool] = None
+    oracle_is_obsolete: Optional[bool] = None
+
 
 class ScanGroupEntry(_BaseModel):
     name: str
@@ -58,6 +65,13 @@ class ScanGroupEntry(_BaseModel):
     size: int
     auto_embed_eligible: Optional[bool] = None
     auto_embed_reason: Optional[str] = None
+
+    # Oracle EBS module metadata
+    oracle_module_code: Optional[str] = None
+    oracle_module_name: Optional[str] = None
+    oracle_business_domain: Optional[str] = None
+    oracle_is_canonical: Optional[bool] = None
+    oracle_is_obsolete: Optional[bool] = None
 
 
 class ScanSummary(_BaseModel):
@@ -81,6 +95,9 @@ class ZipScanResponse(_BaseModel):
     groups: List[ScanGroupEntry] = Field(default_factory=list)
     summary: ScanSummary
 
+    # Oracle EBS session-level summary (canonical + domain breakdown)
+    oracle_summary: Optional[Dict[str, Any]] = None
+
 
 # ------------------------------------------------------------
 # Conversion index / listing models
@@ -101,12 +118,26 @@ class ConversionFileEntry(_BaseModel):
     # may be empty for some copied files (depends on how index was built)
     logical_path: Optional[str] = None
 
+    # Oracle EBS module metadata
+    oracle_module_code: Optional[str] = None
+    oracle_module_name: Optional[str] = None
+    oracle_business_domain: Optional[str] = None
+    oracle_is_canonical: Optional[bool] = None
+    oracle_is_obsolete: Optional[bool] = None
+
 
 class ConversionGroupEntry(_BaseModel):
     name: str
     file_count: int
     total_rows: int = 0
     total_size: int = 0
+
+    # Oracle EBS module metadata
+    oracle_module_code: Optional[str] = None
+    oracle_module_name: Optional[str] = None
+    oracle_business_domain: Optional[str] = None
+    oracle_is_canonical: Optional[bool] = None
+    oracle_is_obsolete: Optional[bool] = None
 
 
 class ConversionFilesResponse(_BaseModel):
@@ -124,6 +155,13 @@ class ConversionFilesResponse(_BaseModel):
 # Preview models
 # ------------------------------------------------------------
 
+class ColumnMeta(_BaseModel):
+    """Per-column classification for simplified preview."""
+    header: str
+    classification: str  # "high_value", "low_value"
+    reason: str = ""     # e.g. "all_same", "mostly_empty", "trivial_boolean"
+
+
 class FilePreviewResponse(_BaseModel):
     filename: str
     headers: List[str] = Field(default_factory=list)
@@ -132,6 +170,9 @@ class FilePreviewResponse(_BaseModel):
     total_rows: int = 0
     preview_rows: int = 0
     columns: int = 0
+
+    column_meta: Optional[List[ColumnMeta]] = None
+    simplified_order: Optional[List[int]] = None
 
 
 class GroupsListItem(_BaseModel):

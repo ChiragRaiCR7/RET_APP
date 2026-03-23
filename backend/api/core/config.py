@@ -18,7 +18,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import AnyHttpUrl, field_validator, model_validator
+from pydantic import AnyHttpUrl, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,6 +58,14 @@ class BaseConfig(BaseSettings):
         "http://localhost:5173",
     ]
 
+    # Trusted hostnames for TrustedHostMiddleware (empty = disabled).
+    # Production deployments should set this to prevent host-header injection.
+    ALLOWED_HOSTS: List[str] = []
+
+    # docs_url / redoc_url visibility. Set False in production or control
+    # via reverse-proxy auth instead of completely removing the endpoints.
+    DOCS_ENABLED: bool = True
+
     # ======================
     # Database
     # ======================
@@ -75,7 +83,8 @@ class BaseConfig(BaseSettings):
     # ======================
     # Security / JWT
     # ======================
-    JWT_SECRET_KEY: Optional[str] = None
+    # SecretStr prevents the key value from appearing in logs or repr output.
+    JWT_SECRET_KEY: Optional[SecretStr] = None
     JWT_ALGORITHM: str = "HS256"
     JWT_ISSUER: str = "ret-v4"
     JWT_AUDIENCE: str = "ret-v4-api"
@@ -183,7 +192,7 @@ class BaseConfig(BaseSettings):
     # ======================
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW_SECONDS: int = 60
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 500  # Alias for middleware
+    # RATE_LIMIT_REQUESTS_PER_MINUTE is a property alias — do not declare twice.
 
     # ✅ Keep field but auto-correct mismatch via validator below
     RATE_LIMIT_EXEMPT_PATHS: List[str] = [
@@ -289,6 +298,11 @@ class BaseConfig(BaseSettings):
     # Compatibility properties
     # ----------------------
     @property
+    def RATE_LIMIT_REQUESTS_PER_MINUTE(self) -> int:
+        """Alias for RATE_LIMIT_REQUESTS — ensures middleware compatibility without duplicate field."""
+        return self.RATE_LIMIT_REQUESTS
+
+    @property
     def ENVIRONMENT(self) -> str:
         """Alias to prevent ENV vs ENVIRONMENT drift across the codebase."""
         return self.ENV.value
@@ -313,9 +327,6 @@ class BaseConfig(BaseSettings):
         """Check if running in production mode."""
         return self.ENV == Environment.PRODUCTION
 
-    # ----------------------
-    # Validators
-    # ----------------------
     @field_validator("CORS_ORIGINS")
     @classmethod
     def validate_cors_origins(cls, v: List[str]) -> List[str]:
@@ -373,16 +384,21 @@ class DevelopmentConfig(BaseConfig):
     LOG_LEVEL: str = "DEBUG"
     LOG_FORMAT: str = "text"
 
-    # Relaxed security for development
-    JWT_SECRET_KEY: Optional[str] = "dev-secret-key-do-not-use-in-production"
+    # Development default — SecretStr wraps it transparently.
+    JWT_SECRET_KEY: Optional[SecretStr] = SecretStr("dev-secret-key-do-not-use-in-production")
     ENABLE_SECURITY_HEADERS: bool = False
 
-    # Smaller pool for SQLite
-    DATABASE_POOL_SIZE: int = 1
-    DATABASE_MAX_OVERFLOW: int = 0
+    # Smaller pool for SQLite — raise to 5/5 so embedding + polling
+    # don't exhaust the pool under normal development load.
+    DATABASE_POOL_SIZE: int = 5
+    DATABASE_MAX_OVERFLOW: int = 5
 
-    # Higher rate limits for testing
+    # Enable per-session logging in development
+    FEATURE_SESSION_LOGGING: bool = True
+
+    # Higher rate limits for development testing
     RATE_LIMIT_REQUESTS: int = 1000
+    DOCS_ENABLED: bool = True  # Full docs visible in development
 
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.development"),
@@ -398,9 +414,10 @@ class StagingConfig(BaseConfig):
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 
-    CORS_ORIGINS: List[str] = []  # Must be explicitly configured
+    # Staging: stricter security, docs hidden behind a flag
+    DOCS_ENABLED: bool = False
 
-    # Moderate security
+    CORS_ORIGINS: List[str] = []  # Must be explicitly configured
     ENABLE_SECURITY_HEADERS: bool = True
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
@@ -412,8 +429,9 @@ class StagingConfig(BaseConfig):
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod
-    def jwt_secret_must_be_set(cls, v: Optional[str]) -> str:
-        if not v or v == "dev-secret-key-do-not-use-in-production":
+    def jwt_secret_must_be_set(cls, v: Optional[SecretStr]) -> Optional[SecretStr]:
+        secret = v.get_secret_value() if v else None
+        if not secret or secret == "dev-secret-key-do-not-use-in-production":
             raise ValueError("JWT_SECRET_KEY must be set in staging environment")
         return v
 
@@ -426,9 +444,10 @@ class ProductionConfig(BaseConfig):
     LOG_LEVEL: str = "WARNING"
     LOG_FORMAT: str = "json"
 
-    CORS_ORIGINS: List[str] = []  # Must be explicitly configured
+    # Production: docs disabled by default
+    DOCS_ENABLED: bool = False
 
-    # Strict security
+    CORS_ORIGINS: List[str] = []  # Must be explicitly configured
     ENABLE_SECURITY_HEADERS: bool = True
     HSTS_MAX_AGE: int = 63072000  # 2 years
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
@@ -450,12 +469,13 @@ class ProductionConfig(BaseConfig):
 
     @field_validator("JWT_SECRET_KEY")
     @classmethod
-    def jwt_secret_must_be_secure(cls, v: Optional[str]) -> str:
-        if not v:
+    def jwt_secret_must_be_secure(cls, v: Optional[SecretStr]) -> Optional[SecretStr]:
+        secret = v.get_secret_value() if v else None
+        if not secret:
             raise ValueError("JWT_SECRET_KEY is required in production")
-        if v == "dev-secret-key-do-not-use-in-production":
+        if secret == "dev-secret-key-do-not-use-in-production":
             raise ValueError("Cannot use development secret key in production")
-        if len(v) < 32:
+        if len(secret) < 32:
             raise ValueError("JWT_SECRET_KEY must be at least 32 characters in production")
         return v
 

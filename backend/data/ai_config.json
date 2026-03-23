@@ -1,8 +1,5 @@
 {
-  "auto_embedded_groups": [
-    "BOOK",
-    "OTHER"
-  ],
+  "auto_embedded_groups": [],
   "excluded_groups": [],
   "default_collection": "documents",
   "chunk_size": 10000,

@@ -86,34 +86,41 @@
 
         <div class="settings-grid">
           <div class="field">
-            <label class="label">Download format</label>
-            <div class="segmented" role="group" aria-label="Download format selection">
-              <label class="seg-option">
-                <input type="radio" v-model="workflow.outputFormat" value="csv" />
-                <span>CSV</span>
-              </label>
-              <label class="seg-option">
-                <input type="radio" v-model="workflow.outputFormat" value="xlsx" />
-                <span>Excel (.xlsx)</span>
-              </label>
-            </div>
-            <p class="field-help">This applies to downloads after conversion.</p>
-          </div>
-
-          <div class="field">
             <label class="label">Edit Mode</label>
             <EditModeToggle v-model="workflow.editMode" />
             <p class="field-help">
               Make session-only changes to outputs, then download the modified package.
             </p>
           </div>
-
           <div class="field">
-            <label class="label">Performance</label>
-            <div class="perf-pill" role="status" aria-label="Performance mode enabled">
-              🚀 High-performance mode <strong>(enabled)</strong>
-            </div>
-            <p class="field-help">Optimized for large archives. No action required.</p>
+            <label class="label">Preview Mode</label>
+            <label class="toggle-inline">
+              <input
+                type="checkbox"
+                :checked="simplifiedPreview"
+                @change="onSimplifiedToggle($event.target.checked)"
+                style="accent-color: var(--brand-primary)"
+              />
+              <span>Simplified</span>
+            </label>
+
+            <label v-if="simplifiedPreview" class="toggle-inline nested-toggle">
+              <input
+                type="checkbox"
+                :checked="hideLowValueColumns"
+                @change="hideLowValueColumns = $event.target.checked"
+                style="accent-color: var(--brand-primary)"
+              />
+              <span>Hide low-value columns</span>
+            </label>
+
+            <p class="field-help">
+              Keep important columns first and move low-value columns to the end.
+              Works in both Preview and Edit Mode.
+            </p>
+            <p v-if="simplifiedPreview" class="field-help">
+              Low-value columns include mostly empty, constant, trivial boolean, and low-variance flag data.
+            </p>
           </div>
         </div>
 
@@ -160,6 +167,7 @@
             <span class="muted-text">
               Upload → Scan → Convert. Preview and downloads appear below.
             </span>
+            <span class="muted-text">High-performance mode enabled — optimized for large archives.</span>
           </div>
 
           <!-- Background status -->
@@ -176,7 +184,6 @@
               <strong v-if="embeddingStatus === 'embedding'">Preparing AI chat…</strong>
               <strong v-else-if="embeddingStatus === 'done'">AI chat is ready.</strong>
               <strong v-else-if="embeddingStatus === 'error'">AI preparation failed.</strong>
-              <strong v-else-if="embeddingStatus === 'info'">AI preparation skipped.</strong>
 
               <span v-if="embeddingStatus === 'embedding'" class="muted-text">
                 You can continue working while this completes.
@@ -197,6 +204,20 @@
         </div>
 
         <div class="download-bar">
+          <div class="field slim">
+            <label class="label">Download format</label>
+            <div class="segmented" role="group" aria-label="Download format selection">
+              <label class="seg-option">
+                <input type="radio" v-model="workflow.outputFormat" value="csv" />
+                <span>CSV</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" v-model="workflow.outputFormat" value="xlsx" />
+                <span>Excel (.xlsx)</span>
+              </label>
+            </div>
+          </div>
+
           <button class="btn btn-primary" @click="downloadAll" :disabled="!workflow.sessionId">
             Download full package
           </button>
@@ -242,16 +263,6 @@
                   Clear
                 </button>
               </div>
-            </div>
-
-            <div class="search">
-              <label class="label">Search</label>
-              <input
-                v-model="groupSearch"
-                type="text"
-                class="input"
-                placeholder="Type to filter groups"
-              />
             </div>
 
             <!-- Group selection (Listbox) -->
@@ -306,6 +317,9 @@
                   </transition>
                 </div>
               </Listbox>
+              <div v-if="selectedGroups.length" class="selected-summary" aria-label="Selected groups summary">
+                <span v-for="group in selectedGroups" :key="group" class="selected-chip">{{ group }}</span>
+              </div>
               <p class="field-help">Use selection to narrow results and focus on relevant groups.</p>
             </div>
 
@@ -314,11 +328,11 @@
               <label class="label">Active group</label>
               <select v-model="activeGroup" class="select" @change="loadGroupFiles">
                 <option value="">Select a group…</option>
-                <option v-for="g in conversionData.groups" :key="g.name" :value="g.name">
+                <option v-for="g in activeGroupOptions" :key="g.name" :value="g.name">
                   {{ g.name }}
                 </option>
               </select>
-              <p class="field-help">Choose a group to load its files and preview.</p>
+              <p class="field-help">Choose a group from the current selection to load its files and preview.</p>
             </div>
           </div>
 
@@ -339,7 +353,7 @@
               <!-- value keeps REAL filename, label hides extension -->
               <select v-model="activeFile" class="select" @change="loadFilePreview">
                 <option v-for="f in groupFiles" :key="f.filename" :value="f.filename">
-                  {{ displayFileName(f.filename) }}
+                  {{ f.filename }}
                 </option>
               </select>
 
@@ -359,6 +373,42 @@
               </div>
             </div>
 
+            <div
+              v-if="preview && simplifiedPreview && (preview.headers?.length || 0) > 0"
+              class="simplified-summary"
+              role="status"
+              aria-live="polite"
+            >
+              <div class="muted-text">
+                Showing <strong>{{ visibleColumnIndexes.length }}</strong> of
+                <strong>{{ preview.headers?.length || 0 }}</strong> columns.
+                <span v-if="hideLowValueColumns && hiddenLowValueCount > 0">
+                  {{ hiddenLowValueCount }} low-value column(s) hidden.
+                </span>
+              </div>
+              <button
+                class="btn btn-sm btn-secondary"
+                type="button"
+                @click="hideLowValueColumns = !hideLowValueColumns"
+                :disabled="lowValueColumnCount === 0"
+              >
+                {{ hideLowValueColumns ? `Show low-value columns (${lowValueColumnCount})` : 'Hide low-value columns' }}
+              </button>
+            </div>
+
+            <div v-if="preview && simplifiedPreview && lowValueColumnDetails.length" class="low-value-guide">
+              <details>
+                <summary>
+                  Low-value column details ({{ lowValueColumnCount }})
+                </summary>
+                <ul>
+                  <li v-for="col in lowValueColumnDetails" :key="`lv-${col.idx}`">
+                    <code>{{ col.header }}</code> — {{ formatLowValueReason(col.reason) }}
+                  </li>
+                </ul>
+              </details>
+            </div>
+
             <!-- ✅ Excel-style controls (Search / Filter / Sort) -->
             <div v-if="preview" class="grid-controls">
               <div class="grid-left">
@@ -375,18 +425,38 @@
                     Search / sort / filter are disabled in Edit Mode to keep row mapping safe.
                   </p>
                 </div>
+
+                <div class="field slim grid-search">
+                  <label class="label">Column filter</label>
+                  <input
+                    v-model="valueFilter"
+                    class="input"
+                    :disabled="workflow.editMode"
+                    placeholder="Search column names…"
+                    aria-label="Search column names"
+                  />
+                  <select
+                    v-model="selectedColumnFilter"
+                    class="select"
+                    :disabled="workflow.editMode"
+                    aria-label="Select visible column"
+                    style="margin-top: 8px;"
+                  >
+                    <option value="">All matching columns</option>
+                    <option v-for="col in filteredColumnOptions" :key="`col-${col.idx}`" :value="col.idx">
+                      {{ col.header }}
+                    </option>
+                  </select>
+                  <p class="field-help">Searches column names only. Row values stay untouched.</p>
+                </div>
               </div>
 
               <div class="grid-right">
                 <button class="btn btn-sm btn-secondary" @click="clearTableControls" :disabled="workflow.editMode">
-                  Clear search/filter
+                  Clear filters
                 </button>
-                <button
-                  class="btn btn-sm btn-secondary"
-                  @click="showColumnFilters = !showColumnFilters"
-                  :disabled="workflow.editMode"
-                >
-                  {{ showColumnFilters ? 'Hide filters' : 'Show filters' }}
+                <button class="btn btn-sm btn-secondary" @click="selectedColumnFilter = ''" :disabled="workflow.editMode">
+                  Show all columns
                 </button>
               </div>
             </div>
@@ -406,28 +476,31 @@
             </div>
 
             <div v-if="preview" class="table-hint">
-              <span class="muted-text">
-                Tip: Click a column header to sort. Use filters to narrow results.
+              <span v-if="workflow.editMode" class="muted-text">
+                Edit Mode on: sorting, search, and column filters are disabled to keep row mapping safe.
+              </span>
+              <span v-else class="muted-text">
+                Tip: Click a column header to sort. Column finder only narrows visible column names.
               </span>
             </div>
 
             <!-- ✅ Preview table -->
-            <div v-if="preview" class="table-wrap" aria-label="Preview table">
+            <div v-if="preview && visibleColumnIndexes.length" class="table-wrap" aria-label="Preview table">
               <table class="table">
                 <thead>
                   <tr>
                     <th
-                      v-for="(header, idx) in preview.headers"
-                      :key="idx"
+                      v-for="colIdx in visibleColumnIndexes"
+                      :key="colIdx"
                       class="sortable"
-                      :class="{ sorted: sortCol === idx }"
-                      @click="toggleSort(idx)"
-                      :title="workflow.editMode ? 'Sorting disabled in Edit Mode' : 'Click to sort'"
+                      :class="{ sorted: sortCol === colIdx, 'low-value': isLowValueColumn(colIdx) }"
+                      @click="toggleSort(colIdx)"
+                      :title="columnTitle(colIdx)"
                     >
                       <div class="th-inner">
-                        <span>{{ header }}</span>
+                        <span>{{ preview.headers[colIdx] }}</span>
                         <span class="sort-ind" aria-hidden="true">
-                          <template v-if="sortCol === idx">
+                          <template v-if="sortCol === colIdx">
                             {{ sortDir === 'asc' ? '▲' : '▼' }}
                           </template>
                           <template v-else>⇅</template>
@@ -435,24 +508,11 @@
                       </div>
                     </th>
                   </tr>
-
-                  <!-- Column filters row -->
-                  <tr v-if="showColumnFilters && !workflow.editMode" class="filter-row">
-                    <th v-for="(header, idx) in preview.headers" :key="'f-' + idx">
-                      <input
-                        v-model="columnFilters[idx]"
-                        class="filter-input"
-                        type="text"
-                        :placeholder="`Filter ${header}…`"
-                        @click.stop
-                      />
-                    </th>
-                  </tr>
                 </thead>
 
                 <tbody>
                   <tr v-for="(row, rowIdx) in displayRows" :key="rowIdx">
-                    <td v-for="(cell, colIdx) in row" :key="colIdx">
+                    <td v-for="colIdx in visibleColumnIndexes" :key="colIdx">
                       <template v-if="workflow.editMode">
                         <!-- In edit mode we keep using original preview rows (no sorting/filtering). -->
                         <input
@@ -463,12 +523,17 @@
                         />
                       </template>
                       <template v-else>
-                        {{ formatCellValue(cell) }}
+                        {{ formatCellValue(row[colIdx]) }}
                       </template>
                     </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+
+            <div v-else-if="preview && !visibleColumnIndexes.length" class="empty-state">
+              <div class="empty-title">No columns matched</div>
+              <div class="empty-text">Try a broader column name search or show all columns.</div>
             </div>
 
             <div v-else-if="activeGroup" class="empty-state">
@@ -531,15 +596,15 @@
       <div class="card-header">
         <div>
           <h3 class="card-title">Business Structure</h3>
-          <p class="card-subtitle">Explore organization hierarchy from the current scanned session.</p>
+          <p class="card-subtitle">5-layer organization hierarchy derived from converted CSV contents.</p>
         </div>
       </div>
       <BusinessStructurePanel
         :session-id="workflow.sessionId"
-        :uploaded-filename="workflow.uploadedFilename"
-        :scan-summary="workflow.scanSummary"
-        :scanned-files="workflow.scannedFiles"
-        :scanned-groups="workflow.scannedGroups"
+        :converted="workflow.converted"
+        :business-structure="businessStructure"
+        :loading-structure="loadingBusinessStructure"
+        @refresh="fetchBusinessStructure"
       />
     </section>
 
@@ -597,6 +662,7 @@ import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headless
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import EditModeToggle from '@/components/workspace/EditModeToggle.vue'
 import api, { longApi, pollJob } from '@/utils/api'
+import { groupEquals } from '@/utils/groups'
 import { useToastStore } from '@/stores/toastStore'
 
 const BusinessStructurePanel = defineAsyncComponent(() => import('@/components/workspace/BusinessStructurePanel.vue'))
@@ -640,6 +706,8 @@ const activeFile = ref('')
 const preview = ref(null)
 const groupFiles = ref([])
 const pendingCellEdits = ref(new Map())
+const simplifiedPreview = ref(false)
+const hideLowValueColumns = ref(true)
 
 const conversionData = reactive({
   groups: [],
@@ -647,19 +715,10 @@ const conversionData = reactive({
   totalFiles: 0
 })
 
-const indexedGroups = ref([])
+const businessStructure = ref(null)
+const loadingBusinessStructure = ref(false)
 
-/** -----------------------------
- * ✅ Hide extensions in UI
- * Removes: .xml.gz, .xml, .csv, .xlsx, .xls, .xlf (case-insensitive)
- * Leaves the original filename intact for backend operations.
- * ------------------------------ */
-function displayFileName(name) {
-  if (!name) return ''
-  return String(name)
-    .replace(/\.(xml\.gz|xml|csv|xlsx|xls|xlf)$/i, '')
-    .toUpperCase()
-}
+const indexedGroups = ref([])
 
 // Computed helpers
 const filteredGroups = computed(() => {
@@ -667,6 +726,123 @@ const filteredGroups = computed(() => {
   const search = groupSearch.value.toLowerCase()
   return conversionData.groups.filter(g => (g.name || '').toLowerCase().includes(search))
 })
+
+const activeGroupOptions = computed(() => {
+  if (!selectedGroups.value.length) return conversionData.groups
+  const allowed = new Set(selectedGroups.value)
+  return conversionData.groups.filter(g => allowed.has(g.name))
+})
+
+const filteredColumnOptions = computed(() => {
+  const headers = preview.value?.headers || []
+  const q = valueFilter.value.trim().toLowerCase()
+
+  return headers
+    .map((header, idx) => ({ header, idx }))
+    .filter(col => !q || String(col.header || '').toLowerCase().includes(q))
+})
+
+const lowValueColumnIndexes = computed(() => {
+  const meta = preview.value?.column_meta || []
+  if (!Array.isArray(meta) || !meta.length) return []
+  return meta
+    .map((entry, idx) => ({ entry, idx }))
+    .filter(({ entry }) => entry?.classification === 'low_value')
+    .map(({ idx }) => idx)
+})
+
+const lowValueColumnCount = computed(() => lowValueColumnIndexes.value.length)
+
+const lowValueColumnDetails = computed(() => {
+  const headers = preview.value?.headers || []
+  const meta = preview.value?.column_meta || []
+  if (!Array.isArray(meta) || !meta.length) return []
+
+  return meta
+    .map((entry, idx) => ({
+      idx,
+      header: headers[idx] || `Column ${idx + 1}`,
+      classification: entry?.classification,
+      reason: entry?.reason || ''
+    }))
+    .filter(entry => entry.classification === 'low_value')
+})
+
+const hiddenLowValueCount = computed(() => {
+  if (!simplifiedPreview.value || !hideLowValueColumns.value) return 0
+  return lowValueColumnCount.value
+})
+
+const visibleColumnIndexes = computed(() => {
+  const headers = preview.value?.headers || []
+  if (!headers.length) return []
+
+  if (selectedColumnFilter.value !== '') {
+    const idx = Number(selectedColumnFilter.value)
+    return Number.isInteger(idx) && idx >= 0 && idx < headers.length ? [idx] : []
+  }
+
+  // Base index set (filtered by column name search or all)
+  let baseIndexes
+  if (!valueFilter.value.trim()) {
+    baseIndexes = headers.map((_, idx) => idx)
+  } else {
+    baseIndexes = filteredColumnOptions.value.map(col => col.idx)
+  }
+
+  // In simplified mode, reorder so high-value columns come first
+  if (simplifiedPreview.value && preview.value?.simplified_order) {
+    const orderSet = new Set(baseIndexes)
+    const ordered = preview.value.simplified_order.filter(idx => orderSet.has(idx))
+    if (hideLowValueColumns.value) {
+      const lowSet = new Set(lowValueColumnIndexes.value)
+      return ordered.filter(idx => !lowSet.has(idx))
+    }
+    return ordered
+  }
+
+  return baseIndexes
+})
+
+function isLowValueColumn(colIdx) {
+  if (!simplifiedPreview.value) return false
+  const meta = preview.value?.column_meta
+  return meta && meta[colIdx]?.classification === 'low_value'
+}
+
+function columnTitle(colIdx) {
+  const meta = preview.value?.column_meta?.[colIdx]
+  const reasonLabel = formatLowValueReason(meta?.reason)
+
+  if (simplifiedPreview.value && meta?.classification === 'low_value') {
+    if (workflow.editMode) {
+      return `Low-value column (${reasonLabel}). Sorting disabled in Edit Mode.`
+    }
+    return `Low-value column (${reasonLabel}). Click to sort.`
+  }
+
+  if (workflow.editMode) return 'Sorting disabled in Edit Mode'
+
+  return 'Click to sort'
+}
+
+function formatLowValueReason(reason) {
+  const reasons = {
+    mostly_empty: 'mostly empty values',
+    all_same: 'same value in all rows',
+    trivial_boolean: 'boolean-like flag values',
+    low_variance_flag: 'low-variance small numeric flag'
+  }
+  return reasons[reason] || reason || 'low significance pattern'
+}
+
+function onSimplifiedToggle(enabled) {
+  simplifiedPreview.value = enabled
+  if (enabled) {
+    hideLowValueColumns.value = true
+  }
+  resetTableControls()
+}
 
 const pendingChangesCount = computed(() => pendingCellEdits.value.size)
 
@@ -680,28 +856,44 @@ watch(() => workflow.editMode, (enabled) => {
   resetTableControls()
 })
 
+watch(selectedGroups, async () => {
+  const options = activeGroupOptions.value
+
+  if (!options.length) {
+    activeGroup.value = ''
+    activeFile.value = ''
+    preview.value = null
+    groupFiles.value = []
+    return
+  }
+
+  const stillValid = options.some(g => groupEquals(g.name, activeGroup.value))
+  if (!stillValid) {
+    activeGroup.value = options[0].name
+    await loadGroupFiles()
+  }
+}, { deep: true })
+
 /** -----------------------------
  * ✅ Excel-like table controls (search/sort/filter)
  * ------------------------------ */
 const tableSearch = ref('')
-const showColumnFilters = ref(false)
+const selectedColumnFilter = ref('')
+const valueFilter = ref('')
 const sortCol = ref(null) // number | null
 const sortDir = ref('asc') // 'asc' | 'desc'
-const columnFilters = reactive({}) // key: colIndex -> string
 
 function resetTableControls() {
   tableSearch.value = ''
-  showColumnFilters.value = false
+  selectedColumnFilter.value = ''
+  valueFilter.value = ''
   sortCol.value = null
   sortDir.value = 'asc'
-  // keep keys but clear values
-  Object.keys(columnFilters).forEach(k => (columnFilters[k] = ''))
 }
 
 function clearTableControls() {
   if (workflow.editMode) return
-  tableSearch.value = ''
-  Object.keys(columnFilters).forEach(k => (columnFilters[k] = ''))
+  resetTableControls()
 }
 
 function toggleSort(colIdx) {
@@ -739,24 +931,14 @@ const displayRows = computed(() => {
   if (workflow.editMode) return preview.value.rows
 
   const rows = preview.value.rows
-  const headers = preview.value.headers
 
   const q = tableSearch.value.trim().toLowerCase()
 
-  // apply global search and per-column filters
+  // apply row search only — column controls now search header names, not cell values
   let filtered = rows.filter(r => {
-    // Global search
     if (q) {
       const hay = (r || []).join(' ').toLowerCase()
       if (!hay.includes(q)) return false
-    }
-
-    // Column filters
-    for (let i = 0; i < headers.length; i++) {
-      const f = (columnFilters[i] || '').trim().toLowerCase()
-      if (!f) continue
-      const cell = String((r || [])[i] ?? '').toLowerCase()
-      if (!cell.includes(f)) return false
     }
     return true
   })
@@ -913,6 +1095,7 @@ async function bulkConvert() {
 
       await loadConvertedFiles(true)
       handleEmbeddingMetadata(payload)
+      fetchBusinessStructure()
     } else {
       throw new Error(payload?.message || payload?.error || 'Conversion failed')
     }
@@ -983,8 +1166,15 @@ function handleEmbeddingMetadata(payload = {}) {
   }
 
   if (status === 'no_eligible_groups' || status === 'no_inventory' || status === 'disabled') {
-    embeddingStatus.value = 'info'
-    embeddingMessage.value = infoTextForEmbeddingStatus(status)
+    // Silent — do not display any banner for these states
+    embeddingStatus.value = null
+    embeddingMessage.value = ''
+    return
+  }
+
+  if (status === 'suppressed' || status === 'stopped') {
+    embeddingStatus.value = null
+    embeddingMessage.value = ''
     return
   }
 
@@ -999,21 +1189,29 @@ function pollEmbeddingStatus() {
 
   embeddingPollTimer = setInterval(async () => {
     try {
-      const res = await api.get(`/v2/ai/embedding/status/${workflow.sessionId}`)
+      const res = await api.get(`/v2/ai/auto-embed/progress/${workflow.sessionId}`)
       embeddingProgress.value = res.data
 
-      const status = String(res?.data?.status || res?.data?.embedding_status || '').toLowerCase()
+      const status = String(res?.data?.status || '').toLowerCase()
 
       if (status === 'failed') {
         embeddingStatus.value = 'error'
-        embeddingMessage.value = res?.data?.message || 'Embedding failed.'
+        embeddingMessage.value = res?.data?.error || res?.data?.message || 'Embedding failed.'
         stopEmbeddingPolling()
         return
       }
 
-      if (status === 'disabled' || status === 'no_eligible_groups' || status === 'no_inventory') {
-        embeddingStatus.value = 'info'
-        embeddingMessage.value = infoTextForEmbeddingStatus(status)
+      if (
+        status === 'disabled' ||
+        status === 'no_eligible_groups' ||
+        status === 'no_inventory' ||
+        status === 'suppressed' ||
+        status === 'stopped' ||
+        status === 'idle'
+      ) {
+        // Silent — stop polling without showing a banner
+        embeddingStatus.value = null
+        embeddingMessage.value = ''
         stopEmbeddingPolling()
         return
       }
@@ -1024,16 +1222,6 @@ function pollEmbeddingStatus() {
         toast.success('AI is ready. You can use the AI tab now.')
         stopEmbeddingPolling()
         return
-      }
-
-      const totalGroups = Object.keys(res.data.groups || {}).length
-      const doneCount = Object.values(res.data.groups || {}).filter(g => g.indexed > 0).length
-
-      if (totalGroups > 0 && doneCount >= totalGroups) {
-        embeddingStatus.value = 'done'
-        embeddingMessage.value = ''
-        toast.success('AI is ready. You can use the AI tab now.')
-        stopEmbeddingPolling()
       }
     } catch (e) {
       console.debug('Embedding status poll:', e.message)
@@ -1066,10 +1254,24 @@ async function loadConvertedFiles(useLong = false) {
   }
 }
 
+async function fetchBusinessStructure() {
+  if (!workflow.sessionId || !workflow.converted) return
+  loadingBusinessStructure.value = true
+  try {
+    const res = await api.get(`/conversion/business-structure/${workflow.sessionId}`)
+    businessStructure.value = res.data
+  } catch (e) {
+    console.error('Failed to load business structure:', e)
+    businessStructure.value = null
+  } finally {
+    loadingBusinessStructure.value = false
+  }
+}
+
 async function loadGroupFiles() {
   if (!activeGroup.value) return
 
-  groupFiles.value = conversionData.files.filter(f => f.group === activeGroup.value)
+  groupFiles.value = conversionData.files.filter(f => groupEquals(f.group, activeGroup.value))
 
   if (groupFiles.value.length > 0) {
     activeFile.value = groupFiles.value[0].filename
@@ -1092,18 +1294,7 @@ async function loadFilePreview() {
     preview.value = res.data
     pendingCellEdits.value = new Map()
 
-    // init/reset table controls + column filters based on header count
     resetTableControls()
-    if (preview.value?.headers?.length) {
-      preview.value.headers.forEach((_, idx) => {
-        if (columnFilters[idx] === undefined) columnFilters[idx] = ''
-      })
-      // also remove old keys if new file has fewer cols
-      Object.keys(columnFilters).forEach(k => {
-        const i = Number(k)
-        if (i >= preview.value.headers.length) delete columnFilters[k]
-      })
-    }
   } catch (e) {
     console.error('Failed to load preview:', e)
     preview.value = null
@@ -1275,7 +1466,10 @@ onUnmounted(() => {
    Enterprise UI styling
 ------------------------------------------------------- */
 
-.main-view { padding: 16px 0; }
+.main-view {
+  padding: 16px 0 28px;
+  color: var(--text-body);
+}
 
 /* Header */
 .page-header {
@@ -1307,11 +1501,12 @@ onUnmounted(() => {
   gap: 8px;
   padding: 8px 10px;
   border-radius: 999px;
-  background: var(--surface-base);
-  border: 1px solid var(--border-light);
-  color: var(--text-secondary);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
+  border: 1px solid var(--border-medium);
+  color: var(--text-body);
   font-size: 0.85rem;
   white-space: nowrap;
+  box-shadow: var(--shadow-xs);
 }
 .session-chip.muted { opacity: 0.9; }
 
@@ -1331,23 +1526,26 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border-light);
-  background: var(--surface-base);
-  color: var(--text-secondary);
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-medium);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
+  color: var(--text-body);
   cursor: pointer;
-  transition: all 0.15s ease;
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 .tab:hover {
   border-color: var(--brand-primary);
   background: var(--surface-hover);
-  color: var(--text-primary);
+  color: var(--text-heading);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
 }
 .tab.active {
   border-color: var(--brand-primary);
-  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
-  color: var(--text-primary);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand-subtle), var(--surface-base) 30%), var(--surface-elevated));
+  color: var(--text-heading);
   box-shadow: var(--shadow-md);
 }
 .tab:focus-visible {
@@ -1359,9 +1557,9 @@ onUnmounted(() => {
 
 /* Cards */
 .card {
-  background: var(--surface-elevated);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-elevated), var(--bg-primary) 8%), var(--surface-elevated));
   border: 1px solid var(--border-light);
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 18px;
   box-shadow: var(--shadow-sm);
 }
@@ -1398,7 +1596,7 @@ onUnmounted(() => {
   padding: 14px;
   border-radius: 12px;
   border: 1px solid var(--border-light);
-  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand-subtle), var(--surface-base) 18%), var(--surface-elevated));
   margin-bottom: 16px;
 }
 .badge {
@@ -1447,10 +1645,11 @@ onUnmounted(() => {
 @media (max-width: 980px) { .settings-grid { grid-template-columns: 1fr; } }
 
 .field {
-  background: var(--surface-base);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
   border: 1px solid var(--border-light);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 12px;
+  box-shadow: var(--shadow-xs);
 }
 .field.slim { padding: 10px 12px; }
 
@@ -1480,25 +1679,14 @@ onUnmounted(() => {
   gap: 8px;
   padding: 8px 10px;
   border-radius: 10px;
-  border: 1px solid var(--border-light);
+  border: 1px solid var(--border-medium);
   background: var(--surface-elevated);
   cursor: pointer;
+  box-shadow: var(--shadow-xs);
 }
 .seg-option input { accent-color: var(--brand-primary); }
 
-/* Performance pill */
-.perf-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 999px;
-  background: var(--color-success-bg, #e8f5e9);
-  border: 1px solid var(--color-success, #2e7d32);
-  color: #1f5d24;
-  font-size: 0.88rem;
-  font-weight: 700;
-}
+/* Input fields */
 
 .input,
 .select {
@@ -1507,7 +1695,8 @@ onUnmounted(() => {
   border-radius: 10px;
   border: 1px solid var(--border-medium);
   background: var(--surface-elevated);
-  color: var(--text-primary);
+  color: var(--text-body);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-hover), transparent 35%);
 }
 .input:focus-visible,
 .select:focus-visible {
@@ -1527,11 +1716,12 @@ onUnmounted(() => {
 
 /* Upload card */
 .upload-card {
-  background: var(--surface-base);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
   border: 1px solid var(--border-light);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 14px;
   margin-top: 10px;
+  box-shadow: var(--shadow-sm);
 }
 
 .summary {
@@ -1545,7 +1735,7 @@ onUnmounted(() => {
   min-width: 180px;
   border-radius: 12px;
   border: 1px solid var(--border-light);
-  background: var(--surface-elevated);
+  background: linear-gradient(180deg, var(--surface-elevated), var(--surface-raised));
   padding: 10px 12px;
 }
 .summary-label { font-size: 0.8rem; color: var(--text-tertiary); }
@@ -1576,25 +1766,19 @@ onUnmounted(() => {
   gap: 4px;
 }
 .status-embedding {
-  border-color: var(--color-info, #1976d2);
-  background: var(--color-info-bg, #e8f4fd);
-  color: #0d3c73;
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info);
 }
 .status-done {
-  border-color: var(--color-success, #2e7d32);
-  background: var(--color-success-bg, #e8f5e9);
-  color: #1f5d24;
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
 }
 .status-error {
-  border-color: var(--color-error, #c62828);
-  background: var(--color-error-bg, #fce4ec);
-  color: #7b1b1b;
-}
-
-.status-info {
-  border-color: var(--color-info, #1976d2);
-  background: rgba(25, 118, 210, 0.10);
-  color: #0d3c73;
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error);
 }
 
 /* Downloads */
@@ -1615,10 +1799,11 @@ onUnmounted(() => {
 }
 
 .card-sub {
-  background: var(--surface-base);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
   border: 1px solid var(--border-light);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 14px;
+  box-shadow: var(--shadow-xs);
 }
 
 .sub-head {
@@ -1663,7 +1848,9 @@ onUnmounted(() => {
   border-radius: 10px;
   border: 1px solid var(--border-medium);
   background: var(--surface-elevated);
+  color: var(--text-body);
   cursor: pointer;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-hover), transparent 35%);
 }
 .chev { color: var(--text-tertiary); }
 
@@ -1715,6 +1902,25 @@ onUnmounted(() => {
   font-size: 0.9rem;
 }
 
+.selected-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.selected-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.68rem;
+  border-radius: 999px;
+  background: var(--brand-subtle);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border-light) 65%);
+  color: var(--text-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 /* Transitions */
 .listbox-enter-active,
 .listbox-leave-active {
@@ -1743,6 +1949,47 @@ onUnmounted(() => {
 .meta-k { font-size: 0.8rem; color: var(--text-tertiary); }
 .meta-v { font-size: 1.0rem; font-weight: 900; color: var(--text-heading); }
 
+.simplified-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border-light) 62%);
+  background: color-mix(in srgb, var(--brand-subtle), var(--surface-elevated) 35%);
+}
+
+.low-value-guide {
+  margin: 0 0 12px;
+}
+
+.low-value-guide details {
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  background: var(--surface-base);
+  padding: 10px 12px;
+}
+
+.low-value-guide summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.low-value-guide ul {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.nested-toggle {
+  margin-top: 10px;
+}
+
 .edit-banner {
   display: flex;
   justify-content: space-between;
@@ -1750,9 +1997,31 @@ onUnmounted(() => {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 12px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--brand-subtle), var(--surface-elevated) 30%);
+  border: 1px solid color-mix(in srgb, var(--brand-primary), var(--border-light) 60%);
   margin-bottom: 10px;
+}
+
+.grid-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.grid-left {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  flex: 1 1 700px;
+}
+
+.grid-right {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
 }
 
 .table-hint {
@@ -1781,19 +2050,24 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: var(--surface-base);
+  background: linear-gradient(180deg, var(--surface-base), var(--surface-raised));
   border-bottom: 1px solid var(--border-light);
   padding: 10px;
   text-align: left;
   font-weight: 900;
-  color: var(--text-primary);
+  color: var(--text-heading);
   white-space: nowrap;
+}
+
+.table thead th.low-value {
+  opacity: 0.55;
+  font-weight: 600;
 }
 
 .table tbody td {
   border-bottom: 1px solid var(--border-light);
   padding: 8px 10px;
-  color: var(--text-secondary);
+  color: var(--text-body);
   vertical-align: top;
   white-space: nowrap;
 }
@@ -1829,31 +2103,39 @@ onUnmounted(() => {
 
 /* Buttons */
 .btn {
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid var(--border-medium);
-  padding: 10px 12px;
+  padding: 10px 14px;
   cursor: pointer;
   font-weight: 800;
-  transition: transform 0.08s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  box-shadow: var(--shadow-xs);
+  transition: transform 0.08s ease, box-shadow 0.15s ease, filter 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 
 .btn-primary {
-  background: var(--brand-primary);
-  border-color: var(--brand-primary);
-  color: #0b0b0b;
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+  border-color: color-mix(in srgb, var(--brand-primary), #000 8%);
+  color: var(--brand-on);
   box-shadow: var(--shadow-sm);
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.05); box-shadow: var(--shadow-md); }
 
-.btn-secondary { background: var(--surface-elevated); color: var(--text-primary); }
-.btn-secondary:hover:not(:disabled) { background: var(--surface-hover); }
+.btn-secondary {
+  background: linear-gradient(180deg, var(--surface-elevated), var(--surface-raised));
+  color: var(--text-body);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: color-mix(in srgb, var(--brand-primary), var(--border-medium) 50%);
+  box-shadow: var(--shadow-sm);
+}
 
 .btn-warning {
   background: linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-secondary) 100%);
-  border-color: var(--brand-primary);
-  color: #0b0b0b;
+  border-color: color-mix(in srgb, var(--brand-primary), #000 8%);
+  color: var(--brand-on);
 }
 .btn-warning:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow-md); }
 
@@ -1879,14 +2161,43 @@ onUnmounted(() => {
   align-items: center;
   gap: 14px;
   padding: 14px;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid var(--border-light);
-  background: linear-gradient(145deg, var(--surface-base), var(--surface-elevated));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--brand-subtle), var(--surface-base) 20%), var(--surface-elevated));
+  box-shadow: var(--shadow-sm);
 }
 .ai-actions {
   display: flex;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+:deep(.toggle-inline) {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+:deep(.toggle-inline span) {
+  color: var(--text-body);
+}
+
+@media (max-width: 900px) {
+  .page-header,
+  .card-header,
+  .sub-head,
+  .ai-card,
+  .grid-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .preview-meta {
+    flex-direction: column;
+  }
+
+  .grid-right {
+    width: 100%;
+  }
 }
 </style>

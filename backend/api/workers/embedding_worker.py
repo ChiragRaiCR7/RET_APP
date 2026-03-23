@@ -122,6 +122,7 @@ class EmbeddingWorker:
         self._stop_event = asyncio.Event()
         self._semaphore = asyncio.Semaphore(self.max_workers)
         self._consumer_task: Optional[asyncio.Task[None]] = None
+        self._inflight: Dict[str, asyncio.Task[None]] = {}  # task_id → asyncio.Task
 
         logger.info(
             "EmbeddingWorker initialized (async): max_workers=%d, batch_size=%d",
@@ -147,6 +148,10 @@ class EmbeddingWorker:
     async def stop(self, wait: bool = True) -> None:
         """Signal and optionally await the consumer loop."""
         self._stop_event.set()
+        # Cancel all in-flight processing tasks
+        for tid, atask in list(self._inflight.items()):
+            if not atask.done():
+                atask.cancel()
         # Put a sentinel to unblock the queue.get()
         try:
             self._queue.put_nowait(None)  # type: ignore[arg-type]
@@ -157,6 +162,14 @@ class EmbeddingWorker:
                 await asyncio.wait_for(self._consumer_task, timeout=15.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 self._consumer_task.cancel()
+        # Mark all running tasks as cancelled
+        async with self._lock:
+            for t in self._tasks.values():
+                if t.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                    t.status = TaskStatus.CANCELLED
+                    t.error = "Worker shutdown"
+                    t.completed_at = time.time()
+        self._inflight.clear()
         logger.info("Embedding worker stopped")
 
     # ------------------------------------------------------------------
@@ -239,8 +252,32 @@ class EmbeddingWorker:
                 task.status = TaskStatus.CANCELLED
                 task.error = "Cancelled by user"
                 task.completed_at = time.time()
+                # Also cancel the asyncio task if in-flight
+                atask = self._inflight.get(task_id)
+                if atask and not atask.done():
+                    atask.cancel()
                 return True
         return False
+
+    async def cancel_session_tasks(self, session_id: str) -> int:
+        """Cancel all pending/running tasks for a session. Returns count cancelled."""
+        cancelled = 0
+        async with self._lock:
+            for task in self._tasks.values():
+                if (
+                    task.session_id == session_id
+                    and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+                ):
+                    task.status = TaskStatus.CANCELLED
+                    task.error = "Cancelled (session stop)"
+                    task.completed_at = time.time()
+                    cancelled += 1
+                    atask = self._inflight.get(task.task_id)
+                    if atask and not atask.done():
+                        atask.cancel()
+        if cancelled:
+            logger.info("Cancelled %d embedding tasks for session %s", cancelled, session_id)
+        return cancelled
 
     async def cleanup_old_tasks(self, max_age_seconds: float = 3600) -> None:
         async with self._lock:
@@ -276,11 +313,13 @@ class EmbeddingWorker:
                 break
 
             task, rag_service, callback = item
-            # Fire-and-forget but track for shutdown
-            asyncio.get_event_loop().create_task(
+            # Track the processing task so shutdown/cancel can interrupt it
+            atask = asyncio.get_event_loop().create_task(
                 self._process_task(task, rag_service, callback),
                 name=f"embed-{task.task_id}",
             )
+            self._inflight[task.task_id] = atask
+            atask.add_done_callback(lambda t, tid=task.task_id: self._inflight.pop(tid, None))
 
     # ------------------------------------------------------------------
     # Process a single task
@@ -404,12 +443,20 @@ class EmbeddingWorker:
         callback: EmbeddingCallback,
     ) -> Dict[str, Any]:
         """Embed a single group with retry + exponential backoff."""
+        # Cooperative cancellation check before starting
+        if task.status == TaskStatus.CANCELLED or self._stop_event.is_set():
+            return {"group": group, "files": 0, "docs": 0, "chunks": 0, "skipped": True}
+
         logger.info("Embedding group: %s (task %s)", group, task.task_id)
         max_retries = getattr(settings, "EMBED_GROUP_MAX_RETRIES", 2)
         backoff = getattr(settings, "EMBED_GROUP_BACKOFF_SECONDS", 1.5)
         last_exc: Optional[Exception] = None
 
         for attempt in range(max_retries + 1):
+            # Check cancellation before each attempt
+            if task.status == TaskStatus.CANCELLED or self._stop_event.is_set():
+                return {"group": group, "files": 0, "docs": 0, "chunks": 0, "skipped": True}
+
             try:
                 # CPU-bound / blocking RAG call → offload to thread
                 result = await asyncio.to_thread(

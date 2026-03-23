@@ -77,6 +77,12 @@ instance.interceptors.response.use(
 export default instance
 
 // ---------------------------------------------------------------------------
+// Re-export helpers defined in streamChat.js so components can import from
+// either '@/utils/api' or '@/utils/streamChat' interchangeably.
+// ---------------------------------------------------------------------------
+export { longApi, apiCall, pollJob } from '@/utils/streamChat'
+
+// ---------------------------------------------------------------------------
 // Streaming helpers (Fetch-based — Axios cannot stream SSE)
 // ---------------------------------------------------------------------------
 

@@ -39,6 +39,11 @@ class SessionAIManager:
     Manages auto-embedding, metadata persistence, and cleanup.
     """
 
+    AUTO_EMBED_SUPPRESSED_KEY = "auto_embed_suppressed"
+    AUTO_EMBED_SUPPRESSED_AT_KEY = "auto_embed_suppressed_at"
+    AUTO_EMBED_SUPPRESSED_REASON_KEY = "auto_embed_suppressed_reason"
+    AUTO_EMBED_SUPPRESSED_BY_KEY = "auto_embed_suppressed_by"
+
     def __init__(self, session_id: str, user_id: str, session_dir: Path):
         self.session_id = session_id
         self.user_id = user_id
@@ -48,6 +53,7 @@ class SessionAIManager:
         self.metadata_path = session_dir / "ai_metadata.json"
         self._metadata: Dict[str, Any] = {}
         self._load_metadata()
+        self._metadata.setdefault(self.AUTO_EMBED_SUPPRESSED_KEY, False)
 
         # Auto-embedder reference (lazy init)
         self._auto_embedder = None
@@ -517,6 +523,13 @@ class SessionAIManager:
         Returns:
             Status dict
         """
+        if self.is_auto_embed_suppressed:
+            return {
+                "status": "suppressed",
+                "eligible_groups": [],
+                "message": "Auto-embedding is suppressed for this session until manually resumed",
+            }
+
         # Always refresh admin config at trigger time so latest admin changes apply.
         try:
             self.auto_embedder.reload_admin_config()
@@ -588,10 +601,77 @@ class SessionAIManager:
         """Get current auto-embedding progress."""
         return self.auto_embedder.progress
 
-    def stop_auto_embed(self) -> None:
-        """Stop auto-embedding if running."""
+    @property
+    def is_auto_embed_suppressed(self) -> bool:
+        """Whether automatic embedding re-triggers are suppressed for this session."""
+        return bool(self._metadata.get(self.AUTO_EMBED_SUPPRESSED_KEY, False))
+
+    def set_auto_embed_suppressed(
+        self,
+        suppressed: bool,
+        reason: str = "",
+        source: str = "",
+    ) -> None:
+        """Persist session-scoped auto-embed suppression state."""
+        self._metadata[self.AUTO_EMBED_SUPPRESSED_KEY] = bool(suppressed)
+
+        if suppressed:
+            self._metadata[self.AUTO_EMBED_SUPPRESSED_AT_KEY] = datetime.now(timezone.utc).isoformat()
+            if reason:
+                self._metadata[self.AUTO_EMBED_SUPPRESSED_REASON_KEY] = str(reason)
+            if source:
+                self._metadata[self.AUTO_EMBED_SUPPRESSED_BY_KEY] = str(source)
+        else:
+            self._metadata.pop(self.AUTO_EMBED_SUPPRESSED_AT_KEY, None)
+            self._metadata.pop(self.AUTO_EMBED_SUPPRESSED_REASON_KEY, None)
+            self._metadata.pop(self.AUTO_EMBED_SUPPRESSED_BY_KEY, None)
+
+        self._save_metadata()
+
+    def clear_auto_embed_suppression(self) -> None:
+        """Clear auto-embed suppression for this session."""
+        if not self.is_auto_embed_suppressed:
+            return
+        self.set_auto_embed_suppressed(False)
+
+    def stop_auto_embed(
+        self,
+        suppress_auto_start: bool = False,
+        reason: str = "",
+        source: str = "",
+    ) -> None:
+        """Stop auto-embedding if running and optionally suppress auto-restarts."""
         if self._auto_embedder:
             self._auto_embedder.stop()
+
+        if suppress_auto_start:
+            self.set_auto_embed_suppressed(True, reason=reason, source=source)
+
+    async def stop_all_embedding(
+        self,
+        suppress_auto_start: bool = True,
+        reason: str = "Stopped by user",
+        source: str = "user",
+    ) -> Dict[str, Any]:
+        """Stop both auto-embedder and any EmbeddingWorker tasks for this session."""
+        self.stop_auto_embed(
+            suppress_auto_start=suppress_auto_start,
+            reason=reason,
+            source=source,
+        )
+        worker_cancelled = 0
+        try:
+            from api.workers.embedding_worker import get_embedding_worker
+
+            worker = await get_embedding_worker()
+            worker_cancelled = await worker.cancel_session_tasks(self.session_id)
+        except Exception as e:
+            logger.warning("Failed to cancel worker tasks for session %s: %s", self.session_id, e)
+        return {
+            "auto_embed_stopped": True,
+            "worker_tasks_cancelled": worker_cancelled,
+            "auto_embed_suppressed": self.is_auto_embed_suppressed,
+        }
 
     # ------------------------------------------------------------------
     # History
@@ -729,6 +809,17 @@ def trigger_auto_embed_after_conversion(
                 return meta
 
         manager = get_session_ai_manager(session_id, user_id)
+
+        if manager.is_auto_embed_suppressed:
+            meta.update(
+                {
+                    "attempted": True,
+                    "status": "suppressed",
+                    "eligible_groups": [],
+                    "message": "Auto-embedding is suppressed for this session until manually resumed",
+                }
+            )
+            return meta
 
         if not manager.is_configured():
             meta.update(
