@@ -75,35 +75,22 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo Installing async PostgreSQL driver...
-python -m pip install asyncpg
+echo Applying database migrations (SQLite)...
+python -m alembic upgrade head
 if errorlevel 1 (
-    echo ERROR: Failed to install asyncpg.
+    echo ERROR: Database migration failed.
     popd
     pause
     exit /b 1
 )
 
-echo Initializing database...
+echo Seeding demo users...
 python -m scripts.init_db --seed-demo
 if errorlevel 1 (
     echo ERROR: Database initialization failed.
     popd
     pause
     exit /b 1
-)
-
-echo Applying database migrations...
-python -m alembic upgrade head
-if errorlevel 1 (
-    echo.
-    echo WARNING: Migration step reported an error.
-    echo If this is a database that was created before alembic was introduced,
-    echo run the following from the backend directory to stamp the current schema:
-    echo   python -m alembic stamp head
-    echo Then re-run setup.bat, or manually run:
-    echo   python -m alembic upgrade head
-    echo.
 )
 
 echo Backend setup complete!

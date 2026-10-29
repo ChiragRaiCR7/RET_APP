@@ -69,11 +69,8 @@ class BaseConfig(BaseSettings):
     # ======================
     # Database
     # ======================
-    # ✅ Make truly optional to avoid import-time crashes in modules that import settings
-    DATABASE_URL: Optional[str] = None
-    DATABASE_POOL_SIZE: int = 5
-    DATABASE_MAX_OVERFLOW: int = 10
-    DATABASE_POOL_TIMEOUT: int = 30
+    # SQLite (WAL) is the only supported database; the file lives under the runtime root.
+    DATABASE_URL: str = "sqlite+aiosqlite:///./runtime/ret.db"
 
     # ======================
     # Session Storage (SQLite)
@@ -388,11 +385,6 @@ class DevelopmentConfig(BaseConfig):
     JWT_SECRET_KEY: Optional[SecretStr] = SecretStr("dev-secret-key-do-not-use-in-production")
     ENABLE_SECURITY_HEADERS: bool = False
 
-    # Smaller pool for SQLite — raise to 5/5 so embedding + polling
-    # don't exhaust the pool under normal development load.
-    DATABASE_POOL_SIZE: int = 5
-    DATABASE_MAX_OVERFLOW: int = 5
-
     # Enable per-session logging in development
     FEATURE_SESSION_LOGGING: bool = True
 
@@ -453,10 +445,6 @@ class ProductionConfig(BaseConfig):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 1
 
-    # Production database settings
-    DATABASE_POOL_SIZE: int = 20
-    DATABASE_MAX_OVERFLOW: int = 30
-
     # Stricter rate limiting
     RATE_LIMIT_REQUESTS: int = 60
     RATE_LIMIT_WINDOW_SECONDS: int = 60
@@ -481,11 +469,10 @@ class ProductionConfig(BaseConfig):
 
     @field_validator("DATABASE_URL")
     @classmethod
-    def database_must_not_be_sqlite(cls, v: Optional[str]) -> str:
-        if not v:
-            raise ValueError("DATABASE_URL is required in production")
-        if v.startswith("sqlite"):
-            raise ValueError("SQLite is not supported in production. Use PostgreSQL.")
+    def database_must_be_file_backed(cls, v: str) -> str:
+        # An in-memory SQLite database would silently lose every user and audit record.
+        if v.rstrip("/").endswith("sqlite+aiosqlite:") or ":memory:" in v:
+            raise ValueError("DATABASE_URL must point to a SQLite file in production")
         return v
 
     @model_validator(mode="after")
