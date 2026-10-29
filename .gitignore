@@ -18,3 +18,6 @@ frontend/dist/
 
 # OS / editors
 .DS_Store
+
+# E2E screenshots
+frontend/e2e/shots/

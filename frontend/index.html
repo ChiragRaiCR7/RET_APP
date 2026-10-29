@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Classic (non-module) script so the stored theme applies before first paint; external
+         rather than inline so it passes the strict Content-Security-Policy. -->
+    <script src="/theme-init.js"></script>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>RET</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

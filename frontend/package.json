@@ -1,0 +1,28 @@
+{
+  "name": "ret-frontend",
+  "private": true,
+  "version": "5.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview",
+    "gen:api": "cd ../backend && .venv/bin/python -c \"import json; from app.main import create_app; print(json.dumps(create_app().openapi()))\" > ../frontend/openapi.json && cd ../frontend && openapi-typescript openapi.json -o src/api/schema.d.ts && rm openapi.json"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.17",
+    "lucide-vue-next": "^1.0.0",
+    "marked": "^18.1.2",
+    "vue": "^3.5.44",
+    "vue-router": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  }
+}

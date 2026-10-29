@@ -110,6 +110,12 @@ def _history(db: Session, workspace_id: str) -> list[dict[str, str]]:
     return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
 
 
+def _cells(snippet: str, limit: int = 160) -> str:
+    """The ``col: value`` part of an indexed row, shortened and safe inside a code span."""
+    cells = snippet.split(" | ", 1)[-1].replace("`", "'")
+    return cells if len(cells) <= limit else cells[: limit - 1] + "…"
+
+
 def _sse(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
@@ -146,7 +152,10 @@ def _answer(db: Session, workspace_id: str, question: str) -> Iterator[str]:
 
     if not s.llm_configured:
         if citations:
-            lines = [f"- **{c.dataset}** row {c.row + 1} [{c.n}]" for c in citations]
+            lines = [
+                f"- **{c.dataset}** row {c.row + 1} [{c.n}]: `{_cells(c.snippet)}`"
+                for c in citations
+            ]
             text_ = (
                 "No AI model is configured, so here are the most relevant records "
                 "for your question:\n\n" + "\n".join(lines)
