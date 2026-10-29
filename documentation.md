@@ -1627,18 +1627,18 @@ All `__init__.py` files under `backend/api/`, `backend/api/core/`, `backend/api/
 
 | Path | Utility |
 |---|---|
-| `frontend/src/main.js` | Bootstraps Vue, Pinia, and Vue Router. |
+| `frontend/src/main.ts` | Bootstraps Vue, Pinia, and Vue Router. |
 | `frontend/src/App.vue` | Root component that hosts global layout and route rendering. |
-| `frontend/src/router/index.js` | Defines routes and auth/admin navigation guards. |
-| `frontend/src/utils/api.js` | Central Axios client with auth header injection and token refresh retry queue. |
+| `frontend/src/router/index.ts` | Defines routes and auth/admin navigation guards. |
+| `frontend/src/utils/api.ts` | The single HTTP layer: auth header injection, single-flight token refresh, long-running client, job polling. |
 
 ## Frontend stores and composables
 
 | Path | Utility |
 |---|---|
-| `frontend/src/stores/authStore.js` | Stores logged-in user state, access token, refresh flow, and logout logic. |
-| `frontend/src/stores/toastStore.js` | Stores and manages toast notifications. |
-| `frontend/src/composable/useTheme.js` | Reusable theme-toggle and theme persistence logic. |
+| `frontend/src/stores/authStore.ts` | Logged-in user, in-memory access token, refresh flow, and logout logic. |
+| `frontend/src/stores/toastStore.ts` | Stores and manages toast notifications. |
+| `frontend/src/composable/useTheme.ts` | Theme that follows the OS until the user overrides it. |
 
 ## Frontend views
 

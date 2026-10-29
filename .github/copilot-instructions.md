@@ -17,7 +17,7 @@ frontend/src/        # Vue 3 SPA (Composition API)
 ├── views/           # Page-level components (MainView, AdminView)
 ├── components/      # Reusable UI components
 ├── stores/          # Pinia state management
-└── utils/api.js     # Axios instance with auth interceptor
+└── utils/api.ts     # Axios clients with auth interceptor
 ```
 
 ## Critical Patterns
@@ -58,7 +58,7 @@ Vue components use Pinia stores for global state:
 import { useAuthStore } from '@/stores/authStore'
 const auth = useAuthStore()
 ```
-API calls go through `@/utils/api.js` which handles JWT refresh automatically.
+API calls go through `@/utils/api` (src/utils/api.ts) which handles JWT refresh automatically.
 
 ## Developer Commands
 
@@ -235,7 +235,7 @@ def test_workflow():
 | Conversion logic | `backend/api/services/conversion_service.py` |
 | RAG engine | `backend/api/services/ai/rag_engine.py` |
 | Main UI | `frontend/src/views/MainView.vue` |
-| API client | `frontend/src/utils/api.js` |
+| API client | `frontend/src/utils/api.ts` |
 
 
 

@@ -11,8 +11,18 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
+export type ToastType = 'success' | 'error' | 'warning' | 'info'
+
+export interface Toast {
+  id: number
+  message: string
+  type: ToastType
+  duration: number
+  createdAt: number
+}
+
 export const useToastStore = defineStore('toast', () => {
-  const toasts = ref([])
+  const toasts = ref<Toast[]>([])
   let nextId = 0
 
   // ✅ Safety defaults (non-breaking)
@@ -24,12 +34,12 @@ export const useToastStore = defineStore('toast', () => {
   const dedupe = ref(DEDUPE_DEFAULT)
 
   // Track timers to avoid dangling setTimeout handlers
-  const timers = new Map()
+  const timers = new Map<number, ReturnType<typeof setTimeout>>()
 
   /**
    * Internal: clear and forget a toast timer
    */
-  function _clearTimer(id) {
+  function _clearTimer(id: number): void {
     const t = timers.get(id)
     if (t) {
       clearTimeout(t)
@@ -40,7 +50,7 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Internal: enforce max toast count (drop oldest)
    */
-  function _enforceMax() {
+  function _enforceMax(): void {
     while (toasts.value.length > maxToasts.value) {
       const oldest = toasts.value.shift()
       if (oldest) _clearTimer(oldest.id)
@@ -49,12 +59,9 @@ export const useToastStore = defineStore('toast', () => {
 
   /**
    * Add a toast notification
-   * @param {string} message
-   * @param {'success'|'error'|'warning'|'info'} type
-   * @param {number} duration - ms; 0 or negative disables auto-dismiss
-   * @returns {number} toast id
+   * duration is in ms; 0 or negative disables auto-dismiss. Returns the toast id.
    */
-  function add(message, type = 'info', duration = 5000) {
+  function add(message: unknown, type: ToastType = 'info', duration = 5000): number {
     const msg = String(message ?? '').trim()
     if (!msg) return -1
 
@@ -78,7 +85,7 @@ export const useToastStore = defineStore('toast', () => {
     }
 
     const id = nextId++
-    const toast = {
+    const toast: Toast = {
       id,
       message: msg,
       type, // 'success', 'error', 'warning', 'info'
@@ -103,7 +110,7 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Remove a toast by ID
    */
-  function remove(id) {
+  function remove(id: number): void {
     _clearTimer(id)
     const index = toasts.value.findIndex((t) => t.id === id)
     if (index !== -1) {
@@ -114,7 +121,7 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Clear all toasts
    */
-  function clear() {
+  function clear(): void {
     // clear timers
     for (const id of timers.keys()) {
       _clearTimer(id)
@@ -125,13 +132,13 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Optional: update a toast in-place (non-breaking extra helper)
    */
-  function update(id, patch = {}) {
+  function update(id: number, patch: Partial<Omit<Toast, 'id'>> = {}): boolean {
     const t = toasts.value.find((x) => x.id === id)
     if (!t) return false
 
     Object.assign(t, patch)
     // If duration changed, refresh timer
-    if (Object.prototype.hasOwnProperty.call(patch, 'duration')) {
+    if (Object.hasOwn(patch, 'duration')) {
       _clearTimer(id)
       if (t.duration > 0) {
         timers.set(id, setTimeout(() => remove(id), t.duration))
@@ -143,7 +150,7 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Optional: configure maximum number of toasts kept in memory
    */
-  function setMax(n) {
+  function setMax(n: unknown): void {
     const v = Number(n)
     if (!Number.isFinite(v) || v <= 0) return
     maxToasts.value = Math.floor(v)
@@ -153,24 +160,24 @@ export const useToastStore = defineStore('toast', () => {
   /**
    * Optional: enable/disable dedupe behavior
    */
-  function setDedupe(flag) {
+  function setDedupe(flag: unknown): void {
     dedupe.value = !!flag
   }
 
   // Convenience methods (same as your original)
-  function success(message, duration = 4000) {
+  function success(message: unknown, duration = 4000): number {
     return add(message, 'success', duration)
   }
 
-  function error(message, duration = 6000) {
+  function error(message: unknown, duration = 6000): number {
     return add(message, 'error', duration)
   }
 
-  function warning(message, duration = 5000) {
+  function warning(message: unknown, duration = 5000): number {
     return add(message, 'warning', duration)
   }
 
-  function info(message, duration = 4000) {
+  function info(message: unknown, duration = 4000): number {
     return add(message, 'info', duration)
   }
 

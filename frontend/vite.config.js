@@ -28,6 +28,12 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue()],
 
+    test: {
+      environment: 'happy-dom',
+      globals: true,
+      include: ['src/**/*.test.ts'],
+    },
+
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url))

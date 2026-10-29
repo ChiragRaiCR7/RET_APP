@@ -5,6 +5,7 @@
 <script setup>
 import { computed, onMounted, onUpdated, nextTick, ref } from 'vue'
 import { marked } from 'marked'
+import { sanitizeHtml } from '@/utils/sanitize'
 import mermaid from 'mermaid'
 
 const props = defineProps({
@@ -39,7 +40,8 @@ const renderedContent = computed(() => {
   // Enhance citations in final html
   content = enhanceCitations(content)
 
-  return content
+  // marked passes raw HTML through, and answers quote uploaded files: sanitize last.
+  return sanitizeHtml(content)
 })
 
 function initMermaid() {
@@ -50,7 +52,8 @@ function initMermaid() {
   mermaid.initialize({
     startOnLoad: false,
     theme: isDark ? 'dark' : 'default',
-    securityLevel: 'loose'
+    // 'loose' would let diagram text inject HTML and click handlers.
+    securityLevel: 'strict'
   })
   mermaidInitialized = true
 }

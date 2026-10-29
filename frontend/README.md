@@ -16,7 +16,7 @@ This frontend is the Vue 3 single-page application for RET v4. It drives the log
 ### `src/views/LoginView.vue`
 
 - hosts authentication and reset-password flows
-- works with `src/components/auth/` components and `src/stores/authStore.js`
+- works with `src/components/auth/` components and `src/stores/authStore.ts`
 
 ### `src/views/MainView.vue`
 
@@ -67,26 +67,26 @@ The frontend component responsible for this is `src/components/workspace/Busines
 
 | Path | Purpose |
 |---|---|
-| `src/main.js` | Bootstraps Vue, Pinia, and Vue Router. |
+| `src/main.ts` | Bootstraps Vue, Pinia, and Vue Router. |
 | `src/App.vue` | Root application shell. |
-| `src/router/index.js` | App routes plus auth/admin navigation guards. |
+| `src/router/index.ts` | App routes plus auth/admin navigation guards. |
 
 ### Stores and composables
 
 | Path | Purpose |
 |---|---|
-| `src/stores/authStore.js` | Access token, user identity, login/logout, and refresh handling. |
-| `src/stores/toastStore.js` | Toast notification state and helpers. |
-| `src/composable/useTheme.js` | Theme persistence and light/dark toggle behavior. |
+| `src/stores/authStore.ts` | In-memory access token, user identity, login/logout, single-flight refresh. The token is never written to Web Storage; a reload restores the session through the HttpOnly refresh cookie. |
+| `src/stores/toastStore.ts` | Toast notification state and helpers. |
+| `src/composable/useTheme.ts` | Follows the OS theme; stores an override only while it differs from the OS setting. |
 
 ### Shared utilities
 
 | Path | Purpose |
 |---|---|
-| `src/utils/api.js` | Axios clients, refresh retry handling, long-running API client, and job polling helper. |
-| `src/utils/groups.js` | Group name comparison/normalization helpers. |
-| `src/utils/oracleApps.js` | Oracle application catalog helpers/constants used by the workspace. |
-| `src/utils/streamChat.js` | Streaming chat helper utilities. |
+| `src/utils/api.ts` | The single HTTP layer: default and long-running Axios clients, 401 refresh-and-retry, `apiCall`, job polling. |
+| `src/utils/groups.ts` | Group name comparison/normalization helpers. |
+| `src/utils/oracleApps.ts` | Oracle application catalog helpers/constants used by the workspace. |
+| `src/utils/sanitize.ts` | DOMPurify wrapper; every `v-html` that shows chat or model output goes through it. |
 
 ### Workspace components
 

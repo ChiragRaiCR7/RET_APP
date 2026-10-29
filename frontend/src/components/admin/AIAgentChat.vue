@@ -227,6 +227,7 @@
 import { ref, computed, nextTick, onMounted } from 'vue'
 
 import api from '@/utils/api'
+import { sanitizeHtml as sanitize } from '@/utils/sanitize'
 
 
 /**
@@ -376,41 +377,12 @@ function decodeEntities(s: string): string {
   return txt.value
 }
 
-/** Narrow allowlist: remove scripts/iframes/unknown tags & dangerous attrs */
+/** Narrow allowlist: formatting tags only, no attributes at all. */
 function sanitizeHtml(html: string): string {
-  const allowedTags = new Set(['b','strong','i','em','code','pre','p','br','ul','ol','li','span'])
-  const allowedAttrs = new Set<string>() // keep empty by default; tighten surface
-
-  const container = document.createElement('div')
-  container.innerHTML = html
-
-  // Remove dangerous nodes first
-  container.querySelectorAll('script, style, iframe, object, embed, link').forEach(n => n.remove())
-
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT, null)
-  const toRemove: Element[] = []
-  while (walker.nextNode()) {
-    const el = walker.currentNode as Element
-    const tag = el.tagName.toLowerCase()
-
-    if (!allowedTags.has(tag)) {
-      // unwrap unknown tag but keep children
-      const parent = el.parentNode
-      while (el.firstChild) parent?.insertBefore(el.firstChild, el)
-      toRemove.push(el)
-      continue
-    }
-
-    // Remove event handlers and non-allowlisted attributes
-    for (const attr of Array.from(el.attributes)) {
-      const name = attr.name.toLowerCase()
-      if (name.startsWith('on')) el.removeAttribute(attr.name) // onclick, onerror...
-      else if (!allowedAttrs.has(name)) el.removeAttribute(attr.name)
-    }
-  }
-  for (const el of toRemove) el.remove()
-
-  return container.innerHTML
+  return sanitize(html, {
+    ALLOWED_TAGS: ['b', 'strong', 'i', 'em', 'code', 'pre', 'p', 'br', 'ul', 'ol', 'li', 'span'],
+    ALLOWED_ATTR: [],
+  })
 }
 
 function escapeHtml(s: string): string {
@@ -449,7 +421,7 @@ function renderMarkdown(md: string): string {
   }
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trimEnd()
+    const line = (lines[i] ?? '').trimEnd()
 
     if (!line.trim()) {
       flushList()

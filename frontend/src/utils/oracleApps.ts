@@ -1,7 +1,7 @@
 // Oracle E-Business Suite Application Short Names (canonical reference)
 // Source: user-provided Oracle Apps short-name catalog.
 
-export const ORACLE_APP_ENTRIES = [
+export const ORACLE_APP_ENTRIES: ReadonlyArray<readonly [code: string, name: string]> = [
   ['FND', 'Application Object Library'],
   ['SYSADMIN', 'System Administration'],
   ['AU', 'Application Utilities'],
@@ -289,18 +289,18 @@ export const ORACLE_APP_ENTRIES = [
   ['INL', 'Oracle Landed Cost Management']
 ]
 
-export const ORACLE_APP_SHORT_NAMES = Object.fromEntries(ORACLE_APP_ENTRIES)
+export const ORACLE_APP_SHORT_NAMES: Readonly<Record<string, string>> = Object.fromEntries(ORACLE_APP_ENTRIES)
 export const ORACLE_APP_CODES = ORACLE_APP_ENTRIES.map(([code]) => code)
 
-export function normalizeOracleCode(value) {
+export function normalizeOracleCode(value: unknown): string {
   return String(value || '').toUpperCase().trim()
 }
 
-export function getOracleAppName(code) {
+export function getOracleAppName(code: unknown): string | null {
   return ORACLE_APP_SHORT_NAMES[normalizeOracleCode(code)] || null
 }
 
-export function formatOracleGroupLabel(group) {
+export function formatOracleGroupLabel(group: unknown): string {
   const code = normalizeOracleCode(group)
   const name = getOracleAppName(code)
   return name ? `${code} — ${name}` : String(group || '')
@@ -311,7 +311,7 @@ export function formatOracleGroupLabel(group) {
 // ---------------------------------------------------------------------------
 
 /** Domain classification map — mirrors backend DOMAIN_* constants */
-const ORACLE_DOMAIN_MAP = {
+const ORACLE_DOMAIN_MAP: Readonly<Record<string, string>> = {
   // Finance & Accounting
   SQLGL: 'Finance & Accounting', SQLAP: 'Finance & Accounting', AR: 'Finance & Accounting',
   OFA: 'Finance & Accounting', CE: 'Finance & Accounting', XLA: 'Finance & Accounting',
@@ -324,7 +324,7 @@ const ORACLE_DOMAIN_MAP = {
   ZPB: 'Finance & Accounting', BANKING: 'Finance & Accounting', COREBANK: 'Finance & Accounting',
   INSTITBANK: 'Finance & Accounting', ISX: 'Finance & Accounting', EVM: 'Finance & Accounting',
   BLC: 'Finance & Accounting', DPP: 'Finance & Accounting', FPT: 'Finance & Accounting',
-  RCM: 'Finance & Accounting', CUF: 'Finance & Accounting', FV: 'Finance & Accounting',
+  RCM: 'Finance & Accounting', CUF: 'Finance & Accounting',
   // Supply Chain
   INV: 'Supply Chain', PO: 'Supply Chain', WSH: 'Supply Chain', CST: 'Supply Chain',
   WMS: 'Supply Chain', MSC: 'Supply Chain', CHV: 'Supply Chain', FTE: 'Supply Chain',
@@ -392,7 +392,7 @@ const ORACLE_DOMAIN_MAP = {
 }
 
 /** Domain badge colour palette */
-const DOMAIN_COLORS = {
+const DOMAIN_COLORS: Readonly<Record<string, string>> = {
   'Finance & Accounting': '#2563eb',
   'Supply Chain': '#16a34a',
   'Manufacturing': '#d97706',
@@ -411,7 +411,7 @@ const DOMAIN_COLORS = {
  * @param {string} code
  * @returns {string|null}
  */
-export function getOracleBusinessDomain(code) {
+export function getOracleBusinessDomain(code: unknown): string | null {
   return ORACLE_DOMAIN_MAP[normalizeOracleCode(code)] || null
 }
 
@@ -420,8 +420,8 @@ export function getOracleBusinessDomain(code) {
  * @param {string} code
  * @returns {boolean}
  */
-export function isOracleCanonical(code) {
-  return normalizeOracleCode(code) in ORACLE_APP_SHORT_NAMES
+export function isOracleCanonical(code: unknown): boolean {
+  return Object.hasOwn(ORACLE_APP_SHORT_NAMES, normalizeOracleCode(code))
 }
 
 /**
@@ -429,7 +429,7 @@ export function isOracleCanonical(code) {
  * @param {string} code
  * @returns {boolean}
  */
-export function isOracleObsolete(code) {
+export function isOracleObsolete(code: unknown): boolean {
   const name = getOracleAppName(code)
   return name ? name.includes('(Obsolete)') || name.includes('Obsolete') : false
 }
@@ -439,16 +439,20 @@ export function isOracleObsolete(code) {
  * @param {string} domain
  * @returns {string}
  */
-export function getDomainColor(domain) {
-  return DOMAIN_COLORS[domain] || '#6b7280'
+export function getDomainColor(domain: string | null | undefined): string {
+  return (domain && DOMAIN_COLORS[domain]) || '#6b7280'
 }
 
-/**
- * Return a full enrichment object for a group code — matches backend enrich_group() API.
- * @param {string} code
- * @returns {{ oracle_module_code, oracle_module_name, oracle_business_domain, oracle_is_canonical, oracle_is_obsolete }}
- */
-export function enrichGroup(code) {
+export interface OracleGroupEnrichment {
+  oracle_module_code: string
+  oracle_module_name: string | null
+  oracle_business_domain: string | null
+  oracle_is_canonical: boolean
+  oracle_is_obsolete: boolean
+}
+
+/** Return a full enrichment object for a group code — matches backend enrich_group() API. */
+export function enrichGroup(code: unknown): OracleGroupEnrichment {
   const normalised = normalizeOracleCode(code)
   const name = getOracleAppName(normalised)
   return {
