@@ -1,73 +1,22 @@
-import sys
-from pathlib import Path
-
-# --- MUST BE FIRST ---
-BASE_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(BASE_DIR))
-
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+
 from alembic import context
+from app.db import get_engine
+from app.models import Base
 
-from api.core.database import Base
-from api.core.config import settings
-# import api.models.user  # noqa: F401  (force model import)
-
-config = context.config
-
-# --- type-safe logging config ---
-if config.config_file_name:
-    fileConfig(config.config_file_name)
-
-target_metadata = Base.metadata
-
-# Alembic uses a *sync* driver.  Convert async DSNs so migrations work:
-#   postgresql+asyncpg://  →  postgresql+psycopg2://
-#   sqlite+aiosqlite://    →  sqlite:///
-_raw_url = settings.DATABASE_URL or "sqlite:///./test.db"
-_sync_url = (
-    _raw_url
-    .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
-    .replace("sqlite+aiosqlite:///", "sqlite:///")
-)
-config.set_main_option("sqlalchemy.url", _sync_url)
+if context.config.config_file_name is not None:
+    fileConfig(context.config.config_file_name, disable_existing_loggers=False)
 
 
-def run_migrations_offline():
-    context.configure(
-        url=settings.DATABASE_URL,
-        target_metadata=target_metadata,
-        literal_binds=True,
-        compare_type=True,
-    )
-
-    with context.begin_transaction():
-        context.run_migrations()
-
-
-def run_migrations_online():
-    section = config.get_section(config.config_ini_section)
-    if section is None:
-        raise RuntimeError("Alembic config section missing")
-
-    connectable = engine_from_config(
-        section,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
+def run_migrations_online() -> None:
+    with get_engine().connect() as connection:
         context.configure(
             connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
+            target_metadata=Base.metadata,
+            render_as_batch=True,  # SQLite needs table rebuilds for most ALTERs
         )
-
         with context.begin_transaction():
             context.run_migrations()
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+run_migrations_online()

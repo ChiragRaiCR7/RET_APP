@@ -1,1 +1,20 @@
-backend.zip
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# Runtime data and secrets
+backend/data/
+backend/.env
+.env
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS / editors
+.DS_Store
