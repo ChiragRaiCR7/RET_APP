@@ -32,7 +32,8 @@ virtual environment.
 ```bash
 cd backend
 python -m venv .venv
-.venv/bin/pip install -e ".[dev]"          # Windows: .venv\Scripts\pip install -e ".[dev]"
+.venv/bin/pip install -r requirements-dev.lock   # pinned versions (same as CI)
+.venv/bin/pip install --no-deps -e .              # Windows: .venv\Scripts\pip …
 cp .env.example .env                       # optional
 .venv/bin/uvicorn app.main:app --reload --port 8000
 ```
@@ -76,21 +77,32 @@ messages.
 
 ```bash
 cd backend
-.venv/bin/pytest                 # unit + API integration tests on a real SQLite database
-.venv/bin/ruff check app tests
-.venv/bin/mypy app               # strict
+.venv/bin/pytest                          # unit + API integration tests on a real SQLite database
+.venv/bin/ruff check app tests alembic && .venv/bin/ruff format --check app tests alembic
+.venv/bin/mypy app                        # strict
 
 cd ../frontend
 npm run typecheck
 npm run build
+npx playwright install chromium          # once
 # End-to-end: start the backend serving the build, then
-BASE_URL=http://127.0.0.1:8000 RET_PASSWORD='<admin password>' node e2e/smoke.mjs
+BASE_URL=http://127.0.0.1:8000 RET_PASSWORD='<admin password>' npm run e2e
 ```
 
-The end-to-end script needs Playwright (`npm i -D playwright` or an existing install). It drives
-ten journeys through the real UI on desktop, dark and 390 px mobile, and fails on console errors,
+The end-to-end script drives ten journeys through the real UI on desktop, dark and 390 px mobile, and fails on console errors,
 failed requests or horizontal overflow. After an API change, run `npm run gen:api` to regenerate
 the TypeScript types. A stale contract then fails `npm run typecheck`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs all of this on every pull request and push to
+`main`:
+- backend lint, format, `mypy --strict` and tests on Python 3.12 and 3.13;
+- frontend type check, build and `npm audit`;
+- the end-to-end journeys against the built app;
+- a check that the committed API types match the backend.
+
+Backend dependencies are pinned in `backend/requirements-dev.lock`. After changing
+`pyproject.toml`, regenerate it with
+`uv pip compile pyproject.toml --extra dev --universal --python-version 3.12 -o requirements-dev.lock`.
 
 ## Security model
 

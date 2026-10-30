@@ -8,7 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
-    "gen:api": "cd ../backend && .venv/bin/python -c \"import json; from app.main import create_app; print(json.dumps(create_app().openapi()))\" > ../frontend/openapi.json && cd ../frontend && openapi-typescript openapi.json -o src/api/schema.d.ts && rm openapi.json"
+    "gen:api": "cd ../backend && .venv/bin/python -c \"import json; from app.main import create_app; print(json.dumps(create_app().openapi()))\" > ../frontend/openapi.json && cd ../frontend && openapi-typescript openapi.json -o src/api/schema.d.ts && rm openapi.json",
+    "e2e": "node e2e/smoke.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.17",
@@ -21,6 +22,7 @@
     "@types/node": "^22.20.5",
     "@vitejs/plugin-vue": "^6.0.10",
     "openapi-typescript": "^7.13.0",
+    "playwright": "1.63.0",
     "typescript": "~5.9.3",
     "vite": "^8.3.5",
     "vue-tsc": "^3.3.13"
