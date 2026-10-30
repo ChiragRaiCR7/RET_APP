@@ -406,7 +406,7 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 /**
  * AIPanel.vue — Backend-aligned version
  *
@@ -415,7 +415,7 @@
  * ✅ Session key = conversion session id (required by backend ownership check)
  */
 
-import { ref, nextTick, onMounted, onUnmounted, watch, computed, h, render } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted, watch, computed, h, render, type Component } from 'vue'
 import api, { errorBody } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 import { formatOracleGroupLabel, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
@@ -424,52 +424,92 @@ import MessageRenderer from './charts/MessageRenderer.vue'
 import ChartRenderer from './charts/ChartRenderer.vue'
 import DataTable from './charts/DataTable.vue'
 import StatsCardGrid from './charts/StatsCardGrid.vue'
+import { toChartConfig, toStatCards, toTableProps } from '@/utils/vizConfig'
+import type {
+  ChatHistoryResponse,
+  ChatResponse,
+  EmbeddingGroupsResponse,
+  EmbeddingTaskStatus,
+  IndexGroupsResponse,
+  RawChatSource,
+  StopEmbeddingResponse
+} from '@/types/api'
 
-const props = defineProps({
-  sessionId: { type: String, default: null }, // conversion session id
-  scannedGroups: { type: Array, default: () => [] }
-})
+interface ChatSource {
+  filename: string
+  group: string | null
+  score: number
+  snippet: string
+}
+
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  responseType?: string | null
+  sources?: ChatSource[]
+  visualizations?: unknown[]
+}
+
+interface Retrieval {
+  doc: string
+  group: string | null
+  score?: number | null
+  snippet: string
+}
+
+const EMBED_POLL_MS = 2500
+// Stop polling after this many consecutive failed status checks (e.g. task lost on restart).
+const EMBED_POLL_MAX_ERRORS = 8
+
+const props = withDefaults(
+  defineProps<{
+    sessionId?: string | null // conversion session id
+    scannedGroups?: (string | { name?: string })[]
+  }>(),
+  { sessionId: null, scannedGroups: () => [] }
+)
 
 const emit = defineEmits(['message-sent', 'groups-indexed'])
 const toast = useToastStore()
 
 // ----- State -----
-const messages = ref([])
+const messages = ref<ChatMessage[]>([])
 const inputText = ref('')
 const isTyping = ref(false)
 
-const messagesContainer = ref(null)
-const inputField = ref(null)
-const modalCard = ref(null)
+const messagesContainer = ref<HTMLElement | null>(null)
+const inputField = ref<HTMLTextAreaElement | null>(null)
+const modalCard = ref<HTMLElement | null>(null)
 
-const retrievals = ref([])
+const retrievals = ref<Retrieval[]>([])
 const inspectorExpanded = ref(true)
 
 const showInstructionsModal = ref(false)
 const sessionInstructions = ref('')
 
 // Backend requires an existing owned session_id → use conversion session id only.
-const conversionSessionId = ref(null)
+const conversionSessionId = ref<string | null>(null)
 
-const availableGroups = ref([])          // all groups from API (+ scanned)
-const selectedGroupsForIndex = ref([])   // selection for manual indexing
+const availableGroups = ref<string[]>([])          // all groups from API (+ scanned)
+const selectedGroupsForIndex = ref<string[]>([])   // selection for manual indexing
 const loadingGroups = ref(false)
 const indexing = ref(false)
 const stoppingIndexing = ref(false)
-const indexedGroupsList = ref([])        // which are already indexed
-const groupChunkCounts = ref({})         // group -> chunks
-const autoEmbeddedGroups = ref([])       // from API
-const adminExcludedGroups = ref([])      // from API
+const indexedGroupsList = ref<string[]>([])        // which are already indexed
+const groupChunkCounts = ref<Record<string, number>>({})         // group -> chunks
+const autoEmbeddedGroups = ref<string[]>([])       // from API
+const adminExcludedGroups = ref<string[]>([])      // from API
 const groupSearch = ref('')
 
-let embedPollTimer = null
+let embedPollTimer: ReturnType<typeof setInterval> | null = null
 
 // Smart scroll behavior
 const userNearBottom = ref(true)
 const showNewMessages = ref(false)
 
 // Track programmatic renders to clean up (avoid leaks)
-const mountedVizIds = new Set()
+const mountedVizIds = new Set<string>()
 
 // ----- Computeds -----
 const canSend = computed(() => {
@@ -559,16 +599,27 @@ onUnmounted(() => {
 })
 
 // ----- Helpers -----
-function normalizeGroupNames(groups) {
-  if (!Array.isArray(groups)) return []
-  return groups.map(g => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
+function toChatSource(s: RawChatSource): ChatSource {
+  return {
+    filename: s.file || s.source || s.doc || 'unknown',
+    group: s.group || null,
+    score: s.score ?? 0,
+    snippet: s.snippet || ''
+  }
 }
 
-function getGroupDisplayName(group) {
+function normalizeGroupNames(groups: unknown): string[] {
+  if (!Array.isArray(groups)) return []
+  return groups
+    .map(g => (typeof g === 'string' ? g : (g as { name?: string } | null)?.name))
+    .filter((name): name is string => !!name)
+}
+
+function getGroupDisplayName(group: string): string {
   return formatOracleGroupLabel(group)
 }
 
-function mergeGroupNames(base, incoming) {
+function mergeGroupNames(base: string[], incoming: string[]): string[] {
   return Array.from(new Set([...(base || []), ...(incoming || [])]))
 }
 
@@ -588,18 +639,18 @@ function refreshSelection() {
   }
 }
 
-function formatTime(ts) {
+function formatTime(ts: string | undefined): string {
   if (!ts) return ''
   const d = new Date(ts)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function truncateText(text, maxLen) {
+function truncateText(text: string | undefined, maxLen: number): string {
   if (!text) return ''
   return text.length > maxLen ? text.slice(0, maxLen) + '…' : text
 }
 
-function getScoreClass(score) {
+function getScoreClass(score: number | null | undefined): string {
   if (score == null) return ''
   if (score >= 0.8) return 'score--high'
   if (score >= 0.5) return 'score--mid'
@@ -633,15 +684,15 @@ async function scrollToBottom(force = false) {
   }
 }
 
-function sendQuickPrompt(prompt) {
+function sendQuickPrompt(prompt: string) {
   inputText.value = prompt
   sendMessage()
 }
 
 // group="My Group" group=my-group top_k=12
-function parseModifiers(text) {
+function parseModifiers(text: string): { query: string; groupFilter: string | null; topK: number } {
   let query = text
-  let groupFilter = null
+  let groupFilter: string | null = null
   let topK = 8
 
   const groupRegex = /group=(?:"([^"]+)"|'([^']+)'|([^\s]+))/i
@@ -654,7 +705,7 @@ function parseModifiers(text) {
   const topKRegex = /top_k=(\d+)/i
   const km = text.match(topKRegex)
   if (km) {
-    const n = parseInt(km[1], 10)
+    const n = parseInt(km[1] ?? '', 10)
     if (!Number.isNaN(n)) topK = Math.max(1, Math.min(n, 50))
     query = query.replace(topKRegex, '').trim()
   }
@@ -662,21 +713,27 @@ function parseModifiers(text) {
   return { query, groupFilter, topK }
 }
 
-function normalizeVisualizationBlocks(text) {
+function normalizeVisualizationBlocks(text: string): string {
   if (!text) return ''
-  return text.replace(/```chart-data\s*\n([\s\S]*?)```/g, (_, jsonBlock) => `\n\n\`\`\`chart\n${jsonBlock}\n\`\`\`\n`)
+  return text.replace(/```chart-data\s*\n([\s\S]*?)```/g, (_, jsonBlock: string) => `\n\n\`\`\`chart\n${jsonBlock}\n\`\`\`\n`)
 }
 
 // ----- Programmatic render mounts -----
-function _markVizError(id, msg) {
+interface VizPayload {
+  id: string
+  config: unknown
+}
+
+function _markVizError(id: string, msg: string) {
   nextTick().then(() => {
     const el = document.getElementById(id)
     if (!el) return
+    // msg is always one of the fixed strings below, never model output.
     el.innerHTML = `<div class="viz-render-error"><span aria-hidden="true">⚠</span> ${msg}</div>`
   })
 }
 
-async function renderIntoContainer(id, component, propsObj) {
+async function renderIntoContainer(id: string, component: Component, propsObj: Record<string, unknown>) {
   await nextTick()
   let el = document.getElementById(id)
   if (!el) {
@@ -690,129 +747,31 @@ async function renderIntoContainer(id, component, propsObj) {
   mountedVizIds.add(id)
 }
 
-function handleChartRender({ id, config }) {
-  if (!config || !config.type || !config.data) {
+function handleChartRender({ id, config }: VizPayload) {
+  const chartConfig = toChartConfig(config)
+  if (!chartConfig) {
     _markVizError(id, 'Chart data unavailable')
     return
   }
-  renderIntoContainer(id, ChartRenderer, { chartConfig: config })
+  renderIntoContainer(id, ChartRenderer, { chartConfig })
 }
 
-function normalizeTableConfig(raw) {
-  if (!raw) return null
-
-  let cfg = raw
-  if (Array.isArray(raw)) {
-    cfg = { data: raw }
-  }
-
-  if (typeof cfg === 'string') {
-    try {
-      cfg = JSON.parse(cfg)
-    } catch {
-      return null
-    }
-  }
-
-  let columns = Array.isArray(cfg.columns) ? cfg.columns : []
-  let rows = Array.isArray(cfg.data) ? cfg.data : (Array.isArray(cfg.rows) ? cfg.rows : [])
-
-  if (!rows.length) return null
-
-  // rows as arrays → convert to objects for DataTable
-  if (Array.isArray(rows[0])) {
-    const normalizedColumns = columns.length
-      ? columns.map((c, idx) => {
-          if (typeof c === 'string') return { key: c, label: c }
-          if (c && typeof c === 'object') return { key: c.key || c.label || `col_${idx + 1}`, label: c.label || c.key || `Column ${idx + 1}` }
-          return { key: `col_${idx + 1}`, label: `Column ${idx + 1}` }
-        })
-      : rows[0].map((_, idx) => ({ key: `col_${idx + 1}`, label: `Column ${idx + 1}` }))
-
-    const normalizedRows = rows.map(r => {
-      const obj = {}
-      normalizedColumns.forEach((c, i) => {
-        obj[c.key] = r[i]
-      })
-      return obj
-    })
-
-    return {
-      ...cfg,
-      columns: normalizedColumns,
-      data: normalizedRows
-    }
-  }
-
-  // rows as objects
-  if (typeof rows[0] === 'object' && rows[0] !== null) {
-    const normalizedColumns = columns.length
-      ? columns.map((c, idx) => {
-          if (typeof c === 'string') return { key: c, label: c }
-          if (c && typeof c === 'object') return { key: c.key || c.label || `col_${idx + 1}`, label: c.label || c.key || `Column ${idx + 1}` }
-          return { key: `col_${idx + 1}`, label: `Column ${idx + 1}` }
-        })
-      : Object.keys(rows[0]).map(k => ({ key: k, label: k }))
-
-    return {
-      ...cfg,
-      columns: normalizedColumns,
-      data: rows
-    }
-  }
-
-  // primitive rows
-  const normalizedRows = rows.map(v => ({ value: v }))
-  return {
-    ...cfg,
-    columns: [{ key: 'value', label: 'Value' }],
-    data: normalizedRows
-  }
-}
-
-function handleTableRender({ id, config }) {
-  const normalized = normalizeTableConfig(config)
-  if (!normalized || !Array.isArray(normalized.data) || !normalized.data.length) {
+function handleTableRender({ id, config }: VizPayload) {
+  const table = toTableProps(config)
+  if (!table) {
     _markVizError(id, 'Table data unavailable or empty')
     return
   }
-
-  renderIntoContainer(id, DataTable, {
-    data: normalized.data,
-    columns: normalized.columns || [],
-    title: normalized.title || null,
-    sortable: normalized.sortable !== false,
-    exportable: normalized.exportable !== false,
-    showSummary: normalized.showSummary === true,
-    summary: normalized.summary || null,
-    maxRows: normalized.maxRows || 15,
-    tableClass: normalized.tableClass || ''
-  })
+  renderIntoContainer(id, DataTable, { ...table })
 }
 
-function handleStatsRender({ id, config }) {
+function handleStatsRender({ id, config }: VizPayload) {
   if (!config) return
-
-  let stats = null
-
-  if (Array.isArray(config.stats)) {
-    // Documented shape: { stats: [{label, value, change?, trend?, icon?}] }
-    stats = config.stats
-  } else if (Array.isArray(config.cards)) {
-    // Backend sometimes uses 'cards' key
-    stats = config.cards
-  } else if (typeof config === 'object' && !Array.isArray(config)) {
-    // Flat key→value object emitted by LLM: { "Distinct Fields": 80, ... }
-    stats = Object.entries(config)
-      .filter(([k]) => !['title', 'description', 'subtitle'].includes(k.toLowerCase()))
-      .map(([label, value]) => ({ label, value: value == null ? '—' : String(value) }))
-  }
-
-  if (!stats || !stats.length) {
+  const stats = toStatCards(config)
+  if (!stats) {
     _markVizError(id, 'No statistics data available')
     return
   }
-
   renderIntoContainer(id, StatsCardGrid, { stats })
 }
 
@@ -820,16 +779,16 @@ function handleStatsRender({ id, config }) {
 async function loadChatHistory() {
   if (!conversionSessionId.value) return
   try {
-    const res = await api.get(`/v2/ai/chat/history/${conversionSessionId.value}`, { params: { limit: 100 } })
+    const res = await api.get<ChatHistoryResponse>(`/v2/ai/chat/history/${conversionSessionId.value}`, { params: { limit: 100 } })
     const apiMsgs = res.data?.messages || []
     messages.value = apiMsgs.map(m => ({
       role: m.role || 'assistant',
       content: m.content || '',
       timestamp: m.timestamp || new Date().toISOString(),
       responseType: m.response_type || m.responseType || null,
-      sources: m.sources || []
+      sources: (m.sources || []).map(toChatSource)
     }))
-  } catch (e) {
+  } catch {
     // If no history yet, that's fine.
     messages.value = []
   }
@@ -861,7 +820,7 @@ async function sendMessage() {
       ? `INSTRUCTIONS:\n${sessionInstructions.value.trim()}\n\nQUESTION:\n${query}`
       : query
 
-    const res = await api.post('/v2/ai/chat', {
+    const res = await api.post<ChatResponse>('/v2/ai/chat', {
       session_id: conversionSessionId.value,
       message: finalQuery,
       group_filter: groupFilter,
@@ -879,15 +838,10 @@ async function sendMessage() {
       timestamp: new Date().toISOString(),
       responseType,
       visualizations: res.data.visualizations || [],
-      sources: sources.map(s => ({
-        filename: s.file || s.source || s.doc || 'unknown',
-        group: s.group || null,
-        score: s.score ?? 0,
-        snippet: s.snippet || ''
-      }))
+      sources: sources.map(toChatSource)
     })
 
-    retrievals.value = sources.map(s => ({
+    retrievals.value = sources.map((s: RawChatSource) => ({
       doc: s.file || s.source || s.doc || 'unknown',
       group: s.group || null,
       score: s.score,
@@ -896,7 +850,7 @@ async function sendMessage() {
 
     emit('message-sent', { text, response: res.data })
   } catch (e) {
-    toast.error('Failed to get response: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Failed to get response: ' + (errorBody(e)?.detail || (e as Error).message))
     messages.value.push({
       role: 'assistant',
       content: 'Sorry, I encountered an error processing your request. Please try again.',
@@ -923,7 +877,7 @@ async function clearSessionMemory() {
     retrievals.value = []
     toast.success('Session memory cleared')
   } catch (e) {
-    toast.error('Failed to clear memory: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Failed to clear memory: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -935,11 +889,11 @@ function closeInstructions() {
   showInstructionsModal.value = false
 }
 
-function instructionsKey(sessionId) {
+function instructionsKey(sessionId: string): string {
   return `ret_ai_instructions_${sessionId}`
 }
 
-function loadLocalInstructions(sessionId) {
+function loadLocalInstructions(sessionId: string) {
   try {
     sessionInstructions.value = localStorage.getItem(instructionsKey(sessionId)) || ''
   } catch {
@@ -982,11 +936,11 @@ async function downloadTranscript() {
 
     downloadBlob(res.data, filename)
   } catch (e) {
-    toast.error('Transcript download failed: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Transcript download failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
-function downloadBlob(data, filename) {
+function downloadBlob(data: BlobPart, filename: string) {
   const url = window.URL.createObjectURL(new Blob([data]))
   const link = document.createElement('a')
   link.href = url
@@ -997,7 +951,7 @@ function downloadBlob(data, filename) {
   window.URL.revokeObjectURL(url)
 }
 
-async function copyMessage(content) {
+async function copyMessage(content: string) {
   try {
     await navigator.clipboard.writeText(String(content ?? ''))
     toast.success('Copied to clipboard')
@@ -1030,20 +984,20 @@ async function loadSessionGroups() {
 
   loadingGroups.value = true
   try {
-    const res = await api.get('/v2/ai/embedding/groups', {
+    const res = await api.get<EmbeddingGroupsResponse>('/v2/ai/embedding/groups', {
       params: { session_id: conversionSessionId.value }
     })
 
     const all = res.data.all_groups || res.data.groups || []
-    const allNames = all.map(g => (typeof g === 'string' ? g : g?.name)).filter(Boolean)
+    const allNames = normalizeGroupNames(all)
 
     autoEmbeddedGroups.value = (res.data.auto_embedded_groups || []).map(x => String(x))
     adminExcludedGroups.value = (res.data.excluded_groups || []).map(x => String(x))
     availableGroups.value = mergeGroupNames(allNames, scannedGroupNames.value)
 
     // Build indexed list + chunk counts from all_groups
-    const idx = []
-    const counts = {}
+    const idx: string[] = []
+    const counts: Record<string, number> = {}
     for (const g of all) {
       if (typeof g === 'object' && g?.name) {
         if (g.indexed) idx.push(g.name)
@@ -1087,7 +1041,7 @@ async function indexConvertedFiles() {
 
   indexing.value = true
   try {
-    const res = await api.post('/v2/ai/embedding/groups', {
+    const res = await api.post<IndexGroupsResponse>('/v2/ai/embedding/groups', {
       session_id: conversionSessionId.value,
       groups: groupsToIndex,
       background: true
@@ -1113,22 +1067,28 @@ async function indexConvertedFiles() {
     toast.warning(res.data.message || 'Indexing response received, but status is unclear.')
     indexing.value = false
   } catch (e) {
-    toast.error('Indexing failed: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Indexing failed: ' + (errorBody(e)?.detail || (e as Error).message))
     indexing.value = false
   }
 }
 
-function startEmbeddingTaskPoll(taskId) {
+function stopEmbeddingPoll() {
   if (embedPollTimer) clearInterval(embedPollTimer)
+  embedPollTimer = null
+}
+
+function startEmbeddingTaskPoll(taskId: string) {
+  stopEmbeddingPoll()
+  let consecutiveErrors = 0
 
   embedPollTimer = setInterval(async () => {
     try {
-      const res = await api.get(`/v2/ai/embedding/tasks/${taskId}`)
+      const res = await api.get<EmbeddingTaskStatus>(`/v2/ai/embedding/tasks/${encodeURIComponent(taskId)}`)
+      consecutiveErrors = 0
       const status = res.data.status
 
       if (status === 'completed') {
-        clearInterval(embedPollTimer)
-        embedPollTimer = null
+        stopEmbeddingPoll()
         indexing.value = false
 
         await loadSessionGroups()
@@ -1137,15 +1097,21 @@ function startEmbeddingTaskPoll(taskId) {
         selectedGroupsForIndex.value = []
         toast.success('Embedding complete! Your groups are ready for AI chat.')
       } else if (status === 'failed' || status === 'cancelled') {
-        clearInterval(embedPollTimer)
-        embedPollTimer = null
+        stopEmbeddingPoll()
         indexing.value = false
         toast.error(`Embedding ${status}: ${res.data.error || 'Unknown error'}`)
       }
     } catch (e) {
-      console.debug('Embedding task poll error:', e.message)
+      consecutiveErrors += 1
+      console.warn('Embedding status check failed:', (e as Error).message)
+      if (consecutiveErrors >= EMBED_POLL_MAX_ERRORS) {
+        stopEmbeddingPoll()
+        indexing.value = false
+        toast.error('Lost track of the embedding task. Reload the groups to see its current state.')
+        await loadSessionGroups()
+      }
     }
-  }, 2500)
+  }, EMBED_POLL_MS)
 }
 
 async function stopIndexing() {
@@ -1153,7 +1119,7 @@ async function stopIndexing() {
   stoppingIndexing.value = true
 
   try {
-    const res = await api.post(`/v2/ai/auto-embed/stop/${conversionSessionId.value}`)
+    const res = await api.post<StopEmbeddingResponse>(`/v2/ai/auto-embed/stop/${conversionSessionId.value}`)
     const stopped = Boolean(res?.data?.stopped)
 
     if (!stopped) {
@@ -1181,7 +1147,7 @@ async function stopIndexing() {
     toast.info(message)
     await loadSessionGroups()
   } catch (e) {
-    toast.error('Failed to stop embedding: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Failed to stop embedding: ' + (errorBody(e)?.detail || (e as Error).message))
   } finally {
     stoppingIndexing.value = false
   }

@@ -132,19 +132,49 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { errorBody, apiCall } from '@/utils/api'
+import type { DeltaRow, DrilldownResponse } from '@/types/api'
+
+interface DrilldownOptions {
+  ignore_case: boolean
+  trim_whitespace: boolean
+  similarity_pairing: boolean
+  sim_threshold: string
+  ignore_columns: string[]
+}
+
+interface DrilldownRequest {
+  filename: string
+  csv_path_a: string
+  csv_path_b: string
+  options: DrilldownOptions
+}
+
+interface DrilldownView {
+  sizeA: number
+  sizeB: number
+  modified: number
+  added: number
+  removed: number
+  columns: string[]
+  deltaA: DeltaRow[]
+  deltaB: DeltaRow[]
+  truncated: boolean
+}
+
+type Side = 'A' | 'B'
 
 const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
 const error = ref('')
-const drilldownData = ref(null)
-const changedColumns = ref(new Set())
-const requestConfig = ref(null)
+const drilldownData = ref<DrilldownView | null>(null)
+const changedColumns = ref(new Set<string>())
+const requestConfig = ref<DrilldownRequest | null>(null)
 
 const WHO_COLUMNS = [
   'Created By',
@@ -154,13 +184,13 @@ const WHO_COLUMNS = [
   'Last Update Login'
 ]
 
-function parseBool(value, fallback = false) {
+function parseBool(value: unknown, fallback = false): boolean {
   if (value === undefined || value === null || value === '') return fallback
   const s = String(value).toLowerCase().trim()
   return ['1', 'true', 'yes', 'y', 'on'].includes(s)
 }
 
-function decodeHashPayload() {
+function decodeHashPayload(): Partial<DrilldownRequest> & { options?: Partial<DrilldownOptions> } | null {
   const hash = String(route.hash || '')
   const match = hash.match(/payload=([^&]+)/)
   if (!match?.[1]) return null
@@ -175,7 +205,7 @@ function decodeHashPayload() {
   }
 }
 
-function normalizeColName(name) {
+function normalizeColName(name: unknown): string {
   return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
 }
 
@@ -187,15 +217,15 @@ const ignoredColumns = computed(() => {
 
 const ignoredColumnSet = computed(() => new Set((ignoredColumns.value || []).map(normalizeColName)))
 
-function isIgnoredColumn(col) {
+function isIgnoredColumn(col: string): boolean {
   return ignoredColumnSet.value.has(normalizeColName(col))
 }
 
-function resolveRequestConfig() {
+function resolveRequestConfig(): DrilldownRequest {
   const hashPayload = decodeHashPayload() || {}
   const q = route.query || {}
 
-  const optionsFromHash = hashPayload.options || {}
+  const optionsFromHash: Partial<DrilldownOptions> = hashPayload.options || {}
 
   return {
     filename: String(hashPayload.filename || q.filename || ''),
@@ -244,7 +274,7 @@ const filteredDeltaB = computed(() => {
   return rows.filter(r => cols.some(c => cellHasChange(r, c)))
 })
 
-function cellHasChange(row, col) {
+function cellHasChange(row: DeltaRow, col: string): boolean {
   if (isIgnoredColumn(col)) return false
   const idx = drilldownData.value?.columns?.indexOf(col)
   const kind = String(row?._kind_ || '').toUpperCase()
@@ -255,15 +285,15 @@ function cellHasChange(row, col) {
   }
 
   const changedCols = row?._changed_cols_ || []
-  return changedCols.includes(idx) || changedCols.includes(col)
+  return (idx !== undefined && idx >= 0 && changedCols.includes(idx)) || changedCols.includes(col)
 }
 
-function kindClass(row) {
+function kindClass(row: DeltaRow): string {
   const kind = String(row?._kind_ || '').toLowerCase()
   return `kind-${kind}`
 }
 
-function cellClass(row, col, side) {
+function cellClass(row: DeltaRow, col: string, side: Side): string {
   if (!cellHasChange(row, col)) return ''
   const kind = String(row?._kind_ || '').toUpperCase()
   if (kind === 'REMOVED') return 'cell-old'
@@ -271,7 +301,7 @@ function cellClass(row, col, side) {
   return side === 'A' ? 'cell-old' : 'cell-new'
 }
 
-function formatCellValue(value, maxLen = 90) {
+function formatCellValue(value: unknown, maxLen = 90): string {
   if (value === null || value === undefined) return ''
   const s = String(value)
   return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s
@@ -301,7 +331,7 @@ async function loadDrilldown() {
     if (cfg.csv_path_a) params.append('csv_path_a', cfg.csv_path_a)
     if (cfg.csv_path_b) params.append('csv_path_b', cfg.csv_path_b)
 
-    const data = await apiCall({
+    const data = await apiCall<DrilldownResponse>({
       method: 'post',
       url: `/comparison/drilldown?${params.toString()}`,
       long: false
@@ -326,17 +356,15 @@ async function loadDrilldown() {
       truncated: !!data.truncated
     }
 
-    const set = new Set()
+    const set = new Set<string>()
     const allRows = [...deltaA, ...deltaB]
 
     for (const row of allRows) {
       const changed = row._changed_cols_ || []
       for (const c of changed) {
-        if (typeof c === 'number' && header[c]) {
-          if (!isIgnoredColumn(header[c])) set.add(header[c])
-        } else if (!isIgnoredColumn(c)) {
-          set.add(c)
-        }
+        const name = typeof c === 'number' ? header[c] : c
+        // An out-of-range index has no column name; skip it rather than storing the number.
+        if (name && !isIgnoredColumn(name)) set.add(name)
       }
 
       if (row._kind_ === 'ADDED' || row._kind_ === 'REMOVED') {
@@ -346,7 +374,7 @@ async function loadDrilldown() {
 
     changedColumns.value = set
   } catch (e) {
-    error.value = errorBody(e)?.detail || e?.message || 'Failed to load drilldown.'
+    error.value = errorBody(e)?.detail || (e as Error)?.message || 'Failed to load drilldown.'
   } finally {
     loading.value = false
   }

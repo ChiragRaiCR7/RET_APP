@@ -1,4 +1,4 @@
-"""/comparison/drilldown reads CSV files named in the query string: only inside the caller's sessions."""
+"""/comparison/drilldown may only read CSV files from the caller's sessions or comparisons."""
 
 from pathlib import Path
 

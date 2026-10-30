@@ -107,6 +107,99 @@ export interface FilePreviewResponse {
   simplified_order?: number[] | null
 }
 
+// --- comparison.py ---------------------------------------------------------
+
+/** One row of a drilldown delta: column values plus the diff markers the backend adds. */
+export interface DeltaRow {
+  _kind_?: 'MODIFIED' | 'ADDED' | 'REMOVED' | string
+  _changed_cols_?: (number | string)[]
+  [column: string]: unknown
+}
+
+export interface DeltaFrame {
+  headers: string[]
+  rows: DeltaRow[]
+}
+
+/** POST /comparison/drilldown (serialized by alias: deltaA/deltaB, row_count_A/B). */
+export interface DrilldownResponse {
+  filename?: string
+  group?: string
+  header: string[]
+  stats: Record<string, number>
+  truncated: boolean
+  deltaA?: DeltaFrame
+  deltaB?: DeltaFrame
+  row_count_A?: number
+  row_count_B?: number
+  col_count?: number
+  error?: string
+}
+
+// --- rag_router.py (/v2/ai/*) -----------------------------------------------
+
+/** A retrieved chunk as the chat endpoint returns it (field names vary by retriever). */
+export interface RawChatSource {
+  file?: string
+  source?: string
+  doc?: string
+  group?: string | null
+  score?: number | null
+  snippet?: string
+}
+
+export interface ChatResponse {
+  answer?: string
+  sources?: RawChatSource[]
+  response_type?: string
+  responseType?: string
+  visualizations?: unknown[]
+}
+
+export interface ChatHistoryResponse {
+  messages?: {
+    role?: 'user' | 'assistant'
+    content?: string
+    timestamp?: string
+    response_type?: string
+    responseType?: string
+    sources?: RawChatSource[]
+  }[]
+}
+
+export interface EmbeddingGroup {
+  name: string
+  indexed?: boolean
+  chunk_count?: number
+}
+
+export interface EmbeddingGroupsResponse {
+  all_groups?: (string | EmbeddingGroup)[]
+  groups?: (string | EmbeddingGroup)[]
+  auto_embedded_groups?: string[]
+  excluded_groups?: string[]
+}
+
+export interface IndexGroupsResponse {
+  status?: 'queued' | 'success' | string
+  task_id?: string
+  embedded_groups?: string[]
+  message?: string
+}
+
+export interface EmbeddingTaskStatus {
+  status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | string
+  groups?: string[]
+  error?: string
+}
+
+export interface StopEmbeddingResponse {
+  stopped?: boolean
+  message?: string
+  worker_tasks_cancelled?: number
+  auto_embed_suppressed?: boolean
+}
+
 // --- business_structure.py -------------------------------------------------
 
 export type BusinessNodeType =
