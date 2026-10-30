@@ -462,9 +462,8 @@ async def shutdown_task_manager(timeout: float = 30.0) -> None:
 # -------------------------------------------------------------------
 # Backward-compatible aliases
 # -------------------------------------------------------------------
-# celery is kept as an alias so existing `from api.workers.celery_app import celery`
-# and `@celery.task(...)` work unchanged.
-celery = get_task_manager()
+# Module-level instance used as `@task_manager.task(...)` by the workers.
+task_manager = get_task_manager()
 
 
 async def shutdown_executor(wait: bool = True) -> None:
@@ -473,5 +472,5 @@ async def shutdown_executor(wait: bool = True) -> None:
 
 
 # Legacy sync-compat aliases for any code that imported these names
-get_active_tasks = celery.get_active_tasks
+get_active_tasks = task_manager.get_active_tasks
 

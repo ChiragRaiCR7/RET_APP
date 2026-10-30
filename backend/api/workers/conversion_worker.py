@@ -5,7 +5,7 @@ conversion_worker.py
 
 Async background worker for conversion tasks.
 
-Uses the BackgroundTaskManager from celery_app (Celery-compatible interface).
+Uses the in-process BackgroundTaskManager (api/workers/task_manager.py).
 Tasks run as asyncio.Tasks with CPU-bound work offloaded via asyncio.to_thread().
 
 Updates Job state in DB via async base_task helpers:
@@ -20,7 +20,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional, List, Union
 
-from api.workers.celery_app import celery
+from api.workers.task_manager import task_manager
 from api.workers.base_task import mark_running, update_progress, mark_success, mark_failed
 from api.services.ai.session_manager import trigger_auto_embed_after_conversion
 
@@ -35,7 +35,7 @@ def _as_int_job_id(job_id: Union[str, int]) -> int:
         raise ValueError(f"Invalid job_id: {job_id!r} (expected int or numeric string)")
 
 
-@celery.task(bind=True, name="conversion_task")
+@task_manager.task(bind=True, name="conversion_task")
 async def conversion_task(
     self,
     session_id: str,

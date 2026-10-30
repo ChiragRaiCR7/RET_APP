@@ -36,7 +36,7 @@ from api.services.comparison_service import (
 from api.services.storage_service import get_session_metadata
 from api.services.job_service import create_job
 
-# ✅ Celery tasks
+# Background tasks (in-process task manager)
 from api.workers.comparison_worker import comparison_task, comparison_files_task
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ async def compare_files_run_async(
     Flow:
       1) Create job in DB
       2) Save both uploads to a job temp workspace
-      3) Enqueue Celery task comparison_files_task
+      3) Enqueue background task comparison_files_task
       4) Return { job_id } immediately
     """
     try:

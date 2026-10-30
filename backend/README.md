@@ -438,7 +438,7 @@ backend/
 │   │   ├── dependencies.py     # DI container
 │   │   ├── exceptions.py       # Custom exceptions
 │   │   ├── rbac.py             # Role-based access control
-│   │   └── session_cache.py    # Redis/memory cache
+│   │   └── session_cache.py    # In-memory LRU session cache
 │   ├── models/
 │   │   └── models.py           # SQLAlchemy ORM models
 │   ├── schemas/
