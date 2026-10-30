@@ -64,6 +64,21 @@ def _verify_session_owner(session_id: str, current_user_id: str) -> dict:
     return meta
 
 
+def _scoped_thread_id(session_id: str, user_id: str, client_thread: str | None) -> str:
+    """Namespace a client-supplied thread id under the verified session and user.
+
+    The LangGraph checkpointer is process-wide and keyed only by thread id, so an
+    unscoped id would let one user run in, or resume, another user's checkpoint.
+    An id already carrying this caller's prefix (as returned in hitl_required
+    events) is kept as is; anything else is nested under the prefix.
+    """
+    base = f"{session_id}:{user_id}"
+    raw = (client_thread or "").strip()
+    if not raw or raw == base or raw.startswith(base + ":"):
+        return raw or base
+    return f"{base}:{raw}"
+
+
 def _get_manager(session_id: str, user_id: str):
     """Lazy import and return SessionAIManager."""
     from api.services.ai.session_manager import get_session_ai_manager
@@ -181,7 +196,7 @@ async def rag_chat(
                 use_rag=req.use_rag,
                 group_filter=req.group_filter,
                 top_k=req.top_k,
-                thread_id=req.thread_id or "",
+                thread_id=_scoped_thread_id(req.session_id, current_user_id, req.thread_id),
             )
         except Exception as e:
             logger.error("RAG chat failed: %s", e, exc_info=True)
@@ -281,7 +296,7 @@ async def rag_chat_stream(
             message=query_text,
             group_filter=req.group_filter,
             top_k=req.top_k,
-            thread_id=req.thread_id or "",
+            thread_id=_scoped_thread_id(req.session_id, current_user_id, req.thread_id),
         ),
         media_type="text/event-stream",
         headers={
@@ -324,7 +339,7 @@ async def rag_chat_resume(
 
     try:
         result = await manager.resume_hitl(
-            thread_id=req.thread_id,
+            thread_id=_scoped_thread_id(req.session_id, current_user_id, req.thread_id),
             decision=req.decision,
             edited_answer=req.edited_answer or "",
         )

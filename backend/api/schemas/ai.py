@@ -5,10 +5,15 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Literal
 from enum import Enum
 
+# Upper bound on one chat message: every request is embedded and sent to the model,
+# so unbounded text is a cost and latency amplifier. ~16k chars is far above real questions.
+MAX_CHAT_CHARS = 16_000
+
 
 # ============================================================
 # Embedding (Manual) Schemas
 # ============================================================
+
 
 class EmbeddingMode(str, Enum):
     """Embedding mode"""
@@ -249,14 +254,14 @@ class SessionListItem(BaseModel):
 class RAGChatRequest(BaseModel):
     """Request for RAG-based chat"""
     session_id: str = Field(..., description="Session ID")
-    message: Optional[str] = Field(None, description="Message")
-    question: Optional[str] = Field(None, description="Alias for message (frontend compatibility)")
+    message: Optional[str] = Field(None, max_length=MAX_CHAT_CHARS, description="Message")
+    question: Optional[str] = Field(None, max_length=MAX_CHAT_CHARS, description="Alias for message (frontend compatibility)")
     use_rag: bool = Field(True, description="Use retrieval")
     top_k: int = Field(default=16, ge=1, le=50, description="Top-K")
     group_filter: Optional[str] = Field(None, description="Group filter")
     file_filter: Optional[str] = Field(None, description="File filter")
-    history: Optional[List[Dict[str, str]]] = Field(None, description="Optional history")
-    thread_id: Optional[str] = Field(None, description="Thread ID for conversation continuity and checkpointing")
+    history: Optional[List[Dict[str, str]]] = Field(None, max_length=50, description="Optional history")
+    thread_id: Optional[str] = Field(None, max_length=200, description="Thread ID for conversation continuity and checkpointing")
 
     @property
     def query(self) -> str:
@@ -393,7 +398,7 @@ class RAGConfigResponse(BaseModel):
 
 class HITLResumeRequest(BaseModel):
     """Resume a HITL-interrupted graph execution."""
-    thread_id: str = Field(..., description="Thread ID of the interrupted conversation")
+    thread_id: str = Field(..., max_length=400, description="Thread ID of the interrupted conversation")
     session_id: str = Field(..., description="Session ID for ownership verification")
     decision: str = Field(
         "approve",
@@ -402,6 +407,7 @@ class HITLResumeRequest(BaseModel):
     )
     edited_answer: Optional[str] = Field(
         None,
+        max_length=MAX_CHAT_CHARS * 2,
         description="Replacement answer text when decision is 'edit'",
     )
 
