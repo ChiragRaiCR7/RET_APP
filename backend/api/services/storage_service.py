@@ -62,8 +62,41 @@ def get_session_dir(session_id: str) -> Path:
     Prevents directory traversal attacks.
     """
     path = (SESSIONS_ROOT / session_id).resolve()
-    if not str(path).startswith(str(SESSIONS_ROOT)):
+    # A string prefix check let "../sessions_x" through; require a direct child.
+    if path.parent != SESSIONS_ROOT:
         raise ValueError("Invalid session path")
+    return path
+
+
+def contained_path(base: Path, name: str) -> Path:
+    """
+    Join an untrusted file name onto ``base`` and refuse anything that escapes it.
+
+    Covers "../" segments, absolute names (which make pathlib drop ``base``) and
+    symlinks. Raises ValueError for an invalid name.
+    """
+    root = base.resolve()
+    path = (root / name).resolve()
+    if path == root or not path.is_relative_to(root):
+        raise ValueError("Invalid file path")
+    return path
+
+
+def resolve_owned_session_file(raw_path: str, user_id: str) -> Path:
+    """
+    Accept a client-supplied server path only when it lies inside a session the user owns.
+
+    Raises PermissionError otherwise. Sessions without a recorded owner are refused.
+    """
+    path = Path(raw_path).resolve()
+    if not path.is_relative_to(SESSIONS_ROOT):
+        raise PermissionError("File is outside your sessions")
+    parts = path.relative_to(SESSIONS_ROOT).parts
+    if len(parts) < 2:
+        raise PermissionError("File is outside your sessions")
+    owner = str(get_session_metadata(parts[0]).get("user_id") or "")
+    if not owner or owner != str(user_id):
+        raise PermissionError("File is outside your sessions")
     return path
 
 

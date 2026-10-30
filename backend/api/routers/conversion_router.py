@@ -994,7 +994,7 @@ async def convert_csv_to_xlsx(
 ):
     """Convert CSV file from session to XLSX format."""
     try:
-        from api.services.storage_service import get_session_dir, get_session_metadata
+        from api.services.storage_service import contained_path, get_session_dir, get_session_metadata
 
         session_dir = get_session_dir(request.session_id)
 
@@ -1002,9 +1002,9 @@ async def convert_csv_to_xlsx(
         if meta.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-        csv_path = session_dir / "output" / request.csv_filename
+        csv_path = contained_path(session_dir / "output", request.csv_filename)
         if not csv_path.exists():
-            csv_path = session_dir / "output" / request.csv_filename.upper()
+            csv_path = contained_path(session_dir / "output", request.csv_filename.upper())
         if not csv_path.exists():
             raise HTTPException(status_code=404, detail="CSV file not found")
 
@@ -1019,6 +1019,8 @@ async def convert_csv_to_xlsx(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"XLSX conversion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1032,7 +1034,7 @@ async def download_xlsx(
 ):
     """Download converted XLSX file (generated from CSV)."""
     try:
-        from api.services.storage_service import get_session_dir, get_session_metadata
+        from api.services.storage_service import contained_path, get_session_dir, get_session_metadata
 
         session_dir = get_session_dir(session_id)
 
@@ -1041,9 +1043,9 @@ async def download_xlsx(
             raise HTTPException(status_code=403, detail="Not authorized")
 
         csv_name = filename.replace(".xlsx", ".csv")
-        csv_path = session_dir / "output" / csv_name
+        csv_path = contained_path(session_dir / "output", csv_name)
         if not csv_path.exists():
-            csv_path = session_dir / "output" / csv_name.upper()
+            csv_path = contained_path(session_dir / "output", csv_name.upper())
         if not csv_path.exists():
             raise HTTPException(status_code=404, detail="CSV file not found")
 
@@ -1056,6 +1058,8 @@ async def download_xlsx(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"XLSX download error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

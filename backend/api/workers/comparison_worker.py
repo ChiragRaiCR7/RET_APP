@@ -119,6 +119,7 @@ async def comparison_files_task(
     sim_threshold: float = 0.65,
     ignore_columns: Optional[str] = None,
     cleanup_dir: Optional[str] = None,
+    owner: str = "",
 ) -> Dict[str, Any]:
     """
     Uploaded-file background comparison (async).
@@ -166,6 +167,7 @@ async def comparison_files_task(
             similarity_pairing=bool(similarity_pairing),
             sim_threshold=float(sim_threshold),
             ignore_columns=ignore_columns,
+            owner=owner,
         )
 
         payload = _json_safe(res.to_dict())
