@@ -121,6 +121,33 @@ export interface DeltaFrame {
   rows: DeltaRow[]
 }
 
+export type FileStatus = 'SAME' | 'MODIFIED' | 'ADDED' | 'REMOVED' | ''
+
+/** One file pair in a comparison result (FileComparisonDetail). */
+export interface FileComparisonDetail extends OracleEnrichment {
+  filename: string
+  group?: string
+  status: FileStatus | string
+  similarity?: number
+  rows_a?: number
+  rows_b?: number
+  added_rows?: number | null
+  removed_rows?: number | null
+  modified_rows?: number | null
+  csv_path_a?: string
+  csv_path_b?: string
+}
+
+/** Result of an upload comparison job (compare_files().to_dict()). */
+export interface ComparisonResult {
+  similarity?: number
+  same?: number
+  modified?: number
+  added?: number
+  removed?: number
+  changes?: FileComparisonDetail[]
+}
+
 /** POST /comparison/drilldown (serialized by alias: deltaA/deltaB, row_count_A/B). */
 export interface DrilldownResponse {
   filename?: string
@@ -198,6 +225,53 @@ export interface StopEmbeddingResponse {
   message?: string
   worker_tasks_cancelled?: number
   auto_embed_suppressed?: boolean
+}
+
+// --- admin.py ----------------------------------------------------------------
+
+export interface UserInfo {
+  id: number
+  username: string
+  role: string
+  is_active: boolean
+  is_locked: boolean
+  created_at: string
+  updated_at?: string | null
+  /** One-time reset token, returned only when a user is created or reset. */
+  token?: string | null
+}
+
+export interface AuditLogEntry {
+  id: number
+  username?: string | null
+  action?: string | null
+  area?: string | null
+  message?: string | null
+  created_at: string
+}
+
+export interface OpsLogEntry extends AuditLogEntry {
+  level?: string | null
+}
+
+export interface PasswordResetRequestEntry {
+  id: number
+  username: string
+  reason?: string | null
+  status: string
+  created_at: string
+  decided_at?: string | null
+}
+
+/** Admin session listing; created_at may be epoch seconds or ISO text depending on source. */
+export interface AdminSessionInfo {
+  session_id: string
+  username?: string
+  user_id?: string
+  status?: string
+  created_at?: string | number
+  last_activity?: string | number
+  size?: string | null
 }
 
 // --- business_structure.py -------------------------------------------------

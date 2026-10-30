@@ -961,16 +961,25 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useRouter } from 'vue-router'
 import AIAgentChat from '@/components/admin/AIAgentChat.vue'
-import api, { errorBody, longApi } from '@/utils/api'
+import api, { errorBody } from '@/utils/api'
 import { ORACLE_APP_CODES, formatOracleGroupLabel } from '@/utils/oracleApps'
 import { normalizeGroupName } from '@/utils/groups'
 import { format } from 'date-fns'
+import type {
+  AdminSessionInfo,
+  AuditLogEntry,
+  OpsLogEntry,
+  PasswordResetRequestEntry,
+  UserInfo
+} from '@/types/api'
+
+type StatusMessage = { type: 'success' | 'error' | 'info' | string; message: string }
 
 const auth = useAuthStore()
 const toast = useToastStore()
@@ -991,12 +1000,12 @@ const tabs = [
 ]
 
 const activeTab = ref(0)
-function setTab(idx) { activeTab.value = idx }
-function setTabByKey(key) {
+function setTab(idx: number) { activeTab.value = idx }
+function setTabByKey(key: string) {
   const idx = tabs.findIndex(t => t.key === key)
   if (idx >= 0) activeTab.value = idx
 }
-function onTabKeydown(e, idx) {
+function onTabKeydown(e: KeyboardEvent, idx: number) {
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(e.key)) return
   e.preventDefault()
@@ -1009,34 +1018,22 @@ function onTabKeydown(e, idx) {
 
 /** Data */
 const stats = reactive({ totalUsers: 0, admins: 0, regular: 0 })
-const users = ref([])
-const selectedUserId = ref('')
-const selectedUser = ref(null)
+const users = ref<UserInfo[]>([])
+const selectedUserId = ref<string | number>('')
+const selectedUser = ref<UserInfo | null>(null)
 
 const newUser = reactive({ username: '', role: 'user', tokenTTL: 60, note: '' })
 const creating = ref(false)
-const createdToken = ref(null)
+const createdToken = ref<string | null>(null)
 
 const updateRole = reactive({ newRole: 'user' })
-const resetToken = ref(null)
+const resetToken = ref<string | null>(null)
 
-const resetRequests = ref([])
-const auditLogs = ref([])
-const opsLogs = ref([])
-const sessions = ref([])
+const resetRequests = ref<PasswordResetRequestEntry[]>([])
+const auditLogs = ref<AuditLogEntry[]>([])
+const opsLogs = ref<OpsLogEntry[]>([])
+const sessions = ref<AdminSessionInfo[]>([])
 const refreshing = ref(false)
-
-/** Filter sessions for Conversion Exclusions: only ACTIVE or today's sessions */
-const activeExclSessions = computed(() => {
-  const todayStart = new Date()
-  todayStart.setHours(0, 0, 0, 0)
-  const todayEpoch = Math.floor(todayStart.getTime() / 1000)
-  return sessions.value.filter(s => {
-    if (String(s.status || '').toUpperCase() === 'ACTIVE') return true
-    const created = Number(s.created_at || 0)
-    return created >= todayEpoch
-  })
-})
 
 /** User header initials */
 const userInitials = computed(() => {
@@ -1070,20 +1067,20 @@ const filteredUsers = computed(() => {
 })
 
 /** AI Indexing Config */
-const availableGroupsList = ref([])
-const autoEmbeddedGroups = ref([])
+const availableGroupsList = ref<string[]>([])
+const autoEmbeddedGroups = ref<string[]>([])
 const autoEmbedEnabled = ref(true)
-const selectedLeftGroups = ref([])
-const selectedRightGroups = ref([])
+const selectedLeftGroups = ref<string[]>([])
+const selectedRightGroups = ref<string[]>([])
 const newGroup = ref('')
-const excludedGroups = ref([])
-const selectedExclusionLeft = ref([])
-const selectedExclusionRight = ref([])
+const excludedGroups = ref<string[]>([])
+const selectedExclusionLeft = ref<string[]>([])
+const selectedExclusionRight = ref<string[]>([])
 const availableExclusionSearch = ref('')
 const excludedSearch = ref('')
 const newExcludedCandidate = ref('')
 const saving = ref(false)
-const configStatus = ref(null)
+const configStatus = ref<StatusMessage | null>(null)
 const aiConfigLoading = ref(false)
 
 const availableSearch = ref('')
@@ -1178,15 +1175,15 @@ function clearExcluded() {
 }
 
 /** Formatting */
-function formatDate(d) {
+function formatDate(d: string | number | null | undefined): string {
   if (!d) return '—'
   try { return format(new Date(d), 'MMM dd, yyyy HH:mm') } catch { return String(d) }
 }
-function shortId(id) {
+function shortId(id: string | null | undefined): string {
   if (!id) return '—'
   return id.length > 12 ? `${id.slice(0, 12)}…` : id
 }
-function getEventBadgeClass(action) {
+function getEventBadgeClass(action: string | null | undefined): string {
   const lower = (action || '').toLowerCase()
   if (lower.includes('login') && lower.includes('success')) return 'badge-success'
   if (lower.includes('login') && (lower.includes('fail') || lower.includes('failed'))) return 'badge-error'
@@ -1196,7 +1193,7 @@ function getEventBadgeClass(action) {
 }
 
 /** Clipboard */
-async function copyToClipboard(text) {
+async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text)
     toast.success('Copied to clipboard')
@@ -1210,12 +1207,12 @@ async function refresh() {
   refreshing.value = true
   try {
     const [statsRes, usersRes, resetRes, auditRes, opsRes, sessionsRes] = await Promise.all([
-      api.get('/admin/stats'),
-      api.get('/admin/users'),
-      api.get('/admin/reset-requests'),
-      api.get('/admin/audit-logs'),
-      api.get('/admin/ops-logs'),
-      api.get('/admin/sessions')
+      api.get<{ totalUsers: number; admins: number; regular: number; activeSessions?: number }>('/admin/stats'),
+      api.get<UserInfo[]>('/admin/users'),
+      api.get<PasswordResetRequestEntry[]>('/admin/reset-requests'),
+      api.get<AuditLogEntry[]>('/admin/audit-logs'),
+      api.get<OpsLogEntry[]>('/admin/ops-logs'),
+      api.get<AdminSessionInfo[]>('/admin/sessions')
     ])
 
     Object.assign(stats, statsRes.data || {})
@@ -1238,7 +1235,7 @@ async function loadUserDetails() {
   selectedUser.value = null
   if (!selectedUserId.value) return
   try {
-    const res = await api.get(`/admin/users/${selectedUserId.value}`)
+    const res = await api.get<UserInfo>(`/admin/users/${selectedUserId.value}`)
     selectedUser.value = res.data
     updateRole.newRole = res.data.role
   } catch {
@@ -1251,13 +1248,13 @@ async function createUser() {
   creating.value = true
   createdToken.value = null
   try {
-    const res = await api.post('/admin/users', newUser)
-    createdToken.value = res.data.token
+    const res = await api.post<UserInfo>('/admin/users', newUser)
+    createdToken.value = res.data.token ?? null
     Object.assign(newUser, { username: '', role: 'user', tokenTTL: 60, note: '' })
     toast.success('User created successfully')
     await refresh()
   } catch (e) {
-    toast.error('Failed to create user: ' + (errorBody(e)?.message || e.message))
+    toast.error('Failed to create user: ' + (errorBody(e)?.message || (e as Error).message))
   } finally {
     creating.value = false
   }
@@ -1314,7 +1311,7 @@ async function deleteSelectedUser() {
     toast.error('Failed to delete user')
   }
 }
-async function deleteUserById(id, username) {
+async function deleteUserById(id: number, username: string) {
   try {
     await api.delete(`/admin/users/${id}`)
     toast.success(`User ${username} deleted`)
@@ -1323,7 +1320,7 @@ async function deleteUserById(id, username) {
     toast.error('Failed to delete user')
   }
 }
-function editUser(u) {
+function editUser(u: UserInfo) {
   selectedUserId.value = u.id
   setTabByKey('manage-user')
   loadUserDetails()
@@ -1348,7 +1345,7 @@ async function reloadAIConfig() {
     excludedGroups.value = (res.data.excluded_groups || []).map(normalizeGroupName)
     autoEmbeddedGroups.value = (res.data.auto_embedded_groups || [])
       .map(normalizeGroupName)
-      .filter(g => !excludedGroups.value.includes(g))
+      .filter((g: string) => !excludedGroups.value.includes(g))
 
     const autoEmbedRaw = res?.data?.auto_embed_enabled ?? res?.data?.enable_auto_embedding
     autoEmbedEnabled.value = autoEmbedRaw === undefined ? true : !!autoEmbedRaw
@@ -1357,9 +1354,9 @@ async function reloadAIConfig() {
     const enabledSet = new Set(autoEmbeddedGroups.value)
     const excludedSet = new Set(excludedGroups.value)
 
-    const canonicalAvailable = ORACLE_APP_CODES.filter(code => !enabledSet.has(code) && !excludedSet.has(code))
+    const canonicalAvailable = ORACLE_APP_CODES.filter((code: string) => !enabledSet.has(code) && !excludedSet.has(code))
     const customAvailable = backendAvailable
-      .filter(code => !enabledSet.has(code) && !excludedSet.has(code) && !ORACLE_APP_CODES.includes(code))
+      .filter((code: string) => !enabledSet.has(code) && !excludedSet.has(code) && !ORACLE_APP_CODES.includes(code))
       .sort()
 
     availableGroupsList.value = [...canonicalAvailable, ...customAvailable]
@@ -1397,7 +1394,7 @@ async function saveEmbeddingConfig() {
   } catch (e) {
     configStatus.value = {
       type: 'error',
-      message: 'Failed to save configuration: ' + (errorBody(e)?.detail || e.message)
+      message: 'Failed to save configuration: ' + (errorBody(e)?.detail || (e as Error).message)
     }
   } finally {
     saving.value = false
@@ -1414,7 +1411,7 @@ const confirmModal = reactive({
   onConfirm: () => {}
 })
 
-function openConfirm(type, payload = null) {
+function openConfirm(type: 'deleteUser' | 'deleteSpecific' | string, payload: UserInfo | null = null) {
   if (type === 'deleteUser') {
     confirmModal.open = true
     confirmModal.title = 'Delete user'

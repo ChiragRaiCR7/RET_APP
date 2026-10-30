@@ -6,14 +6,11 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
 
-    /* TypeScript modules are checked strictly; .vue components still in plain JS are
-       accepted (allowJs) and move to <script setup lang="ts"> one at a time. */
+    /* Every module and component is strict TypeScript; plain JS is not accepted. */
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "allowJs": true,
-    "checkJs": false,
 
     "resolveJsonModule": true,
     "isolatedModules": true,

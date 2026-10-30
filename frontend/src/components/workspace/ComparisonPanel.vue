@@ -501,31 +501,60 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { errorBody, apiCall, pollJob } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
-import { getOracleAppName, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
+import { getDomainColor } from '@/utils/oracleApps'
+import { downloadCsv, toCsv } from '@/utils/csv'
+import {
+  WHO_COLUMNS,
+  cellHasChange as diffCellHasChange,
+  changeSideClass,
+  ignoredColumnFilter,
+  toDrilldownView,
+  truncateCell,
+  type DrilldownView,
+  type Side
+} from '@/utils/drilldown'
+import type { ComparisonResult, DeltaRow, DrilldownResponse, FileComparisonDetail } from '@/types/api'
+
+type InputType = 'zip' | 'xml' | 'csv'
+
+interface CompareSide {
+  inputType: InputType
+  file: File | null
+  dragging: boolean
+}
+
+interface ComparisonSummary {
+  similarity: number
+  same: number
+  modified: number
+  added: number
+  removed: number
+  changes: FileComparisonDetail[]
+}
 
 const toast = useToastStore()
 const router = useRouter()
-const emit = defineEmits(['comparison-complete'])
+const emit = defineEmits<{ 'comparison-complete': [results: ComparisonSummary] }>()
 
 /** Inputs */
 const options = reactive({ ignoreCase: false, trimWhitespace: true, similarityPairing: true })
-const sideA = reactive({ inputType: 'zip', file: null, dragging: false })
-const sideB = reactive({ inputType: 'zip', file: null, dragging: false })
+const sideA = reactive<CompareSide>({ inputType: 'zip', file: null, dragging: false })
+const sideB = reactive<CompareSide>({ inputType: 'zip', file: null, dragging: false })
 
 /** File input refs */
-const inputA = ref(null)
-const inputB = ref(null)
+const inputA = ref<HTMLInputElement | null>(null)
+const inputB = ref<HTMLInputElement | null>(null)
 
 /** Run state */
 const comparing = ref(false)
 const progressStep = ref(0)
 const progressPercent = ref(0)
-const results = ref(null)
+const results = ref<ComparisonSummary | null>(null)
 
 /** Filters */
 const searchQuery = ref('')
@@ -537,71 +566,63 @@ const showCellModal = ref(false)
 
 /** Drilldown state */
 const selectedMismatchKey = ref('')
-const selectedChange = ref(null)
-const drilldownData = ref(null)
-const changedColumns = ref(new Set())
+const selectedChange = ref<FileComparisonDetail | null>(null)
+const drilldownData = ref<DrilldownView | null>(null)
+const changedColumns = ref(new Set<string>())
 const diffLoading = ref(false)
 
 /** Scroll sync */
 const scrollSyncEnabled = ref(true)
-const scrollContainerA = ref(null)
-const scrollContainerB = ref(null)
+const scrollContainerA = ref<HTMLElement | null>(null)
+const scrollContainerB = ref<HTMLElement | null>(null)
 
 const canCompare = computed(() => !!sideA.file && !!sideB.file)
 
-/** WHO columns ignore handling */
-const WHO_COLUMNS = [
-  'Created By',
-  'Last Updated By',
-  'Creation Date',
-  'Last Update Date',
-  'Last Update Login'
-]
-
-function normalizeColName(name) {
-  return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
-}
-const WHO_COLUMNS_SET = new Set(WHO_COLUMNS.map(normalizeColName))
-function isIgnoredColumn(col) {
-  return WHO_COLUMNS_SET.has(normalizeColName(col))
-}
+const isIgnoredColumn = ignoredColumnFilter(WHO_COLUMNS)
 
 /** Helpers */
-function basename(p) {
+function basename(p: string | null | undefined): string {
   if (!p) return ''
   const s = String(p).replace(/\\/g, '/')
   const parts = s.split('/')
   return parts[parts.length - 1] || s
 }
 
-function formatSize(bytes) {
+function formatSize(bytes: number | null | undefined): string {
   if (!bytes) return '0 KB'
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-function getAcceptTypes(type) {
-  const map = { zip: '.zip,application/zip', xml: '.xml,text/xml,application/xml', csv: '.csv,text/csv' }
+function getAcceptTypes(type: InputType): string {
+  const map: Record<InputType, string> = {
+    zip: '.zip,application/zip',
+    xml: '.xml,text/xml,application/xml',
+    csv: '.csv,text/csv'
+  }
   return map[type] || '*/*'
 }
 
-function displayNum(v) {
+function displayNum(v: unknown): unknown {
   return v === null || v === undefined || v === '' ? '-' : v
 }
 
 /** Upload handlers */
-function onDropA(e) { sideA.dragging = false; if (e.dataTransfer.files?.length) sideA.file = e.dataTransfer.files[0] }
-function onDropB(e) { sideB.dragging = false; if (e.dataTransfer.files?.length) sideB.file = e.dataTransfer.files[0] }
-function onFileA(e) { if (e.target.files?.length) sideA.file = e.target.files[0] }
-function onFileB(e) { if (e.target.files?.length) sideB.file = e.target.files[0] }
+function firstFile(list: FileList | null | undefined): File | null {
+  return list?.length ? list[0]! : null
+}
+function onDropA(e: DragEvent) { sideA.dragging = false; sideA.file = firstFile(e.dataTransfer?.files) ?? sideA.file }
+function onDropB(e: DragEvent) { sideB.dragging = false; sideB.file = firstFile(e.dataTransfer?.files) ?? sideB.file }
+function onFileA(e: Event) { sideA.file = firstFile((e.target as HTMLInputElement).files) ?? sideA.file }
+function onFileB(e: Event) { sideB.file = firstFile((e.target as HTMLInputElement).files) ?? sideB.file }
 function removeFileA() { sideA.file = null }
 function removeFileB() { sideB.file = null }
 
-function normalizeChange(c) {
+function normalizeChange(c: FileComparisonDetail): FileComparisonDetail {
   return { ...c, status: String(c.status || '').toUpperCase() }
 }
-function keyOf(c) {
+function keyOf(c: FileComparisonDetail): string {
   return `${c.group || ''}||${c.filename || ''}`
 }
 
@@ -620,7 +641,7 @@ async function runComparison() {
   drilldownData.value = null
   changedColumns.value = new Set()
 
-  let ticker = null
+  let ticker: ReturnType<typeof setInterval> | null = null
   const startTicker = () => {
     if (ticker) return
     ticker = setInterval(() => {
@@ -635,8 +656,8 @@ async function runComparison() {
 
   try {
     const formData = new FormData()
-    formData.append('sideA', sideA.file)
-    formData.append('sideB', sideB.file)
+    formData.append('sideA', sideA.file!)
+    formData.append('sideB', sideB.file!)
 
     const params = {
       ignore_case: String(!!options.ignoreCase),
@@ -650,14 +671,14 @@ async function runComparison() {
     progressPercent.value = 35
 
     // ✅ Start async job (IMPORTANT: long:true so upload doesn't timeout at 30s)
-    const started = await apiCall({
+    const started = await apiCall<{ job_id?: string; jobId?: string; id?: string }>({
       method: 'post',
       url: '/comparison/run-async',
       data: formData,
       params,
       long: true,
       headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (evt) => {
+      onUploadProgress: (evt: { loaded: number; total?: number }) => {
         if (!evt || !evt.total) return
         const pct = Math.round((evt.loaded / evt.total) * 25) // 0..25
         progressPercent.value = 35 + pct // 35..60
@@ -672,7 +693,7 @@ async function runComparison() {
     startTicker()
 
     // ✅ Poll until job completes (fast polling)
-    const payload = await pollJob(jobId, { intervalMs: 1500, timeoutMs: 60 * 60 * 1000 })
+    const payload = await pollJob<ComparisonResult>(jobId, { intervalMs: 1500, timeoutMs: 60 * 60 * 1000 })
     stopTicker()
     progressPercent.value = 100
 
@@ -705,7 +726,7 @@ async function runComparison() {
 
   } catch (e) {
     stopTicker()
-    const detail = errorBody(e)?.detail || e?.message || 'Unknown error'
+    const detail = errorBody(e)?.detail || (e as Error)?.message || 'Unknown error'
     toast.error('Comparison failed: ' + detail)
     console.error('[comparison/run-async] failed:', e)
   } finally {
@@ -736,22 +757,22 @@ const recordSummary = computed(() => {
 })
 
 /** Per-file totals & deltas */
-function rowCountA(c) { return Number(c.rows_a ?? 0) }
-function rowCountB(c) { return Number(c.rows_b ?? 0) }
+function rowCountA(c: FileComparisonDetail) { return Number(c.rows_a ?? 0) }
+function rowCountB(c: FileComparisonDetail) { return Number(c.rows_b ?? 0) }
 
-function addedRows(c) {
+function addedRows(c: FileComparisonDetail): number {
   const s = String(c.status || '').toUpperCase()
   if (c.added_rows !== undefined && c.added_rows !== null) return Number(c.added_rows)
   if (s === 'ADDED') return rowCountB(c)
   return 0
 }
-function removedRows(c) {
+function removedRows(c: FileComparisonDetail): number {
   const s = String(c.status || '').toUpperCase()
   if (c.removed_rows !== undefined && c.removed_rows !== null) return Number(c.removed_rows)
   if (s === 'REMOVED') return rowCountA(c)
   return 0
 }
-function modifiedRows(c) {
+function modifiedRows(c: FileComparisonDetail): number {
   if (c.modified_rows !== undefined && c.modified_rows !== null) return Number(c.modified_rows)
   return 0
 }
@@ -764,12 +785,12 @@ const filteredChanges = computed(() => {
     const q = searchQuery.value.toLowerCase()
     ch = ch.filter(x => basename(x.filename).toLowerCase().includes(q))
   }
-  const rank = { MODIFIED: 1, ADDED: 2, REMOVED: 2, SAME: 3 }
+  const rank: Record<string, number> = { MODIFIED: 1, ADDED: 2, REMOVED: 2, SAME: 3 }
   ch.sort((a, b) => (rank[a.status] || 99) - (rank[b.status] || 99) || basename(a.filename).localeCompare(basename(b.filename)))
   return ch
 })
 
-function toggleQuickFilter(s) {
+function toggleQuickFilter(s: string) {
   statusFilter.value = statusFilter.value === s ? '' : s
 }
 
@@ -780,7 +801,7 @@ function closeAllModals() {
 }
 
 /** Badge + dot */
-function badgeClass(status) {
+function badgeClass(status: string): string {
   const s = String(status || '').toUpperCase()
   return s === 'SAME' ? 'badge-success'
     : s === 'MODIFIED' ? 'badge-warning'
@@ -788,15 +809,6 @@ function badgeClass(status) {
     : s === 'REMOVED' ? 'badge-error'
     : ''
 }
-function statusDotClass(status) {
-  const s = String(status || '').toUpperCase()
-  if (s === 'SAME') return 'dot-green'
-  if (s === 'MODIFIED') return 'dot-red'
-  if (s === 'REMOVED') return 'dot-red'
-  if (s === 'ADDED') return 'dot-green'
-  return 'dot-gray'
-}
-
 /** Download report */
 function downloadReport() {
   if (!results.value?.changes) return
@@ -818,22 +830,16 @@ function downloadReport() {
     modifiedRows(c)
   ])
 
+  // File names come from the uploaded archives: toCsv neutralizes formula-like cells.
   const csvContent = [
     `# ZIP Comparison Report (Record/Row focused) - ${new Date().toISOString()}`,
-    `# Side A: ${sideA.file?.name || 'N/A'}`,
-    `# Side B: ${sideB.file?.name || 'N/A'}`,
+    `# Side A: ${(sideA.file?.name || 'N/A').replace(/[\r\n]/g, ' ')}`,
+    `# Side B: ${(sideB.file?.name || 'N/A').replace(/[\r\n]/g, ' ')}`,
     '',
-    headers.join(','),
-    ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')),
+    toCsv(headers, rows),
   ].join('\n')
 
-  const blob = new Blob([csvContent], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `zip-comparison-records-${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadCsv(`zip-comparison-records-${new Date().toISOString().slice(0, 10)}.csv`, csvContent)
   toast.success('Report downloaded')
 }
 
@@ -845,7 +851,7 @@ const mismatchItems = computed(() => {
     .sort((a, b) => a.name.localeCompare(b.name))
 })
 
-function encodePayloadToBase64(payload) {
+function encodePayloadToBase64(payload: unknown): string {
   const text = JSON.stringify(payload || {})
   const bytes = new TextEncoder().encode(text)
   let bin = ''
@@ -853,7 +859,7 @@ function encodePayloadToBase64(payload) {
   return btoa(bin)
 }
 
-function buildDrilldownHref(change) {
+function buildDrilldownHref(change: FileComparisonDetail): string {
   const payload = {
     filename: change?.filename || '',
     csv_path_a: change?.csv_path_a || '',
@@ -884,10 +890,12 @@ function buildDrilldownHref(change) {
   return `${resolved.href}#payload=${encodeURIComponent(encoded)}`
 }
 
-async function openDrilldownWindow(change) {
+async function openDrilldownWindow(change: FileComparisonDetail | null) {
   if (!change) return
   const targetHref = buildDrilldownHref(change)
-  const opened = window.open(targetHref, '_blank', 'noopener,noreferrer')
+  // window.open() always returns null when 'noopener' is in the features, which made
+  // every click look like a blocked popup. Detach the opener on the returned window instead.
+  const opened = window.open(targetHref, '_blank')
 
   if (!opened) {
     toast.warning('Popup blocked. Opening drilldown in modal instead.')
@@ -895,10 +903,11 @@ async function openDrilldownWindow(change) {
     return
   }
 
+  opened.opener = null
   opened.focus?.()
 }
 
-async function openDiffModal(change) {
+async function openDiffModal(change: FileComparisonDetail | null) {
   if (!change) return
   showMismatchModal.value = true
   selectedMismatchKey.value = keyOf(change)
@@ -930,7 +939,7 @@ const filteredDeltaB = computed(() => {
   return rows.filter(r => cols.some(c => cellHasChange(r, c)))
 })
 
-async function loadDrilldown(change) {
+async function loadDrilldown(change: FileComparisonDetail) {
   const hasA = !!change.csv_path_a
   const hasB = !!change.csv_path_b
   if (!hasA && !hasB) {
@@ -952,10 +961,10 @@ async function loadDrilldown(change) {
     })
     params.append('ignore_columns', WHO_COLUMNS.join(','))
 
-    if (hasA) params.append('csv_path_a', change.csv_path_a)
-    if (hasB) params.append('csv_path_b', change.csv_path_b)
+    if (hasA) params.append('csv_path_a', change.csv_path_a!)
+    if (hasB) params.append('csv_path_b', change.csv_path_b!)
 
-    const data = await apiCall({
+    const data = await apiCall<DrilldownResponse>({
       method: 'post',
       url: `/comparison/drilldown?${params.toString()}`,
       long: false
@@ -966,100 +975,51 @@ async function loadDrilldown(change) {
       return
     }
 
-    const header = data.header || []
-    const deltaA = data.deltaA?.rows || []
-    const deltaB = data.deltaB?.rows || []
-    const stats = data.stats || {}
-
-    drilldownData.value = {
-      sizeA: data.row_count_A || 0,
-      sizeB: data.row_count_B || 0,
-      modified: stats.modified || 0,
-      added: stats.added || 0,
-      removed: stats.removed || 0,
-      columns: header,
-      deltaA,
-      deltaB,
-      truncated: !!data.truncated
-    }
-
-    // compute changed columns excluding WHO
-    const set = new Set()
-    const allRows = [...deltaA, ...deltaB]
-    for (const row of allRows) {
-      const changed = row._changed_cols_ || []
-      for (const c of changed) {
-        if (typeof c === 'number' && header[c]) {
-          if (!isIgnoredColumn(header[c])) set.add(header[c])
-        } else {
-          if (!isIgnoredColumn(c)) set.add(c)
-        }
-      }
-      if (row._kind_ === 'ADDED' || row._kind_ === 'REMOVED') {
-        header.forEach(h => { if (!isIgnoredColumn(h)) set.add(h) })
-      }
-    }
-
-    changedColumns.value = set
+    const shaped = toDrilldownView(data, isIgnoredColumn)
+    drilldownData.value = shaped.view
+    changedColumns.value = shaped.changedColumns
     toast.success('Drilldown loaded!')
   } catch (e) {
-    toast.error('Failed to load drilldown: ' + (errorBody(e)?.detail || e.message))
+    toast.error('Failed to load drilldown: ' + (errorBody(e)?.detail || (e as Error).message))
   } finally {
     diffLoading.value = false
   }
 }
 
-/**
- * Cell change detection
- */
-function cellHasChange(row, col) {
-  if (isIgnoredColumn(col)) return false
-
-  const idx = drilldownData.value?.columns?.indexOf(col)
-  const kind = String(row?._kind_ || '').toUpperCase()
-
-  if (kind === 'ADDED' || kind === 'REMOVED') {
-    const v = row?.[col]
-    return v !== null && v !== undefined && String(v).trim() !== ''
-  }
-
-  const changedCols = row?._changed_cols_ || []
-  return changedCols.includes(idx) || changedCols.includes(col)
+/** Cell change detection (shared with the full-page drilldown view) */
+function cellHasChange(row: DeltaRow, col: string): boolean {
+  return diffCellHasChange(row, col, drilldownData.value?.columns || [], isIgnoredColumn)
 }
 
-function cellClass(row, col, side) {
-  if (!cellHasChange(row, col)) return ''
-  const kind = String(row?._kind_ || '').toUpperCase()
-  if (kind === 'REMOVED') return 'cell-old'
-  if (kind === 'ADDED') return 'cell-new'
-  return side === 'A' ? 'cell-old' : 'cell-new'
+function cellClass(row: DeltaRow, col: string, side: Side): string {
+  return cellHasChange(row, col) ? changeSideClass(row, side) : ''
 }
 
-function cellDotClass(row, col, side) {
+function cellDotClass(row: DeltaRow, _col: string, side: Side): string {
   const kind = String(row?._kind_ || '').toUpperCase()
   if (kind === 'REMOVED') return 'dot-red'
   if (kind === 'ADDED') return 'dot-green'
   return side === 'A' ? 'dot-red' : 'dot-green'
 }
 
-function formatCellValue(value, maxLen = 40) {
-  if (value === null || value === undefined) return ''
-  const str = String(value)
-  return str.length > maxLen ? str.slice(0, maxLen) + '…' : str
+function formatCellValue(value: unknown, maxLen = 40): string {
+  return truncateCell(value, maxLen)
 }
 
 /** Cell detail modal */
-const cellModalData = ref({ column: '', valueA: '', valueB: '', rowA: '', rowB: '', kind: '' })
-function onCellClick(row, col, side) {
+const cellModalData = ref<{ column: string; valueA: unknown; valueB: unknown; rowA: unknown; rowB: unknown; kind: string }>({
+  column: '', valueA: '', valueB: '', rowA: '', rowB: '', kind: ''
+})
+function onCellClick(row: DeltaRow, col: string, side: Side) {
   if (!cellHasChange(row, col)) return
   showCellDetail(row, col, side)
 }
 
-function showCellDetail(row, col, side) {
+function showCellDetail(row: DeltaRow, col: string, side: Side) {
   const aRows = drilldownData.value?.deltaA || []
   const bRows = drilldownData.value?.deltaB || []
-  let rowA = null
-  let rowB = null
+  let rowA: DeltaRow | null | undefined = null
+  let rowB: DeltaRow | null | undefined = null
 
   if (side === 'A') {
     rowA = row
@@ -1083,26 +1043,18 @@ function showCellDetail(row, col, side) {
 
 /** Scroll sync */
 let syncingDrilldown = false
-function onScrollA(e) {
-  if (!scrollSyncEnabled.value || !scrollContainerB.value) return
-  if (syncingDrilldown) return
+function syncScroll(source: EventTarget | null, target: HTMLElement | null) {
+  if (!scrollSyncEnabled.value || !target || !source || syncingDrilldown) return
+  const from = source as HTMLElement
   syncingDrilldown = true
   requestAnimationFrame(() => {
-    scrollContainerB.value.scrollTop = e.target.scrollTop
-    scrollContainerB.value.scrollLeft = e.target.scrollLeft
+    target.scrollTop = from.scrollTop
+    target.scrollLeft = from.scrollLeft
     syncingDrilldown = false
   })
 }
-function onScrollB(e) {
-  if (!scrollSyncEnabled.value || !scrollContainerA.value) return
-  if (syncingDrilldown) return
-  syncingDrilldown = true
-  requestAnimationFrame(() => {
-    scrollContainerA.value.scrollTop = e.target.scrollTop
-    scrollContainerA.value.scrollLeft = e.target.scrollLeft
-    syncingDrilldown = false
-  })
-}
+function onScrollA(e: Event) { syncScroll(e.target, scrollContainerB.value) }
+function onScrollB(e: Event) { syncScroll(e.target, scrollContainerA.value) }
 </script>
 
 <style scoped>
