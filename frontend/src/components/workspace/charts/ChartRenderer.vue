@@ -15,7 +15,7 @@
         :key="chartKey"
       />
       <div v-else class="chart-error">
-        <span class="error-icon">⚠️</span>
+        <span class="error-icon" aria-hidden="true">⚠️</span>
         <p>Unsupported chart type: {{ chartConfig.type }}</p>
       </div>
     </div>

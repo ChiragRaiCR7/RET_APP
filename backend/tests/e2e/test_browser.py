@@ -161,3 +161,24 @@ def test_comparison_drilldown_opens_in_new_tab(page, tmp_path) -> None:
     drill.locator("table").first.wait_for(timeout=30000)
     assert "BETA" in drill.inner_text("body")
     assert "Popup blocked" not in page.inner_text("body")
+
+
+def test_edit_dialog_is_modal_labelled_and_closes_on_escape(page, tmp_path) -> None:
+    _login(page)
+    page.locator('input[type="file"]').first.set_input_files(str(_ledger_zip(tmp_path / "e.zip", [(1, "a")])))
+    page.get_by_role("button", name="Scan", exact=True).click()
+    page.get_by_text("Groups found").first.wait_for(timeout=60000)
+    page.get_by_role("button", name="Convert all").click()
+    page.wait_for_function("() => !document.body.innerText.includes('Converting…')", timeout=120000)
+    page.get_by_label("Enable Edit Mode").check()
+    page.get_by_role("button", name="Add New File").click()
+    dialog = page.get_by_role("dialog", name="Add New File")
+    dialog.wait_for(timeout=10000)
+    # showModal() moves focus inside the dialog and labels are bound to their inputs.
+    assert page.evaluate("document.activeElement.closest('dialog') !== null")
+    # The parent's scoped .modal-content styles must reach the <dialog> root (surface, sizing).
+    bg = dialog.evaluate("d => getComputedStyle(d).backgroundColor")
+    assert bg not in ("rgba(0, 0, 0, 0)", "transparent"), bg
+    dialog.get_by_label("File Name").fill("x.csv")
+    page.keyboard.press("Escape")
+    dialog.wait_for(state="hidden", timeout=5000)

@@ -57,7 +57,7 @@
     <!-- Scan Results -->
     <div v-if="scanResults" style="margin-top: var(--space-lg)">
       <div class="enterprise-card">
-        <h4 class="card-title">📊 Scan Results</h4>
+        <h4 class="card-title"><span aria-hidden="true">📊</span> Scan Results</h4>
 
         <div class="metric-container">
           <div class="metric-card">

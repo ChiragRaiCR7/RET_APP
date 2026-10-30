@@ -4,7 +4,7 @@
       <h4>{{ title }}</h4>
       <div class="table-actions">
         <button v-if="exportable" @click="exportToCSV" class="btn-export" title="Export to CSV">
-          📥 Export
+          <span aria-hidden="true">📥</span> Export
         </button>
         <button v-if="data.length > 10" @click="toggleExpand" class="btn-toggle">
           {{ expanded ? '▲ Collapse' : '▼ Show All' }}

@@ -60,7 +60,7 @@
       </section>
 
       <p v-if="drilldownData?.truncated" class="warn-text">
-        ⚠️ Result is truncated due to large difference volume.
+        <span aria-hidden="true">⚠️</span> Result is truncated due to large difference volume.
       </p>
 
       <section

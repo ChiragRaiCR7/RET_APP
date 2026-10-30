@@ -1,14 +1,14 @@
 <template>
   <div class="edit-mode-panel">
     <div class="panel-header">
-      <h4 class="panel-title">✏️ Edit Mode Active</h4>
+      <h4 class="panel-title"><span aria-hidden="true">✏️</span> Edit Mode Active</h4>
       <p class="panel-description">Make changes to your CSV files. Changes are session-only until downloaded.</p>
     </div>
 
     <!-- Pending Changes Summary -->
     <div v-if="hasChanges" class="changes-summary">
       <div class="summary-header">
-        <span class="summary-icon">📝</span>
+        <span class="summary-icon" aria-hidden="true">📝</span>
         <span class="summary-text">{{ totalChanges }} unsaved change(s)</span>
         <button class="btn btn-primary btn-sm" @click="saveAllChanges" :disabled="saving">
           <span v-if="saving" class="spinner-sm"></span>
@@ -31,27 +31,26 @@
     <!-- Quick Actions -->
     <div class="quick-actions">
       <button class="btn btn-secondary" @click="showAddRowModal = true">
-        ➕ Add Row
+        <span aria-hidden="true">➕</span> Add Row
       </button>
       <button class="btn btn-secondary" @click="showAddFileModal = true">
-        📄 Add New File
+        <span aria-hidden="true">📄</span> Add New File
       </button>
       <button class="btn btn-warning" @click="showDeleteFileModal = true">
-        🗑️ Delete File
+        <span aria-hidden="true">🗑️</span> Delete File
       </button>
     </div>
 
     <!-- Add Row Modal -->
-    <div v-if="showAddRowModal" class="modal-overlay" @click.self="showAddRowModal = false">
-      <div class="modal-content">
+    <BaseDialog :open="showAddRowModal" class="modal-content" labelledby="add-row-title" @close="showAddRowModal = false">
         <div class="modal-header">
-          <h4>Add New Row</h4>
-          <button class="modal-close" @click="showAddRowModal = false">×</button>
+          <h4 id="add-row-title">Add New Row</h4>
+          <button class="modal-close" aria-label="Close" @click="showAddRowModal = false">×</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label class="form-label">Select File</label>
-            <select v-model="addRowForm.filename" class="form-select">
+            <label class="form-label" for="add-row-file">Select File</label>
+            <select id="add-row-file" v-model="addRowForm.filename" class="form-select">
               <option value="">Choose file...</option>
               <option v-for="f in files" :key="f.filename" :value="f.filename">
                 {{ f.filename }}
@@ -59,8 +58,8 @@
             </select>
           </div>
           <div v-if="addRowForm.filename" class="form-group">
-            <label class="form-label">Row Data (JSON format)</label>
-            <textarea 
+            <label class="form-label" for="add-row-data">Row Data (JSON format)</label>
+            <textarea id="add-row-data" 
               v-model="addRowForm.rowData" 
               class="form-textarea"
               rows="4"
@@ -72,48 +71,44 @@
           <button class="btn btn-secondary" @click="showAddRowModal = false">Cancel</button>
           <button class="btn btn-primary" @click="addRow" :disabled="!addRowForm.filename">Add Row</button>
         </div>
-      </div>
-    </div>
+    </BaseDialog>
 
     <!-- Add File Modal -->
-    <div v-if="showAddFileModal" class="modal-overlay" @click.self="showAddFileModal = false">
-      <div class="modal-content">
+    <BaseDialog :open="showAddFileModal" class="modal-content" labelledby="add-file-title" @close="showAddFileModal = false">
         <div class="modal-header">
-          <h4>Add New File</h4>
-          <button class="modal-close" @click="showAddFileModal = false">×</button>
+          <h4 id="add-file-title">Add New File</h4>
+          <button class="modal-close" aria-label="Close" @click="showAddFileModal = false">×</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label class="form-label">File Name</label>
-            <input v-model="addFileForm.filename" class="form-input" placeholder="newfile.csv" />
+            <label class="form-label" for="add-file-name">File Name</label>
+            <input id="add-file-name" v-model="addFileForm.filename" class="form-input" placeholder="newfile.csv" />
           </div>
           <div class="form-group">
-            <label class="form-label">Group</label>
-            <input v-model="addFileForm.group" class="form-input" placeholder="GROUP_NAME" />
+            <label class="form-label" for="add-file-group">Group</label>
+            <input id="add-file-group" v-model="addFileForm.group" class="form-input" placeholder="GROUP_NAME" />
           </div>
           <div class="form-group">
-            <label class="form-label">Headers (comma-separated)</label>
-            <input v-model="addFileForm.headers" class="form-input" placeholder="Col1,Col2,Col3" />
+            <label class="form-label" for="add-file-headers">Headers (comma-separated)</label>
+            <input id="add-file-headers" v-model="addFileForm.headers" class="form-input" placeholder="Col1,Col2,Col3" />
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="showAddFileModal = false">Cancel</button>
           <button class="btn btn-primary" @click="addFile" :disabled="!addFileForm.filename || !addFileForm.headers">Create File</button>
         </div>
-      </div>
-    </div>
+    </BaseDialog>
 
     <!-- Delete File Modal -->
-    <div v-if="showDeleteFileModal" class="modal-overlay" @click.self="showDeleteFileModal = false">
-      <div class="modal-content">
+    <BaseDialog :open="showDeleteFileModal" class="modal-content" labelledby="delete-file-title" @close="showDeleteFileModal = false">
         <div class="modal-header">
-          <h4>Delete File</h4>
-          <button class="modal-close" @click="showDeleteFileModal = false">×</button>
+          <h4 id="delete-file-title">Delete File</h4>
+          <button class="modal-close" aria-label="Close" @click="showDeleteFileModal = false">×</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label class="form-label">Select File to Delete</label>
-            <select v-model="deleteFileForm.filename" class="form-select">
+            <label class="form-label" for="delete-file-name">Select File to Delete</label>
+            <select id="delete-file-name" v-model="deleteFileForm.filename" class="form-select">
               <option value="">Choose file...</option>
               <option v-for="f in files" :key="f.filename" :value="f.filename">
                 {{ f.filename }}
@@ -121,7 +116,7 @@
             </select>
           </div>
           <div v-if="deleteFileForm.filename" class="warning-box">
-            <span class="warning-icon">⚠️</span>
+            <span class="warning-icon" aria-hidden="true">⚠️</span>
             <span>This action cannot be undone within this session.</span>
           </div>
         </div>
@@ -129,12 +124,12 @@
           <button class="btn btn-secondary" @click="showDeleteFileModal = false">Cancel</button>
           <button class="btn btn-danger" @click="deleteFile" :disabled="!deleteFileForm.filename">Delete File</button>
         </div>
-      </div>
-    </div>
+    </BaseDialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import { ref, reactive, computed } from 'vue'
 import api, { errorBody } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
@@ -269,7 +264,6 @@ async function deleteFile() {
 
 .quick-actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; }
 
-.modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal-content { background: var(--surface-elevated); border-radius: var(--radius-lg); width: 90%; max-width: 500px; overflow: hidden; box-shadow: var(--shadow-xl); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--border-light); }
 .modal-header h4 { margin: 0; }

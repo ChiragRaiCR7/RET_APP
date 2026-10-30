@@ -218,7 +218,7 @@
               <div v-for="(r, idx) in retrievals" :key="idx" class="source">
                 <div class="source__top">
                   <span class="source__idx">#{{ idx + 1 }}</span>
-                  <span class="source__doc" :title="r.doc">📄 {{ r.doc }}</span>
+                  <span class="source__doc" :title="r.doc"><span aria-hidden="true">📄</span> {{ r.doc }}</span>
                   <span v-if="r.score != null" class="score" :class="getScoreClass(r.score)">
                     {{ Math.round(r.score * 100) }}%
                   </span>
@@ -307,9 +307,9 @@
                     </div>
 
                     <div class="groupRow__status">
-                      <span v-if="group.isExcludedByAdmin" class="tag tag--danger">🚫 Excluded by admin</span>
+                      <span v-if="group.isExcludedByAdmin" class="tag tag--danger"><span aria-hidden="true">🚫</span> Excluded by admin</span>
                       <span v-if="group.isIndexed" class="tag tag--ok">
-                        ✅ {{ group.chunkCount ? group.chunkCount + ' chunks' : 'Indexed' }}
+                        <span aria-hidden="true">✅</span> {{ group.chunkCount ? group.chunkCount + ' chunks' : 'Indexed' }}
                       </span>
                       <span v-else-if="!group.isExcludedByAdmin" class="tag tag--muted">○ Not indexed</span>
                     </div>
@@ -336,7 +336,8 @@
                 :disabled="indexing || stoppingIndexing || selectedGroupsForIndex.length === 0"
               >
                 <span v-if="indexing" class="spinner" aria-hidden="true"></span>
-                {{ indexing ? 'Indexing…' : `🚀 Index ${selectedGroupsForIndex.length} group(s)` }}
+                <span v-if="!indexing" aria-hidden="true">🚀</span>
+                {{ indexing ? 'Indexing…' : `Index ${selectedGroupsForIndex.length} group(s)` }}
               </button>
 
               <button
@@ -350,7 +351,7 @@
               </button>
 
               <p v-if="indexedGroupsList.length > 0" class="callout">
-                ✅ <strong>{{ indexedGroupsList.length }}</strong> group(s) indexed:
+                <span aria-hidden="true">✅</span> <strong>{{ indexedGroupsList.length }}</strong> group(s) indexed:
                 <span class="callout__names">{{ indexedGroupsList.join(', ') }}</span>
               </p>
             </div>

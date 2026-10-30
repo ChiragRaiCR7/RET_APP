@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="card-header">
       <div class="card-title-group">
-        <h3 class="card-title">📦 ZIP/XML/CSV Comparison (ZIP1 vs ZIP2)</h3>
+        <h3 class="card-title"><span aria-hidden="true">📦</span> ZIP/XML/CSV Comparison (ZIP1 vs ZIP2)</h3>
         <p class="card-description">
           Compares files by <strong>same path + same name</strong>, converts XML/CSV → CSV, then compares content.
           UI shows only <strong>file names</strong> (paths hidden). <strong>File list</strong> focuses on record (row) counts.
@@ -55,13 +55,13 @@
             tabindex="0"
           >
             <div v-if="!sideA.file" class="drop-empty">
-              <div class="drop-icon">📁</div>
+              <div class="drop-icon" aria-hidden="true">📁</div>
               <p class="drop-title">Drag and drop file here</p>
               <p class="drop-hint">Limit 200MB per file • {{ sideA.inputType.toUpperCase() }}</p>
             </div>
 
             <div v-else class="file-info">
-              <span class="file-icon">📄</span>
+              <span class="file-icon" aria-hidden="true">📄</span>
               <span class="file-name" :title="sideA.file.name">{{ sideA.file.name }}</span>
               <span class="file-size">{{ formatSize(sideA.file.size) }}</span>
               <button class="btn-remove" @click.stop="removeFileA" aria-label="Remove file A">×</button>
@@ -100,13 +100,13 @@
             tabindex="0"
           >
             <div v-if="!sideB.file" class="drop-empty">
-              <div class="drop-icon">📁</div>
+              <div class="drop-icon" aria-hidden="true">📁</div>
               <p class="drop-title">Drag and drop file here</p>
               <p class="drop-hint">Limit 200MB per file • {{ sideB.inputType.toUpperCase() }}</p>
             </div>
 
             <div v-else class="file-info">
-              <span class="file-icon">📄</span>
+              <span class="file-icon" aria-hidden="true">📄</span>
               <span class="file-name" :title="sideB.file.name">{{ sideB.file.name }}</span>
               <span class="file-size">{{ formatSize(sideB.file.size) }}</span>
               <button class="btn-remove" @click.stop="removeFileB" aria-label="Remove file B">×</button>
@@ -124,7 +124,8 @@
     <section class="compare-action">
       <button class="btn btn-primary btn-lg compare-btn" @click="runComparison" :disabled="!canCompare || comparing">
         <span v-if="comparing" class="spinner" aria-hidden="true"></span>
-        {{ comparing ? "Comparing..." : "🔍 Compare Now" }}
+        <span v-if="!comparing" aria-hidden="true">🔍</span>
+        {{ comparing ? "Comparing..." : "Compare Now" }}
       </button>
       <p class="compare-hint">Upload ZIP1 and ZIP2, then click Compare Now.</p>
     </section>
@@ -146,14 +147,14 @@
       <div class="dashboard-card">
         <div class="dashboard-header">
           <div>
-            <h4 class="section-title">🧾 Discrepancy Summary (Records/Rows)</h4>
+            <h4 class="section-title"><span aria-hidden="true">🧾</span> Discrepancy Summary (Records/Rows)</h4>
             <p class="tiny-note" style="margin: 4px 0 0;">
               Summary is record (row) focused. File-level drilldown remains tabular and column-aware.
             </p>
           </div>
 
           <button class="btn btn-sm btn-secondary" @click="downloadReport" title="Download comparison report as CSV">
-            📥 Download Report
+            <span aria-hidden="true">📥</span> Download Report
           </button>
         </div>
 
@@ -173,9 +174,13 @@
             <tbody>
               <tr>
                 <td>
-                  <button class="dot-btn" :title="recordSummary.hasAnyDiscrepancy ? 'Has record discrepancies' : 'No record discrepancies'">
-                    <span class="dot" :class="recordSummary.hasAnyDiscrepancy ? 'dot-red' : 'dot-green'">●</span>
-                  </button>
+                  <span
+                    class="dot"
+                    :class="recordSummary.hasAnyDiscrepancy ? 'dot-red' : 'dot-green'"
+                    role="img"
+                    :aria-label="recordSummary.hasAnyDiscrepancy ? 'Has record discrepancies' : 'No record discrepancies'"
+                    :title="recordSummary.hasAnyDiscrepancy ? 'Has record discrepancies' : 'No record discrepancies'"
+                  >●</span>
                 </td>
 
                 <td class="num">{{ recordSummary.totalRowsA }}</td>
@@ -189,12 +194,12 @@
         </div>
 
         <p class="tiny-note">
-          ✅ Green dot = No record differences. ❌ Red dot = Rows added/removed/modified exist.
+          <span aria-hidden="true">✅</span> Green dot = No record differences. <span aria-hidden="true">❌</span> Red dot = Rows added/removed/modified exist.
         </p>
 
         <!-- Filters + Detail Table -->
         <div class="section-header-row" style="margin-top: 14px;">
-          <h4 class="section-title">📋 File Details (Records/Rows per file)</h4>
+          <h4 class="section-title"><span aria-hidden="true">📋</span> File Details (Records/Rows per file)</h4>
 
           <div class="right-actions">
             <div class="search-filter-inline">
@@ -289,11 +294,10 @@
     <!-- ===========================
          MODALS (tabular drilldown)
          =========================== -->
-    <div v-if="showMismatchModal" class="modal-overlay" @click.self="closeAllModals">
-      <div class="modal-card modal-wide">
+    <BaseDialog :open="showMismatchModal" class="modal-card modal-wide" labelledby="mismatch-title" @close="closeAllModals">
         <div class="modal-header sticky">
           <div>
-            <h4>Data mismatch (MODIFIED files)</h4>
+            <h4 id="mismatch-title">Data mismatch (MODIFIED files)</h4>
             <p class="modal-subtitle">
               Side-by-side view shows <strong>only changed rows + columns</strong>. WHO columns are ignored.
               Use horizontal + vertical scrollbars; optional sync scroll available.
@@ -330,7 +334,7 @@
           <div v-if="selectedChange && drilldownData" class="drilldown-container">
             <div class="drilldown-topbar">
               <div class="drilldown-title">
-                <span class="dot tiny dot-red">●</span>
+                <span class="dot tiny dot-red" aria-hidden="true">●</span>
                 <strong :title="basename(selectedChange.filename)">{{ basename(selectedChange.filename) }}</strong>
               </div>
             </div>
@@ -344,7 +348,7 @@
             </div>
 
             <p v-if="drilldownData.truncated" class="truncation-warning">
-              ⚠️ Results truncated (too many changes to display)
+              <span aria-hidden="true">⚠️</span> Results truncated (too many changes to display)
             </p>
 
             <div v-if="visibleDiffColumns.length === 0 || (filteredDeltaA.length === 0 && filteredDeltaB.length === 0)" class="empty-diff-block">
@@ -456,15 +460,13 @@
             <p>Select a mismatched file to view the drilldown diff.</p>
           </div>
         </div>
-      </div>
-    </div>
+    </BaseDialog>
 
     <!-- Cell Detail Modal -->
-    <div v-if="showCellModal" class="modal-overlay" @click.self="showCellModal = false">
-      <div class="modal-card modal-wide modal-medium">
+    <BaseDialog :open="showCellModal" class="modal-card modal-wide modal-medium" labelledby="cell-title" @close="showCellModal = false">
         <div class="modal-header">
           <div>
-            <h4>Cell Change Detail</h4>
+            <h4 id="cell-title">Cell Change Detail</h4>
             <p class="modal-subtitle">Selected cell difference (A vs B)</p>
           </div>
           <button class="modal-close" @click="showCellModal = false" aria-label="Close modal">×</button>
@@ -495,13 +497,13 @@
             </p>
           </div>
         </div>
-      </div>
-    </div>
+    </BaseDialog>
 
   </div>
 </template>
 
 <script setup lang="ts">
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import { ref, reactive, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { errorBody, apiCall, pollJob } from '@/utils/api'
@@ -1225,7 +1227,6 @@ function onScrollB(e: Event) { syncScroll(e.target, scrollContainerA.value) }
 .tiny-note { margin-top: 10px; font-size: .85rem; color: var(--text-tertiary); }
 
 /* Dots */
-.dot-btn { background: transparent; border: none; cursor: default; padding: 0; }
 .dot { font-size: 1.35rem; line-height: 1; }
 .dot.tiny { font-size: 1rem; }
 .dot-green { color: #22c55e; }
@@ -1310,7 +1311,6 @@ function onScrollB(e: Event) { syncScroll(e.target, scrollContainerA.value) }
 .badge-error { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
 
 /* Modals */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .modal-card {
   background: var(--surface-elevated);
   border-radius: var(--radius-lg);
