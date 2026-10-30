@@ -20,16 +20,22 @@
   </div>
 </template>
 
-<script setup>
-const props = defineProps({
-  stats: {
-    type: Array,
-    required: true,
-    validator: (value) => Array.isArray(value) && value.length > 0
-  }
-})
+<script setup lang="ts">
+type Trend = 'up' | 'down' | 'neutral'
 
-function formatValue(value, format) {
+/** One KPI tile parsed from a model answer. */
+export interface StatCard {
+  label: string
+  value: number | string
+  format?: 'number' | 'percentage' | 'currency' | 'decimal'
+  icon?: string
+  change?: string
+  trend?: Trend
+}
+
+defineProps<{ stats: StatCard[] }>()
+
+function formatValue(value: StatCard['value'], format?: StatCard['format']): string {
   if (format === 'number') {
     return Number(value).toLocaleString()
   }
@@ -37,7 +43,7 @@ function formatValue(value, format) {
     return (Number(value) * 100).toFixed(1) + '%'
   }
   if (format === 'currency') {
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value))
   }
   if (format === 'decimal') {
     return Number(value).toFixed(2)
@@ -45,7 +51,7 @@ function formatValue(value, format) {
   return String(value)
 }
 
-function getTrendIcon(trend) {
+function getTrendIcon(trend?: Trend): string {
   if (trend === 'up') return '↗'
   if (trend === 'down') return '↘'
   return '→'

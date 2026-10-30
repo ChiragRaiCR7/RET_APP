@@ -205,7 +205,7 @@
   </main>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
@@ -247,11 +247,13 @@ const panelIds = {
   reset: 'auth-panel-reset'
 }
 
-function activate(which) {
+type AuthPanel = 'login' | 'reset'
+
+function activate(which: AuthPanel) {
   showReset.value = which === 'reset'
 }
 
-function onTabKeydown(e, current) {
+function onTabKeydown(e: KeyboardEvent, current: AuthPanel) {
   // Keyboard-friendly tab switch (Left/Right, Home/End)
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(e.key)) return

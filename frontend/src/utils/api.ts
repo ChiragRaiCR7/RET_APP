@@ -143,6 +143,18 @@ export interface ApiCallOptions extends Omit<AxiosRequestConfig, 'method' | 'url
   skipAuthRefresh?: boolean
 }
 
+/** Error body FastAPI returns ({detail}) plus the other shapes some endpoints use. */
+export interface ApiErrorBody {
+  detail?: string
+  message?: string
+  error?: string
+}
+
+/** The JSON body of a failed request, if the error came from the server. */
+export function errorBody(err: unknown): ApiErrorBody | undefined {
+  return (err as AxiosError<ApiErrorBody> | null | undefined)?.response?.data
+}
+
 const inflight = new Map<string, Promise<unknown>>()
 
 /**

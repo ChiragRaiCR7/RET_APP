@@ -3,14 +3,14 @@
     <input
       type="checkbox"
       :checked="modelValue"
-      @change="$emit('update:modelValue', $event.target.checked)"
+      @change="$emit('update:modelValue', ($event.target as HTMLInputElement).checked)"
       style="accent-color: var(--brand-primary)"
     />
     <span>Enable Edit Mode</span>
   </label>
 </template>
 
-<script setup>
+<script setup lang="ts">
 defineProps({
   modelValue: {
     type: Boolean,

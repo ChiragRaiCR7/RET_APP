@@ -416,7 +416,7 @@
  */
 
 import { ref, nextTick, onMounted, onUnmounted, watch, computed, h, render } from 'vue'
-import api from '@/utils/api'
+import api, { errorBody } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 import { formatOracleGroupLabel, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
 import { normalizeGroupName } from '@/utils/groups'
@@ -896,7 +896,7 @@ async function sendMessage() {
 
     emit('message-sent', { text, response: res.data })
   } catch (e) {
-    toast.error('Failed to get response: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to get response: ' + (errorBody(e)?.detail || e.message))
     messages.value.push({
       role: 'assistant',
       content: 'Sorry, I encountered an error processing your request. Please try again.',
@@ -923,7 +923,7 @@ async function clearSessionMemory() {
     retrievals.value = []
     toast.success('Session memory cleared')
   } catch (e) {
-    toast.error('Failed to clear memory: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to clear memory: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -982,7 +982,7 @@ async function downloadTranscript() {
 
     downloadBlob(res.data, filename)
   } catch (e) {
-    toast.error('Transcript download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Transcript download failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1113,7 +1113,7 @@ async function indexConvertedFiles() {
     toast.warning(res.data.message || 'Indexing response received, but status is unclear.')
     indexing.value = false
   } catch (e) {
-    toast.error('Indexing failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Indexing failed: ' + (errorBody(e)?.detail || e.message))
     indexing.value = false
   }
 }
@@ -1181,7 +1181,7 @@ async function stopIndexing() {
     toast.info(message)
     await loadSessionGroups()
   } catch (e) {
-    toast.error('Failed to stop embedding: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to stop embedding: ' + (errorBody(e)?.detail || e.message))
   } finally {
     stoppingIndexing.value = false
   }

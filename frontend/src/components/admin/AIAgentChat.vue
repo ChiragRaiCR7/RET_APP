@@ -226,7 +226,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted } from 'vue'
 
-import api from '@/utils/api'
+import api, { errorBody } from '@/utils/api'
 import { sanitizeHtml as sanitize } from '@/utils/sanitize'
 
 
@@ -554,7 +554,7 @@ async function send(command?: string) {
 
     pushMessage('assistant', result, { format: fmt, details })
   } catch (e: any) {
-    const msg = e?.response?.data?.message || e?.response?.data?.detail || e?.message || 'Unknown error'
+    const msg = errorBody(e)?.message || errorBody(e)?.detail || e?.message || 'Unknown error'
     errorText.value = msg
     pushMessage('assistant', `Error: ${msg}`, { _isError: true, _originalCommand: cmd, format: 'text' })
   } finally {

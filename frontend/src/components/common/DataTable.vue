@@ -17,11 +17,13 @@
   </div>
 </template>
 
-<script setup>
-const props = defineProps({
-  headers: { type: Array, default: () => [] },
-  columns: { type: Array, default: () => [] },
-  rows: { type: Array, default: () => [] },
+<script setup lang="ts">
+import type { PropType } from 'vue'
+
+defineProps({
+  headers: { type: Array as PropType<string[]>, default: () => [] },
+  columns: { type: Array as PropType<string[]>, default: () => [] },
+  rows: { type: Array as PropType<Record<string, unknown>[]>, default: () => [] },
   ariaLabel: { type: String, default: 'Data table' }
 })
 </script>

@@ -8,11 +8,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 const props = defineProps({ value: { type: String, default: '' } })
 
-function calcScore(s) {
+function calcScore(s: string): number {
   let score = 0
   if (!s) return 0
   if (s.length >= 8) score += 30

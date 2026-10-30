@@ -134,21 +134,29 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed } from 'vue'
-import api from '@/utils/api'
+import api, { errorBody } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 
-const props = defineProps({
-  sessionId: { type: String, required: true },
-  files: { type: Array, default: () => [] }
+type ChangeType = 'EDIT' | 'ADD_ROW' | 'ADD_FILE' | 'DELETE'
+
+interface PendingChange {
+  type: ChangeType
+  filename: string
+  detail: string
+  timestamp: Date
+}
+
+const props = withDefaults(defineProps<{ sessionId: string; files?: { filename: string }[] }>(), {
+  files: () => []
 })
 
 const emit = defineEmits(['file-updated', 'file-added', 'file-removed'])
 const toast = useToastStore()
 
 const saving = ref(false)
-const pendingChanges = ref([])
+const pendingChanges = ref<PendingChange[]>([])
 const showAddRowModal = ref(false)
 const showAddFileModal = ref(false)
 const showDeleteFileModal = ref(false)
@@ -161,7 +169,7 @@ const hasChanges = computed(() => pendingChanges.value.length > 0)
 const totalChanges = computed(() => pendingChanges.value.length)
 const pendingChangesList = computed(() => pendingChanges.value)
 
-function recordChange(type, filename, detail) {
+function recordChange(type: ChangeType, filename: string, detail: string) {
   pendingChanges.value.push({ type, filename, detail, timestamp: new Date() })
 }
 
@@ -173,7 +181,7 @@ async function saveAllChanges() {
     toast.success('All changes saved successfully')
     pendingChanges.value = []
   } catch (e) {
-    toast.error('Failed to save changes: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to save changes: ' + (errorBody(e)?.detail || (e as Error).message))
   } finally {
     saving.value = false
   }
@@ -197,7 +205,7 @@ async function addRow() {
     addRowForm.filename = ''
     addRowForm.rowData = ''
   } catch (e) {
-    toast.error('Failed to add row: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to add row: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -218,21 +226,23 @@ async function addFile() {
     addFileForm.group = ''
     addFileForm.headers = ''
   } catch (e) {
-    toast.error('Failed to create file: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to create file: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
 async function deleteFile() {
   if (!deleteFileForm.filename) return
   try {
-    await api.delete(`/conversion/delete-file/${props.sessionId}/${deleteFileForm.filename}`)
+    await api.delete(
+      `/conversion/delete-file/${encodeURIComponent(props.sessionId)}/${encodeURIComponent(deleteFileForm.filename)}`
+    )
     recordChange('DELETE', deleteFileForm.filename, 'File removed')
     toast.success('File deleted')
     emit('file-removed', deleteFileForm.filename)
     showDeleteFileModal.value = false
     deleteFileForm.filename = ''
   } catch (e) {
-    toast.error('Failed to delete file: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to delete file: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 </script>

@@ -967,7 +967,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { useToastStore } from '@/stores/toastStore'
 import { useRouter } from 'vue-router'
 import AIAgentChat from '@/components/admin/AIAgentChat.vue'
-import api, { longApi } from '@/utils/api'
+import api, { errorBody, longApi } from '@/utils/api'
 import { ORACLE_APP_CODES, formatOracleGroupLabel } from '@/utils/oracleApps'
 import { normalizeGroupName } from '@/utils/groups'
 import { format } from 'date-fns'
@@ -1257,7 +1257,7 @@ async function createUser() {
     toast.success('User created successfully')
     await refresh()
   } catch (e) {
-    toast.error('Failed to create user: ' + (e.response?.data?.message || e.message))
+    toast.error('Failed to create user: ' + (errorBody(e)?.message || e.message))
   } finally {
     creating.value = false
   }
@@ -1397,7 +1397,7 @@ async function saveEmbeddingConfig() {
   } catch (e) {
     configStatus.value = {
       type: 'error',
-      message: 'Failed to save configuration: ' + (e.response?.data?.detail || e.message)
+      message: 'Failed to save configuration: ' + (errorBody(e)?.detail || e.message)
     }
   } finally {
     saving.value = false

@@ -504,7 +504,7 @@
 <script setup>
 import { ref, reactive, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { apiCall, pollJob } from '@/utils/api'
+import { errorBody, apiCall, pollJob } from '@/utils/api'
 import { useToastStore } from '@/stores/toastStore'
 import { getOracleAppName, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
 
@@ -705,7 +705,7 @@ async function runComparison() {
 
   } catch (e) {
     stopTicker()
-    const detail = e?.response?.data?.detail || e?.message || 'Unknown error'
+    const detail = errorBody(e)?.detail || e?.message || 'Unknown error'
     toast.error('Comparison failed: ' + detail)
     console.error('[comparison/run-async] failed:', e)
   } finally {
@@ -1003,7 +1003,7 @@ async function loadDrilldown(change) {
     changedColumns.value = set
     toast.success('Drilldown loaded!')
   } catch (e) {
-    toast.error('Failed to load drilldown: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to load drilldown: ' + (errorBody(e)?.detail || e.message))
   } finally {
     diffLoading.value = false
   }

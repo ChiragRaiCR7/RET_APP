@@ -661,7 +661,7 @@ import { ref, reactive, computed, watch, onUnmounted, defineAsyncComponent } fro
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import EditModeToggle from '@/components/workspace/EditModeToggle.vue'
-import api, { longApi, pollJob } from '@/utils/api'
+import api, { errorBody, longApi, pollJob } from '@/utils/api'
 import { groupEquals } from '@/utils/groups'
 import { useToastStore } from '@/stores/toastStore'
 
@@ -1100,7 +1100,7 @@ async function bulkConvert() {
       throw new Error(payload?.message || payload?.error || 'Conversion failed')
     }
   } catch (e) {
-    toast.error('Conversion failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Conversion failed: ' + (errorBody(e)?.detail || e.message))
   } finally {
     converting.value = false
   }
@@ -1345,7 +1345,7 @@ async function saveCellEdits() {
     pendingCellEdits.value = new Map()
     await loadFilePreview()
   } catch (e) {
-    toast.error('Failed to save: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to save: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1356,7 +1356,7 @@ async function downloadAll() {
     downloadBlob(res.data, 'converted_output.zip')
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1367,7 +1367,7 @@ async function downloadModifiedZip() {
     downloadBlob(res.data, 'modified_output.zip')
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1384,7 +1384,7 @@ async function downloadCurrentFile() {
     // download file with its real name (extension needed for OS)
     downloadBlob(res.data, activeFile.value)
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1408,7 +1408,7 @@ async function downloadGroupZip() {
     downloadBlob(res.data, `${activeGroup.value}_group.zip`)
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 
@@ -1433,7 +1433,7 @@ async function cleanupSession() {
     toast.success('Session cleaned up.')
     clearWorkflow()
   } catch (e) {
-    toast.error('Cleanup failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Cleanup failed: ' + (errorBody(e)?.detail || e.message))
   }
 }
 

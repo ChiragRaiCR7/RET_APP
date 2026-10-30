@@ -135,7 +135,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiCall } from '@/utils/api'
+import { errorBody, apiCall } from '@/utils/api'
 
 const route = useRoute()
 const router = useRouter()
@@ -346,7 +346,7 @@ async function loadDrilldown() {
 
     changedColumns.value = set
   } catch (e) {
-    error.value = e?.response?.data?.detail || e?.message || 'Failed to load drilldown.'
+    error.value = errorBody(e)?.detail || e?.message || 'Failed to load drilldown.'
   } finally {
     loading.value = false
   }
