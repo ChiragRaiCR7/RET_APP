@@ -26,6 +26,7 @@ from collections import defaultdict
 from urllib.parse import unquote
 
 from api.services.storage_service import (
+    contained_path,
     create_session_dir,
     get_session_dir,
     save_upload,
@@ -116,7 +117,7 @@ def _resolve_output_file(out_dir: Path, filename: str) -> Path:
 
     candidates = [filename, unquote(filename), filename.upper(), unquote(filename).upper()]
     for c in candidates:
-        p = out_dir / c
+        p = contained_path(out_dir, c)  # raises ValueError if the name escapes out_dir
         if p.exists():
             return p
 
@@ -1223,7 +1224,7 @@ def add_new_file(session_id: str, user_id: str, filename: str, group: Optional[s
     if not filename.endswith(".CSV"):
         filename = f"{Path(filename).stem}.CSV"
 
-    file_path = out_dir / filename
+    file_path = contained_path(out_dir, filename)
     if file_path.exists():
         raise FileExistsError("File already exists")
 
@@ -1245,14 +1246,15 @@ def delete_file(session_id: str, user_id: str, filename: str) -> Dict[str, Any]:
     filename_u = filename.upper()
 
     removed = 0
-    for p in (out_dir / filename, out_dir / filename_u, out_dir / unquote(filename), out_dir / unquote(filename).upper()):
+    names = (filename, filename_u, unquote(filename), unquote(filename).upper())
+    for p in (contained_path(out_dir, n) for n in names):
         if p.exists():
             p.unlink()
             removed += 1
 
     stem = Path(filename_u).stem
     for ext in (".CSV", ".XLSX"):
-        p = out_dir / f"{stem}{ext}"
+        p = contained_path(out_dir, f"{stem}{ext}")
         if p.exists():
             p.unlink()
             removed += 1

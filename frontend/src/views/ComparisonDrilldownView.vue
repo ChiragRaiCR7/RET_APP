@@ -60,7 +60,7 @@
       </section>
 
       <p v-if="drilldownData?.truncated" class="warn-text">
-        ⚠️ Result is truncated due to large difference volume.
+        <span aria-hidden="true">⚠️</span> Result is truncated due to large difference volume.
       </p>
 
       <section
@@ -132,35 +132,55 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiCall } from '@/utils/api'
+import { errorBody, apiCall } from '@/utils/api'
+import type { DeltaRow, DrilldownResponse } from '@/types/api'
+import {
+  WHO_COLUMNS,
+  cellHasChange as diffCellHasChange,
+  changeSideClass,
+  ignoredColumnFilter,
+  toDrilldownView,
+  truncateCell,
+  type DrilldownView,
+  type Side
+} from '@/utils/drilldown'
+
+interface DrilldownOptions {
+  ignore_case: boolean
+  trim_whitespace: boolean
+  similarity_pairing: boolean
+  sim_threshold: string
+  ignore_columns: string[]
+}
+
+interface DrilldownRequest {
+  filename: string
+  csv_path_a: string
+  csv_path_b: string
+  options: DrilldownOptions
+}
+
 
 const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
 const error = ref('')
-const drilldownData = ref(null)
-const changedColumns = ref(new Set())
-const requestConfig = ref(null)
+const drilldownData = ref<DrilldownView | null>(null)
+const changedColumns = ref(new Set<string>())
+const requestConfig = ref<DrilldownRequest | null>(null)
 
-const WHO_COLUMNS = [
-  'Created By',
-  'Last Updated By',
-  'Creation Date',
-  'Last Update Date',
-  'Last Update Login'
-]
 
-function parseBool(value, fallback = false) {
+function parseBool(value: unknown, fallback = false): boolean {
   if (value === undefined || value === null || value === '') return fallback
   const s = String(value).toLowerCase().trim()
   return ['1', 'true', 'yes', 'y', 'on'].includes(s)
 }
 
-function decodeHashPayload() {
+function decodeHashPayload(): Partial<DrilldownRequest> & { options?: Partial<DrilldownOptions> } | null {
   const hash = String(route.hash || '')
   const match = hash.match(/payload=([^&]+)/)
   if (!match?.[1]) return null
@@ -175,9 +195,6 @@ function decodeHashPayload() {
   }
 }
 
-function normalizeColName(name) {
-  return String(name || '').trim().toLowerCase().replace(/\s+/g, ' ')
-}
 
 const ignoredColumns = computed(() => {
   const cols = requestConfig.value?.options?.ignore_columns
@@ -185,17 +202,17 @@ const ignoredColumns = computed(() => {
   return WHO_COLUMNS
 })
 
-const ignoredColumnSet = computed(() => new Set((ignoredColumns.value || []).map(normalizeColName)))
+const ignoredFilter = computed(() => ignoredColumnFilter(ignoredColumns.value || []))
 
-function isIgnoredColumn(col) {
-  return ignoredColumnSet.value.has(normalizeColName(col))
+function isIgnoredColumn(col: string): boolean {
+  return ignoredFilter.value(col)
 }
 
-function resolveRequestConfig() {
+function resolveRequestConfig(): DrilldownRequest {
   const hashPayload = decodeHashPayload() || {}
   const q = route.query || {}
 
-  const optionsFromHash = hashPayload.options || {}
+  const optionsFromHash: Partial<DrilldownOptions> = hashPayload.options || {}
 
   return {
     filename: String(hashPayload.filename || q.filename || ''),
@@ -208,7 +225,7 @@ function resolveRequestConfig() {
       sim_threshold: String(optionsFromHash.sim_threshold ?? q.sim_threshold ?? '0.65'),
       ignore_columns: Array.isArray(optionsFromHash.ignore_columns) && optionsFromHash.ignore_columns.length
         ? optionsFromHash.ignore_columns
-        : WHO_COLUMNS
+        : [...WHO_COLUMNS]
     }
   }
 }
@@ -244,37 +261,20 @@ const filteredDeltaB = computed(() => {
   return rows.filter(r => cols.some(c => cellHasChange(r, c)))
 })
 
-function cellHasChange(row, col) {
-  if (isIgnoredColumn(col)) return false
-  const idx = drilldownData.value?.columns?.indexOf(col)
-  const kind = String(row?._kind_ || '').toUpperCase()
-
-  if (kind === 'ADDED' || kind === 'REMOVED') {
-    const v = row?.[col]
-    return v !== null && v !== undefined && String(v).trim() !== ''
-  }
-
-  const changedCols = row?._changed_cols_ || []
-  return changedCols.includes(idx) || changedCols.includes(col)
+function cellHasChange(row: DeltaRow, col: string): boolean {
+  return diffCellHasChange(row, col, drilldownData.value?.columns || [], isIgnoredColumn)
 }
 
-function kindClass(row) {
-  const kind = String(row?._kind_ || '').toLowerCase()
-  return `kind-${kind}`
+function kindClass(row: DeltaRow): string {
+  return `kind-${String(row?._kind_ || '').toLowerCase()}`
 }
 
-function cellClass(row, col, side) {
-  if (!cellHasChange(row, col)) return ''
-  const kind = String(row?._kind_ || '').toUpperCase()
-  if (kind === 'REMOVED') return 'cell-old'
-  if (kind === 'ADDED') return 'cell-new'
-  return side === 'A' ? 'cell-old' : 'cell-new'
+function cellClass(row: DeltaRow, col: string, side: Side): string {
+  return cellHasChange(row, col) ? changeSideClass(row, side) : ''
 }
 
-function formatCellValue(value, maxLen = 90) {
-  if (value === null || value === undefined) return ''
-  const s = String(value)
-  return s.length > maxLen ? `${s.slice(0, maxLen)}…` : s
+function formatCellValue(value: unknown, maxLen = 90): string {
+  return truncateCell(value, maxLen)
 }
 
 async function loadDrilldown() {
@@ -301,7 +301,7 @@ async function loadDrilldown() {
     if (cfg.csv_path_a) params.append('csv_path_a', cfg.csv_path_a)
     if (cfg.csv_path_b) params.append('csv_path_b', cfg.csv_path_b)
 
-    const data = await apiCall({
+    const data = await apiCall<DrilldownResponse>({
       method: 'post',
       url: `/comparison/drilldown?${params.toString()}`,
       long: false
@@ -309,44 +309,11 @@ async function loadDrilldown() {
 
     if (data?.error) throw new Error(data.error)
 
-    const header = data.header || []
-    const deltaA = data.deltaA?.rows || []
-    const deltaB = data.deltaB?.rows || []
-    const stats = data.stats || {}
-
-    drilldownData.value = {
-      sizeA: data.row_count_A || 0,
-      sizeB: data.row_count_B || 0,
-      modified: stats.modified || 0,
-      added: stats.added || 0,
-      removed: stats.removed || 0,
-      columns: header,
-      deltaA,
-      deltaB,
-      truncated: !!data.truncated
-    }
-
-    const set = new Set()
-    const allRows = [...deltaA, ...deltaB]
-
-    for (const row of allRows) {
-      const changed = row._changed_cols_ || []
-      for (const c of changed) {
-        if (typeof c === 'number' && header[c]) {
-          if (!isIgnoredColumn(header[c])) set.add(header[c])
-        } else if (!isIgnoredColumn(c)) {
-          set.add(c)
-        }
-      }
-
-      if (row._kind_ === 'ADDED' || row._kind_ === 'REMOVED') {
-        header.forEach((h) => { if (!isIgnoredColumn(h)) set.add(h) })
-      }
-    }
-
-    changedColumns.value = set
+    const shaped = toDrilldownView(data, isIgnoredColumn)
+    drilldownData.value = shaped.view
+    changedColumns.value = shaped.changedColumns
   } catch (e) {
-    error.value = e?.response?.data?.detail || e?.message || 'Failed to load drilldown.'
+    error.value = errorBody(e)?.detail || (e as Error)?.message || 'Failed to load drilldown.'
   } finally {
     loading.value = false
   }

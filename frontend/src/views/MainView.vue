@@ -98,7 +98,7 @@
               <input
                 type="checkbox"
                 :checked="simplifiedPreview"
-                @change="onSimplifiedToggle($event.target.checked)"
+                @change="onSimplifiedToggle(($event.target as HTMLInputElement).checked)"
                 style="accent-color: var(--brand-primary)"
               />
               <span>Simplified</span>
@@ -108,7 +108,7 @@
               <input
                 type="checkbox"
                 :checked="hideLowValueColumns"
-                @change="hideLowValueColumns = $event.target.checked"
+                @change="hideLowValueColumns = ($event.target as HTMLInputElement).checked"
                 style="accent-color: var(--brand-primary)"
               />
               <span>Hide low-value columns</span>
@@ -516,7 +516,7 @@
                       <template v-if="workflow.editMode">
                         <!-- In edit mode we keep using original preview rows (no sorting/filtering). -->
                         <input
-                          v-model="preview.rows[rowIdx][colIdx]"
+                          v-model="preview!.rows[rowIdx]![colIdx]"
                           class="cell"
                           @change="markCellChanged(rowIdx, colIdx)"
                           :aria-label="`Edit row ${rowIdx + 1}, column ${preview.headers?.[colIdx] || colIdx + 1}`"
@@ -648,7 +648,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 /**
  * MainView.vue — RET Workspace
  * Tabs:
@@ -661,9 +661,70 @@ import { ref, reactive, computed, watch, onUnmounted, defineAsyncComponent } fro
 import { Listbox, ListboxButton, ListboxOptions, ListboxOption } from '@headlessui/vue'
 import FileUploader from '@/components/workspace/FileUploader.vue'
 import EditModeToggle from '@/components/workspace/EditModeToggle.vue'
-import api, { longApi, pollJob } from '@/utils/api'
+import api, { errorBody, longApi, pollJob } from '@/utils/api'
 import { groupEquals } from '@/utils/groups'
 import { useToastStore } from '@/stores/toastStore'
+import type {
+  BusinessStructureResponse,
+  ConversionFileEntry,
+  ConversionFilesResponse,
+  ConversionGroupEntry,
+  FilePreviewResponse,
+  ScannedFileEntry
+} from '@/types/api'
+
+interface ScannedGroup {
+  name: string
+  file_count: number
+  size: number
+}
+
+interface UploadedScan {
+  sessionId?: string
+  session_id?: string
+  uploaded_filename?: string
+  original_filename?: string
+  filename?: string
+  name?: string
+  files?: ScannedFileEntry[]
+  scanned_files?: ScannedFileEntry[]
+  scannedFiles?: ScannedFileEntry[]
+  groups?: { name: string; file_count?: number; fileCount?: number; size?: number }[]
+  file_count?: number | null
+  xml_count?: number
+  xmlCount?: number
+  summary?: { totalSize?: number }
+}
+
+interface CellEdit {
+  row_index: number
+  column: string
+  value: string | undefined
+}
+
+/** Result of the async conversion job (GET /jobs/{id} -> result). */
+interface ConversionJobResult {
+  error?: string
+  message?: string
+  stats?: { success?: number }
+  embedding_status?: string
+  embedding_error?: string
+  embedding?: string | { status?: string; state?: string; message?: string }
+}
+
+interface AutoEmbedProgress {
+  status?: string
+  processed?: number
+  total?: number
+  error?: string | null
+  message?: string
+}
+
+type EmbeddingUiStatus = 'embedding' | 'done' | 'error' | null
+
+const EMBED_PROGRESS_POLL_MS = 3000
+// Give up on progress checks after this many consecutive failures (e.g. server restarted).
+const EMBED_PROGRESS_MAX_ERRORS = 10
 
 const BusinessStructurePanel = defineAsyncComponent(() => import('@/components/workspace/BusinessStructurePanel.vue'))
 const ComparisonPanel = defineAsyncComponent(() => import('@/components/workspace/ComparisonPanel.vue'))
@@ -682,43 +743,43 @@ const tabs = [
 
 // Workflow state
 const workflow = reactive({
-  sessionId: null,
+  sessionId: null as string | null,
   outputFormat: 'csv',
   editMode: false,
   fastParser: true,
-  uploadedFiles: [],
+  uploadedFiles: [] as File[],
   uploadedFilename: '',
-  scannedFiles: [],
-  scannedGroups: [],
-  scanSummary: null,
+  scannedFiles: [] as ScannedFileEntry[],
+  scannedGroups: [] as ScannedGroup[],
+  scanSummary: null as { totalGroups: number; totalFiles: number; totalSize: number | string } | null,
   converted: false
 })
 
 const converting = ref(false)
-const embeddingStatus = ref(null)
-const embeddingProgress = ref(null)
+const embeddingStatus = ref<EmbeddingUiStatus>(null)
+const embeddingProgress = ref<AutoEmbedProgress | null>(null)
 const embeddingMessage = ref('')
 
 const groupSearch = ref('')
-const selectedGroups = ref([])
+const selectedGroups = ref<string[]>([])
 const activeGroup = ref('')
 const activeFile = ref('')
-const preview = ref(null)
-const groupFiles = ref([])
-const pendingCellEdits = ref(new Map())
+const preview = ref<FilePreviewResponse | null>(null)
+const groupFiles = ref<ConversionFileEntry[]>([])
+const pendingCellEdits = ref(new Map<string, CellEdit>())
 const simplifiedPreview = ref(false)
 const hideLowValueColumns = ref(true)
 
 const conversionData = reactive({
-  groups: [],
-  files: [],
+  groups: [] as ConversionGroupEntry[],
+  files: [] as ConversionFileEntry[],
   totalFiles: 0
 })
 
-const businessStructure = ref(null)
+const businessStructure = ref<BusinessStructureResponse | null>(null)
 const loadingBusinessStructure = ref(false)
 
-const indexedGroups = ref([])
+const indexedGroups = ref<string[]>([])
 
 // Computed helpers
 const filteredGroups = computed(() => {
@@ -783,7 +844,7 @@ const visibleColumnIndexes = computed(() => {
   }
 
   // Base index set (filtered by column name search or all)
-  let baseIndexes
+  let baseIndexes: number[]
   if (!valueFilter.value.trim()) {
     baseIndexes = headers.map((_, idx) => idx)
   } else {
@@ -804,13 +865,13 @@ const visibleColumnIndexes = computed(() => {
   return baseIndexes
 })
 
-function isLowValueColumn(colIdx) {
+function isLowValueColumn(colIdx: number): boolean {
   if (!simplifiedPreview.value) return false
   const meta = preview.value?.column_meta
-  return meta && meta[colIdx]?.classification === 'low_value'
+  return !!meta && meta[colIdx]?.classification === 'low_value'
 }
 
-function columnTitle(colIdx) {
+function columnTitle(colIdx: number): string {
   const meta = preview.value?.column_meta?.[colIdx]
   const reasonLabel = formatLowValueReason(meta?.reason)
 
@@ -826,17 +887,17 @@ function columnTitle(colIdx) {
   return 'Click to sort'
 }
 
-function formatLowValueReason(reason) {
-  const reasons = {
+function formatLowValueReason(reason: string | undefined): string {
+  const reasons: Record<string, string> = {
     mostly_empty: 'mostly empty values',
     all_same: 'same value in all rows',
     trivial_boolean: 'boolean-like flag values',
     low_variance_flag: 'low-variance small numeric flag'
   }
-  return reasons[reason] || reason || 'low significance pattern'
+  return (reason && reasons[reason]) || reason || 'low significance pattern'
 }
 
-function onSimplifiedToggle(enabled) {
+function onSimplifiedToggle(enabled: boolean) {
   simplifiedPreview.value = enabled
   if (enabled) {
     hideLowValueColumns.value = true
@@ -869,7 +930,7 @@ watch(selectedGroups, async () => {
 
   const stillValid = options.some(g => groupEquals(g.name, activeGroup.value))
   if (!stillValid) {
-    activeGroup.value = options[0].name
+    activeGroup.value = options[0]!.name
     await loadGroupFiles()
   }
 }, { deep: true })
@@ -880,8 +941,8 @@ watch(selectedGroups, async () => {
 const tableSearch = ref('')
 const selectedColumnFilter = ref('')
 const valueFilter = ref('')
-const sortCol = ref(null) // number | null
-const sortDir = ref('asc') // 'asc' | 'desc'
+const sortCol = ref<number | null>(null)
+const sortDir = ref<'asc' | 'desc'>('asc')
 
 function resetTableControls() {
   tableSearch.value = ''
@@ -896,7 +957,7 @@ function clearTableControls() {
   resetTableControls()
 }
 
-function toggleSort(colIdx) {
+function toggleSort(colIdx: number) {
   if (workflow.editMode) return
   if (sortCol.value === colIdx) {
     sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
@@ -906,14 +967,14 @@ function toggleSort(colIdx) {
   }
 }
 
-function isNumeric(v) {
+function isNumeric(v: unknown): boolean {
   if (v === null || v === undefined) return false
   const s = String(v).trim()
   if (!s) return false
   return !Number.isNaN(Number(s))
 }
 
-function compareCells(a, b) {
+function compareCells(a: unknown, b: unknown): number {
   // numeric if both are numeric
   if (isNumeric(a) && isNumeric(b)) return Number(a) - Number(b)
   // string compare fallback
@@ -960,13 +1021,13 @@ const displayRows = computed(() => {
 /** -----------------------------
  * Existing helpers
  * ------------------------------ */
-function formatCellValue(value, maxLen = 50) {
+function formatCellValue(value: unknown, maxLen = 50): string {
   if (value === null || value === undefined) return ''
   const str = String(value)
   return str.length > maxLen ? str.substring(0, maxLen) + '…' : str
 }
 
-function onFilesAdded(filesList) {
+function onFilesAdded(filesList: File[]) {
   workflow.uploadedFiles.push(...filesList)
   if (!workflow.uploadedFilename && filesList?.length) {
     workflow.uploadedFilename = filesList[0]?.name || ''
@@ -977,7 +1038,7 @@ function onFilesAdded(filesList) {
  * FileUploader emits scan result payload.
  * Supports both sessionId and session_id.
  */
-function onUploaded(data) {
+function onUploaded(data: UploadedScan | File[]) {
   if (Array.isArray(data)) {
     workflow.uploadedFiles.push(...data)
     if (!workflow.uploadedFilename && data.length) {
@@ -1084,7 +1145,7 @@ async function bulkConvert() {
       throw new Error('Async conversion start did not return job_id')
     }
 
-    const payload = await pollJob(jobId, {
+    const payload = await pollJob<ConversionJobResult>(jobId, {
       intervalMs: 1500,
       timeoutMs: 60 * 60 * 1000
     })
@@ -1100,13 +1161,13 @@ async function bulkConvert() {
       throw new Error(payload?.message || payload?.error || 'Conversion failed')
     }
   } catch (e) {
-    toast.error('Conversion failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Conversion failed: ' + (errorBody(e)?.detail || (e as Error).message))
   } finally {
     converting.value = false
   }
 }
 
-let embeddingPollTimer = null
+let embeddingPollTimer: ReturnType<typeof setInterval> | null = null
 
 function stopEmbeddingPolling() {
   if (embeddingPollTimer) {
@@ -1115,21 +1176,15 @@ function stopEmbeddingPolling() {
   }
 }
 
-function infoTextForEmbeddingStatus(status) {
-  if (status === 'no_eligible_groups') return 'No eligible groups found for embedding in this session.'
-  if (status === 'no_inventory') return 'No inventory metadata is available for embedding.'
-  if (status === 'disabled') return 'Auto-embedding is disabled by administrator configuration.'
-  return ''
-}
-
-function resolveEmbeddingStatus(payload = {}) {
+function resolveEmbeddingStatus(payload: ConversionJobResult = {}): string {
   const top = payload?.embedding_status
-  const nested = payload?.embedding?.status || payload?.embedding?.state
+  const embedding = typeof payload?.embedding === 'object' ? payload.embedding : undefined
+  const nested = embedding?.status || embedding?.state
   const legacy = typeof payload?.embedding === 'string' ? payload.embedding : ''
   return String(top || nested || legacy || '').toLowerCase()
 }
 
-function handleEmbeddingMetadata(payload = {}) {
+function handleEmbeddingMetadata(payload: ConversionJobResult = {}) {
   const status = resolveEmbeddingStatus(payload)
 
   if (!status) {
@@ -1161,7 +1216,8 @@ function handleEmbeddingMetadata(payload = {}) {
 
   if (status === 'failed') {
     embeddingStatus.value = 'error'
-    embeddingMessage.value = payload?.embedding?.message || payload?.embedding_error || 'Embedding did not complete.'
+    const embedding = typeof payload?.embedding === 'object' ? payload.embedding : undefined
+    embeddingMessage.value = embedding?.message || payload?.embedding_error || 'Embedding did not complete.'
     return
   }
 
@@ -1187,9 +1243,11 @@ function pollEmbeddingStatus() {
   embeddingStatus.value = 'embedding'
   stopEmbeddingPolling()
 
+  let consecutiveErrors = 0
   embeddingPollTimer = setInterval(async () => {
     try {
-      const res = await api.get(`/v2/ai/auto-embed/progress/${workflow.sessionId}`)
+      const res = await api.get<AutoEmbedProgress>(`/v2/ai/auto-embed/progress/${workflow.sessionId}`)
+      consecutiveErrors = 0
       embeddingProgress.value = res.data
 
       const status = String(res?.data?.status || '').toLowerCase()
@@ -1224,9 +1282,15 @@ function pollEmbeddingStatus() {
         return
       }
     } catch (e) {
-      console.debug('Embedding status poll:', e.message)
+      consecutiveErrors += 1
+      console.warn('Embedding progress check failed:', (e as Error).message)
+      if (consecutiveErrors >= EMBED_PROGRESS_MAX_ERRORS) {
+        stopEmbeddingPolling()
+        embeddingStatus.value = 'error'
+        embeddingMessage.value = 'Lost contact with the embedding job. Check the AI tab for its status.'
+      }
     }
-  }, 3000)
+  }, EMBED_PROGRESS_POLL_MS)
 }
 
 /**
@@ -1237,7 +1301,7 @@ async function loadConvertedFiles(useLong = false) {
 
   try {
     const client = useLong ? longApi : api
-    const res = await client.get(`/conversion/files/${workflow.sessionId}`, {
+    const res = await client.get<ConversionFilesResponse>(`/conversion/files/${workflow.sessionId}`, {
       timeout: useLong ? 15 * 60 * 1000 : 30_000
     })
 
@@ -1246,7 +1310,7 @@ async function loadConvertedFiles(useLong = false) {
     conversionData.totalFiles = res.data.total_files || 0
 
     if (conversionData.groups.length > 0) {
-      activeGroup.value = conversionData.groups[0].name
+      activeGroup.value = conversionData.groups[0]!.name
       await loadGroupFiles()
     }
   } catch (e) {
@@ -1258,7 +1322,7 @@ async function fetchBusinessStructure() {
   if (!workflow.sessionId || !workflow.converted) return
   loadingBusinessStructure.value = true
   try {
-    const res = await api.get(`/conversion/business-structure/${workflow.sessionId}`)
+    const res = await api.get<BusinessStructureResponse>(`/conversion/business-structure/${workflow.sessionId}`)
     businessStructure.value = res.data
   } catch (e) {
     console.error('Failed to load business structure:', e)
@@ -1274,7 +1338,7 @@ async function loadGroupFiles() {
   groupFiles.value = conversionData.files.filter(f => groupEquals(f.group, activeGroup.value))
 
   if (groupFiles.value.length > 0) {
-    activeFile.value = groupFiles.value[0].filename
+    activeFile.value = groupFiles.value[0]!.filename
     pendingCellEdits.value = new Map()
     await loadFilePreview()
   } else {
@@ -1288,7 +1352,7 @@ async function loadFilePreview() {
   if (!activeFile.value || !workflow.sessionId) return
 
   try {
-    const res = await api.get(`/conversion/preview/${workflow.sessionId}/${activeFile.value}`, {
+    const res = await api.get<FilePreviewResponse>(`/conversion/preview/${workflow.sessionId}/${encodeURIComponent(activeFile.value)}`, {
       params: { max_rows: 100 }
     })
     preview.value = res.data
@@ -1310,7 +1374,7 @@ function clearGroupSelection() {
   selectedGroups.value = []
 }
 
-function markCellChanged(rowIdx, colIdx) {
+function markCellChanged(rowIdx: number, colIdx: number) {
   if (!preview.value || !workflow.editMode) return
   const column = preview.value.headers?.[colIdx]
   if (!column) return
@@ -1345,7 +1409,7 @@ async function saveCellEdits() {
     pendingCellEdits.value = new Map()
     await loadFilePreview()
   } catch (e) {
-    toast.error('Failed to save: ' + (e.response?.data?.detail || e.message))
+    toast.error('Failed to save: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -1356,7 +1420,7 @@ async function downloadAll() {
     downloadBlob(res.data, 'converted_output.zip')
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -1367,7 +1431,7 @@ async function downloadModifiedZip() {
     downloadBlob(res.data, 'modified_output.zip')
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -1378,13 +1442,13 @@ async function downloadPatchLog() {
 async function downloadCurrentFile() {
   if (!activeFile.value || !workflow.sessionId) return
   try {
-    const res = await api.get(`/conversion/download-file/${workflow.sessionId}/${activeFile.value}`, {
+    const res = await api.get(`/conversion/download-file/${workflow.sessionId}/${encodeURIComponent(activeFile.value)}`, {
       responseType: 'blob'
     })
     // download file with its real name (extension needed for OS)
     downloadBlob(res.data, activeFile.value)
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -1408,11 +1472,11 @@ async function downloadGroupZip() {
     downloadBlob(res.data, `${activeGroup.value}_group.zip`)
     toast.success('Download started.')
   } catch (e) {
-    toast.error('Download failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Download failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
-function downloadBlob(data, filename) {
+function downloadBlob(data: BlobPart, filename: string) {
   const url = window.URL.createObjectURL(new Blob([data]))
   const link = document.createElement('a')
   link.href = url
@@ -1433,7 +1497,7 @@ async function cleanupSession() {
     toast.success('Session cleaned up.')
     clearWorkflow()
   } catch (e) {
-    toast.error('Cleanup failed: ' + (e.response?.data?.detail || e.message))
+    toast.error('Cleanup failed: ' + (errorBody(e)?.detail || (e as Error).message))
   }
 }
 
@@ -1447,7 +1511,7 @@ function onComparisonComplete() {
   toast.success('Comparison complete.')
 }
 
-function onGroupsIndexed(groups) {
+function onGroupsIndexed(groups: string[]) {
   indexedGroups.value = [...new Set([...indexedGroups.value, ...(groups || [])])]
   toast.success(`${(groups || []).length} group(s) indexed.`)
 }

@@ -10,6 +10,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 from api.core.database import Base
+import api.models  # noqa: E402, F401  registers every model on Base.metadata for autogenerate
 from api.core.config import settings
 # import api.models.user  # noqa: F401  (force model import)
 
@@ -25,11 +26,8 @@ target_metadata = Base.metadata
 #   postgresql+asyncpg://  →  postgresql+psycopg2://
 #   sqlite+aiosqlite://    →  sqlite:///
 _raw_url = settings.DATABASE_URL or "sqlite:///./test.db"
-_sync_url = (
-    _raw_url
-    .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
-    .replace("sqlite+aiosqlite:///", "sqlite:///")
-)
+# Migrations run synchronously through the stdlib sqlite3 driver.
+_sync_url = _raw_url.replace("sqlite+aiosqlite:///", "sqlite:///")
 config.set_main_option("sqlalchemy.url", _sync_url)
 
 
@@ -61,6 +59,8 @@ def run_migrations_online():
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            # SQLite cannot ALTER most column properties; batch mode rebuilds the table instead.
+            render_as_batch=connection.dialect.name == "sqlite",
         )
 
         with context.begin_transaction():

@@ -31,9 +31,8 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-pip install asyncpg
-python -m scripts.init_db --seed-demo
 python -m alembic upgrade head
+python -m scripts.init_db --seed-demo
 python start.py
 ```
 
@@ -61,6 +60,7 @@ npm run dev
 ## Notes
 
 - The backend uses `pyproject.toml`, so setup should use `pip install -e ".[dev]"` rather than `requirements.txt`.
+- **SQLite is the only supported database.** `DATABASE_URL` defaults to `sqlite+aiosqlite:///./runtime/ret.db` (WAL mode, foreign keys on). Alembic owns the schema: run `alembic upgrade head` before seeding. To move an existing PostgreSQL deployment, see `backend/scripts/pg_to_sqlite.py`.
 - The complete setup, user guide, deployment guidance, and file-by-file utility reference are in [`documentation.md`](./documentation.md).
 
 ## Updated workflow highlights

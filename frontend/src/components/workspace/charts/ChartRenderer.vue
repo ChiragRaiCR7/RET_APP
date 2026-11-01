@@ -6,7 +6,7 @@
       <span v-if="chartConfig.subtitle" class="chart-subtitle">{{ chartConfig.subtitle }}</span>
     </div>
     
-    <div class="chart-container" ref="chartContainer">
+    <div class="chart-container">
       <component 
         :is="chartComponent" 
         v-if="chartComponent"
@@ -15,7 +15,7 @@
         :key="chartKey"
       />
       <div v-else class="chart-error">
-        <span class="error-icon">⚠️</span>
+        <span class="error-icon" aria-hidden="true">⚠️</span>
         <p>Unsupported chart type: {{ chartConfig.type }}</p>
       </div>
     </div>
@@ -26,8 +26,8 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+<script setup lang="ts">
+import { computed, ref, watch, type Component } from 'vue'
 import { Bar, Line, Pie, Doughnut, Radar, PolarArea, Scatter } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -43,8 +43,8 @@ import {
   RadialLinearScale,
   Filler
 } from 'chart.js'
+import { useTheme } from '@/composable/useTheme'
 
-// Register Chart.js components
 ChartJS.register(
   Title,
   Tooltip,
@@ -59,21 +59,28 @@ ChartJS.register(
   Filler
 )
 
-const props = defineProps({
-  chartConfig: {
-    type: Object,
-    required: true,
-    validator: (value) => {
-      return value && value.type && value.data
-    }
-  }
-})
+type PlainObject = Record<string, unknown>
 
-const chartContainer = ref(null)
+/** Chart definition parsed from a model answer; every field is untrusted input. */
+export interface ChartConfig {
+  type: string
+  data: { labels?: unknown[]; datasets?: PlainObject[] } & PlainObject
+  title?: string
+  subtitle?: string
+  description?: string
+  aspectRatio?: number
+  showLegend?: boolean
+  legendPosition?: string
+  options?: PlainObject
+}
+
+const props = defineProps<{ chartConfig: ChartConfig }>()
+
+const { theme } = useTheme()
+const isDark = computed(() => theme.value === 'dark')
 const chartKey = ref(0)
 
-// Map chart types to components
-const chartComponents = {
+const chartComponents: Record<string, Component> = {
   bar: Bar,
   line: Line,
   pie: Pie,
@@ -83,30 +90,26 @@ const chartComponents = {
   scatter: Scatter
 }
 
-const chartComponent = computed(() => {
-  return chartComponents[props.chartConfig.type?.toLowerCase()]
-})
+const chartComponent = computed(() => chartComponents[String(props.chartConfig.type ?? '').toLowerCase()])
 
 const chartData = computed(() => {
   const src = props.chartConfig?.data
   if (!src) return { labels: [], datasets: [] }
-
-  // Return a new object — never mutate the prop
+  const count = src.labels?.length || 10
+  // Return a new object; never mutate the prop.
   return {
     ...src,
     datasets: (src.datasets || []).map((dataset, index) => ({
       ...dataset,
-      backgroundColor: dataset.backgroundColor || generateColors(src.labels?.length || 10, 0.7, index),
-      borderColor: dataset.borderColor || generateColors(src.labels?.length || 10, 1, index),
+      backgroundColor: dataset.backgroundColor || generateColors(count, 0.7, index),
+      borderColor: dataset.borderColor || generateColors(count, 1, index),
       borderWidth: dataset.borderWidth ?? 2
     }))
   }
 })
 
-const baseOptions = computed(() => {
-  const isDark = document.documentElement.classList.contains('dark') || 
-                 window.matchMedia('(prefers-color-scheme: dark)').matches
-  
+const baseOptions = computed<PlainObject>(() => {
+  const dark = isDark.value
   return {
     responsive: true,
     maintainAspectRatio: true,
@@ -116,117 +119,78 @@ const baseOptions = computed(() => {
         display: props.chartConfig.showLegend !== false,
         position: props.chartConfig.legendPosition || 'top',
         labels: {
-          color: isDark ? '#e0e0e0' : '#333',
-          font: {
-            size: 12,
-            family: "'Verdana', sans-serif"
-          },
+          color: dark ? '#e0e0e0' : '#333',
+          font: { size: 12, family: "'Verdana', sans-serif" },
           padding: 15
         }
       },
       tooltip: {
         enabled: true,
-        backgroundColor: isDark ? 'rgba(50, 50, 50, 0.95)' : 'rgba(255, 255, 255, 0.95)',
-        titleColor: isDark ? '#fff' : '#000',
-        bodyColor: isDark ? '#e0e0e0' : '#333',
+        backgroundColor: dark ? 'rgba(50, 50, 50, 0.95)' : 'rgba(255, 255, 255, 0.95)',
+        titleColor: dark ? '#fff' : '#000',
+        bodyColor: dark ? '#e0e0e0' : '#333',
         borderColor: '#FFC000',
         borderWidth: 1,
         padding: 12,
-        displayColors: true,
-        callbacks: props.chartConfig.tooltipCallbacks || {}
+        displayColors: true
       },
-      title: {
-        display: false // We handle title separately
-      }
+      title: { display: false } // rendered by the template instead
     },
-    scales: generateScales(props.chartConfig.type, isDark)
+    scales: generateScales(props.chartConfig.type, dark)
   }
 })
 
-const mergedOptions = computed(() => {
-  return deepMerge(baseOptions.value, props.chartConfig.options || {})
-})
+const mergedOptions = computed(() => deepMerge(baseOptions.value, props.chartConfig.options || {}))
 
-function generateColors(count, alpha, seed = 0) {
-  const baseColors = [
-    [255, 192, 0],   // Brand gold
-    [66, 165, 245],  // Blue
-    [102, 187, 106], // Green
-    [239, 83, 80],   // Red
-    [171, 71, 188],  // Purple
-    [255, 167, 38],  // Orange
-    [38, 198, 218],  // Cyan
-    [233, 30, 99],   // Pink
-    [121, 134, 203], // Indigo
-    [0, 150, 136]    // Teal
-  ]
-  
-  const colors = []
-  for (let i = 0; i < count; i++) {
-    const baseColor = baseColors[(i + seed) % baseColors.length]
-    colors.push(`rgba(${baseColor[0]}, ${baseColor[1]}, ${baseColor[2]}, ${alpha})`)
-  }
-  
-  return colors
+const BASE_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  [255, 192, 0], // brand gold
+  [66, 165, 245],
+  [102, 187, 106],
+  [239, 83, 80],
+  [171, 71, 188],
+  [255, 167, 38],
+  [38, 198, 218],
+  [233, 30, 99],
+  [121, 134, 203],
+  [0, 150, 136]
+]
+
+function generateColors(count: number, alpha: number, seed = 0): string[] {
+  return Array.from({ length: count }, (_, i) => {
+    const [r, g, b] = BASE_COLORS[(i + seed) % BASE_COLORS.length]!
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  })
 }
 
-function generateScales(chartType, isDark) {
-  const textColor = isDark ? '#b0b0b0' : '#666'
-  const gridColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
-  
-  if (['pie', 'doughnut', 'polarArea', 'radar'].includes(chartType?.toLowerCase())) {
-    return {}
+function generateScales(chartType: string | undefined, dark: boolean): PlainObject {
+  if (['pie', 'doughnut', 'polararea', 'radar'].includes(String(chartType ?? '').toLowerCase())) return {}
+  const axis = {
+    ticks: { color: dark ? '#b0b0b0' : '#666', font: { size: 11 } },
+    grid: { color: dark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)', drawBorder: false }
   }
-  
-  return {
-    x: {
-      ticks: {
-        color: textColor,
-        font: { size: 11 }
-      },
-      grid: {
-        color: gridColor,
-        drawBorder: false
-      }
-    },
-    y: {
-      ticks: {
-        color: textColor,
-        font: { size: 11 }
-      },
-      grid: {
-        color: gridColor,
-        drawBorder: false
-      },
-      beginAtZero: true
-    }
-  }
+  return { x: axis, y: { ...axis, beginAtZero: true } }
 }
 
-function deepMerge(target, source) {
-  const output = { ...target }
-  if (isObject(target) && isObject(source)) {
-    Object.keys(source).forEach(key => {
-      if (isObject(source[key])) {
-        if (!(key in target)) {
-          Object.assign(output, { [key]: source[key] })
-        } else {
-          output[key] = deepMerge(target[key], source[key])
-        }
-      } else {
-        Object.assign(output, { [key]: source[key] })
-      }
-    })
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+function isObject(item: unknown): item is PlainObject {
+  return !!item && typeof item === 'object' && !Array.isArray(item)
+}
+
+/** Overlays model-supplied chart options on the defaults, skipping prototype keys. */
+function deepMerge(target: PlainObject, source: PlainObject): PlainObject {
+  const output: PlainObject = { ...target }
+  for (const key of Object.keys(source)) {
+    if (UNSAFE_KEYS.has(key)) continue
+    const value = source[key]
+    const current = target[key]
+    output[key] = isObject(value) && isObject(current) ? deepMerge(current, value) : value
   }
   return output
 }
 
-function isObject(item) {
-  return item && typeof item === 'object' && !Array.isArray(item)
-}
-
-// Force re-render on theme change
-watch(() => document.documentElement.classList.contains('dark'), () => {
+// Chart.js reads colors once at mount, so re-create the chart when the theme flips.
+watch(isDark, () => {
   chartKey.value++
 })
 </script>

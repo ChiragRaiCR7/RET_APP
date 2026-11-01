@@ -30,14 +30,14 @@
   </TransitionGroup>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import { useToastStore } from '@/stores/toastStore'
 
 const toastStore = useToastStore()
 const toasts = computed(() => toastStore.toasts)
 
-function dismiss(id) {
+function dismiss(id: number) {
   toastStore.remove(id)
 }
 </script>

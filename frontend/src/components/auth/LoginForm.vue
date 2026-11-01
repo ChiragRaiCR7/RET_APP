@@ -130,7 +130,7 @@
   </form>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { reactive, ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -150,7 +150,7 @@ const loading = ref(false)
 const error = ref('')
 const showPassword = ref(false)
 const capsLockOn = ref(false)
-const usernameRef = ref(null)
+const usernameRef = ref<HTMLInputElement | null>(null)
 
 const form = reactive({
   username: '',
@@ -174,7 +174,7 @@ function togglePassword() {
   showPassword.value = !showPassword.value
 }
 
-function onPasswordKeydown(e) {
+function onPasswordKeydown(e: KeyboardEvent) {
   // Detect Caps Lock (best-effort)
   if (typeof e.getModifierState === 'function') {
     capsLockOn.value = e.getModifierState('CapsLock')
@@ -192,9 +192,10 @@ async function submit() {
     await auth.login(form.username, form.password, form.remember)
     emit('success')
   } catch (e) {
+    const data = (e as { response?: { data?: { detail?: string; message?: string } } }).response?.data
     error.value =
-      e?.response?.data?.detail ||
-      e?.response?.data?.message ||
+      data?.detail ||
+      data?.message ||
       'Sign in failed. Please check your credentials and try again.'
     // Focus username for quick recovery if username empty; otherwise keep focus where user is.
     if (!form.username.trim()) usernameRef.value?.focus?.()

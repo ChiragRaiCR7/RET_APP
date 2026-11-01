@@ -163,7 +163,7 @@ async def shutdown_cleanup(app: FastAPI) -> None:
 
     # Stop async background task manager
     try:
-        from api.workers.celery_app import shutdown_task_manager
+        from api.workers.task_manager import shutdown_task_manager
 
         await shutdown_task_manager()
         logger.info("Background task manager shutdown complete")

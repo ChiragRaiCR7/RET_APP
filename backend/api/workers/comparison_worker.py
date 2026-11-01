@@ -5,7 +5,7 @@ comparison_worker.py
 
 Async background worker for comparison tasks.
 
-Uses the BackgroundTaskManager from celery_app (Celery-compatible interface).
+Uses the in-process BackgroundTaskManager (api/workers/task_manager.py).
 Tasks run as asyncio.Tasks with CPU-bound work offloaded via asyncio.to_thread().
 
 Updates Job state in DB via async base_task helpers:
@@ -23,7 +23,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from api.workers.celery_app import celery
+from api.workers.task_manager import task_manager
 from api.workers.base_task import mark_running, update_progress, mark_success, mark_failed
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def _json_safe(value: Any) -> Any:
 # -------------------------------------------------------------------
 # Task: Session-to-session comparison
 # -------------------------------------------------------------------
-@celery.task(name="comparison_task")
+@task_manager.task(name="comparison_task")
 async def comparison_task(
     left_session_id: str,
     right_session_id: str,
@@ -105,7 +105,7 @@ async def comparison_task(
 # -------------------------------------------------------------------
 # Task: Uploaded-file comparison
 # -------------------------------------------------------------------
-@celery.task(name="comparison_files_task")
+@task_manager.task(name="comparison_files_task")
 async def comparison_files_task(
     file_a_path: str,
     file_a_name: str,
@@ -119,6 +119,7 @@ async def comparison_files_task(
     sim_threshold: float = 0.65,
     ignore_columns: Optional[str] = None,
     cleanup_dir: Optional[str] = None,
+    owner: str = "",
 ) -> Dict[str, Any]:
     """
     Uploaded-file background comparison (async).
@@ -166,6 +167,7 @@ async def comparison_files_task(
             similarity_pairing=bool(similarity_pairing),
             sim_threshold=float(sim_threshold),
             ignore_columns=ignore_columns,
+            owner=owner,
         )
 
         payload = _json_safe(res.to_dict())

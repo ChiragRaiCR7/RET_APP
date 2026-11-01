@@ -137,6 +137,35 @@ def cleanup_comparison_dir(prefix: str) -> None:
         pass
 
 
+COMPARISON_DIR_PREFIX = "comparison_"
+OWNER_MARKER = ".owner"
+
+
+def resolve_owned_comparison_file(raw_path: str, user_id: str) -> Path:
+    """
+    Accept a client-supplied path only inside a comparison work dir the user owns.
+
+    Upload comparisons keep their CSVs in system temp dirs for drilldown. compare_files()
+    writes the owner's id into the dir, so ownership holds across worker processes.
+    Raises PermissionError otherwise.
+    """
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    path = Path(raw_path).resolve()
+    if not path.is_relative_to(tmp_root):
+        raise PermissionError("File is outside your comparisons")
+    parts = path.relative_to(tmp_root).parts
+    if len(parts) < 2 or not parts[0].startswith(COMPARISON_DIR_PREFIX):
+        raise PermissionError("File is outside your comparisons")
+    marker = tmp_root / parts[0] / OWNER_MARKER
+    try:
+        owner = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        raise PermissionError("File is outside your comparisons") from None
+    if not owner or owner != str(user_id):
+        raise PermissionError("File is outside your comparisons")
+    return path
+
+
 def _register_comparison_dir(work_dir: Path) -> str:
     """
     Keep only the last MAX_ACTIVE_DIRS temp dirs.
@@ -1166,12 +1195,15 @@ def compare_files(
     similarity_pairing: bool = True,
     sim_threshold: float = 0.65,
     ignore_columns: Optional[str] = None,
+    owner: str = "",
 ) -> ComparisonResult:
     """
     Compare two files (ZIP/XML/XML.GZ/CSV).
-    Keeps temp directory for drilldown usage.
+    Keeps temp directory for drilldown usage; `owner` is the only user allowed to drill down.
     """
-    work_dir = Path(tempfile.mkdtemp(prefix="comparison_"))
+    work_dir = Path(tempfile.mkdtemp(prefix=COMPARISON_DIR_PREFIX))
+    if owner:
+        (work_dir / OWNER_MARKER).write_text(str(owner), encoding="utf-8")
     dir_id = _register_comparison_dir(work_dir)
 
     try:

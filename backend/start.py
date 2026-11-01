@@ -4,7 +4,7 @@ RET-v4 Backend — Startup Script
 
 Improvements over legacy version:
   1. .env loading via python-dotenv before any imports
-  2. Pre-flight checks (DATABASE_URL, JWT_SECRET_KEY required)
+  2. Pre-flight checks (JWT_SECRET_KEY required; DATABASE_URL defaults to SQLite)
   3. Migration subprocess with configurable timeout
   4. In-process uvicorn.run() — no nested subprocess
   5. Colored structured logging via loguru
@@ -132,9 +132,6 @@ args = parser.parse_args()
 def preflight_checks() -> None:
     """Validate required environment configuration before starting."""
     errors: list[str] = []
-
-    if not os.getenv("DATABASE_URL"):
-        errors.append("DATABASE_URL is not set")
 
     if not os.getenv("JWT_SECRET_KEY"):
         errors.append("JWT_SECRET_KEY is not set")

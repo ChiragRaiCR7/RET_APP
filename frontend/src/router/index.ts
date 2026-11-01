@@ -9,7 +9,7 @@
  *
  * MainView and AdminView are lazy-loaded to keep the initial bundle small.
  */
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import LoginView from '@/views/LoginView.vue'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -18,7 +18,15 @@ const MainView  = () => import('@/views/MainView.vue')
 const AdminView = () => import('@/views/AdminView.vue')
 const ComparisonDrilldownView = () => import('@/views/ComparisonDrilldownView.vue')
 
-const routes = [
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresAuth?: boolean
+    requiresGuest?: boolean
+    requiresAdmin?: boolean
+  }
+}
+
+const routes: RouteRecordRaw[] = [
   { path: '/', name: 'login', component: LoginView, meta: { requiresGuest: true } },
   { path: '/app', name: 'main', component: MainView, meta: { requiresAuth: true } },
   { path: '/compare/drilldown', name: 'compare-drilldown', component: ComparisonDrilldownView, meta: { requiresAuth: true } },
@@ -45,7 +53,7 @@ router.beforeEach(async (to) => {
       if (refreshed) {
         await auth.fetchMe()
       }
-    } catch (e) {
+    } catch {
       // Silent fail - no valid refresh cookie is normal for new sessions
     }
   }
@@ -56,7 +64,7 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.requiresGuest && auth.isAuthenticated) {
-    return { name: auth.user?.role === 'admin' ? 'admin' : 'main' }
+    return { name: auth.isAdmin ? 'admin' : 'main' }
   }
 
   if (to.meta.requiresAdmin && !auth.isAdmin) {

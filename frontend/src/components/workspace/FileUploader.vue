@@ -57,7 +57,7 @@
     <!-- Scan Results -->
     <div v-if="scanResults" style="margin-top: var(--space-lg)">
       <div class="enterprise-card">
-        <h4 class="card-title">📊 Scan Results</h4>
+        <h4 class="card-title"><span aria-hidden="true">📊</span> Scan Results</h4>
 
         <div class="metric-container">
           <div class="metric-card">
@@ -170,16 +170,17 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
-import api, { longApi } from '@/utils/api'
-import { getOracleAppName, getOracleBusinessDomain, getDomainColor } from '@/utils/oracleApps'
+import { errorBody, longApi } from '@/utils/api'
+import { getDomainColor } from '@/utils/oracleApps'
+import type { ZipScanResponse } from '@/types/api'
 
-const input = ref(null)
-const files = ref([])
+const input = ref<HTMLInputElement | null>(null)
+const files = ref<File[]>([])
 const dragging = ref(false)
 const scanning = ref(false)
-const scanResults = ref(null)
+const scanResults = ref<ZipScanResponse | null>(null)
 const error = ref('')
 
 // You can flip this on/off if you want to show limits under each file row
@@ -202,26 +203,26 @@ function open() {
   input.value?.click()
 }
 
-function onFiles(e) {
-  const list = Array.from(e.target.files || [])
+function onFiles(e: Event) {
+  const list = Array.from((e.target as HTMLInputElement).files || [])
   files.value.push(...list)
   error.value = ''
   emit('files-added', list)
 }
 
-function onDrop(e) {
+function onDrop(e: DragEvent) {
   dragging.value = false
-  const list = Array.from(e.dataTransfer.files || [])
+  const list = Array.from(e.dataTransfer?.files || [])
   files.value.push(...list)
   error.value = ''
   emit('files-added', list)
 }
 
-function remove(i) {
+function remove(i: number) {
   files.value.splice(i, 1)
 }
 
-function prettySize(n) {
+function prettySize(n: number | null | undefined): string {
   if (n === null || n === undefined) return '-'
   const num = Number(n)
   if (!Number.isFinite(num) || num <= 0) return '-'
@@ -231,7 +232,7 @@ function prettySize(n) {
   return `${(num / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
-async function scanFile(file) {
+async function scanFile(file: File) {
   const data = new FormData()
   data.append('file', file)
 
@@ -240,7 +241,7 @@ async function scanFile(file) {
 
   try {
     // ✅ Use longApi + pass query params to avoid scan budget truncation
-    const resp = await longApi.post('/conversion/scan', data, {
+    const resp = await longApi.post<ZipScanResponse>('/conversion/scan', data, {
       params: {
         group_mode: scanLimits.group_mode,
         max_unzipped_mb: scanLimits.max_unzipped_mb,
@@ -266,9 +267,9 @@ async function scanFile(file) {
     })
   } catch (e) {
     error.value =
-      e.response?.data?.detail ||
-      e.response?.data?.message ||
-      e.message ||
+      errorBody(e)?.detail ||
+      errorBody(e)?.message ||
+      (e as Error).message ||
       'Unknown error'
     console.error('Scan error:', e)
   } finally {

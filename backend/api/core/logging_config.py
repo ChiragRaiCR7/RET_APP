@@ -314,8 +314,74 @@ def get_logger(name: str) -> Any:
     arguments as structured log fields, matching Loguru's calling convention.
     """
     if HAS_LOGURU and loguru_logger is not None:
-        return loguru_logger.bind(logger=name)
+        return _PercentStyleLogger(loguru_logger.bind(logger=name))
     return ExtraAdapter(logging.getLogger(name), {})
+
+
+class _PercentStyleLogger:
+    """
+    Loguru logger that also accepts the stdlib ``logger.info("x %s", value)`` style.
+
+    Loguru only knows ``{}`` formatting and silently drops positional %-arguments, which
+    left every %-style message across the app without its values. Positional arguments
+    are applied with ``%`` here; keyword arguments keep Loguru semantics (``{name}``
+    formatting plus structured ``extra`` fields).
+    """
+
+    __slots__ = ("_logger",)
+
+    def __init__(self, logger: Any) -> None:
+        self._logger = logger
+
+    def bind(self, **fields: Any) -> "_PercentStyleLogger":
+        return _PercentStyleLogger(self._logger.bind(**fields))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._logger, name)
+
+    def _emit(self, level: str, message: Any, args: tuple, kwargs: dict, exception: Any) -> None:
+        exception = kwargs.pop("exc_info", None) or exception
+        text = str(message)
+        if args:
+            try:
+                text = text % args
+            except (TypeError, ValueError):
+                text = f"{text} {args!r}"
+            if kwargs:
+                # The %-formatted text may now contain data with braces; keep it literal.
+                text = text.replace("{", "{{").replace("}", "}}")
+        elif kwargs and "{" in text:
+            # Brace placeholders that no keyword fills would raise inside Loguru.
+            try:
+                text.format(**kwargs)
+            except (KeyError, IndexError, ValueError):
+                text = text.replace("{", "{{").replace("}", "}}")
+        # depth=2 attributes the record to the caller of info()/error(), not this wrapper.
+        self._logger.opt(depth=2, exception=exception or None).log(level, text, **kwargs)
+
+    def trace(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("TRACE", message, args, kwargs, None)
+
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("DEBUG", message, args, kwargs, None)
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("INFO", message, args, kwargs, None)
+
+    def success(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("SUCCESS", message, args, kwargs, None)
+
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("WARNING", message, args, kwargs, None)
+
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("ERROR", message, args, kwargs, None)
+
+    def critical(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("CRITICAL", message, args, kwargs, None)
+
+    def exception(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("ERROR", message, args, kwargs, True)
 
 
 # ---------------------------------------------------------------------

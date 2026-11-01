@@ -4,7 +4,7 @@
       <h4>{{ title }}</h4>
       <div class="table-actions">
         <button v-if="exportable" @click="exportToCSV" class="btn-export" title="Export to CSV">
-          📥 Export
+          <span aria-hidden="true">📥</span> Export
         </button>
         <button v-if="data.length > 10" @click="toggleExpand" class="btn-toggle">
           {{ expanded ? '▲ Collapse' : '▼ Show All' }}
@@ -47,60 +47,60 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
+import { downloadCsv, toCsv } from '@/utils/csv'
 
-const props = defineProps({
-  data: {
-    type: Array,
-    required: true
-  },
-  columns: {
-    type: Array,
-    default: () => []
-  },
-  title: {
-    type: String,
-    default: null
-  },
-  sortable: {
-    type: Boolean,
-    default: true
-  },
-  exportable: {
-    type: Boolean,
-    default: true
-  },
-  showSummary: {
-    type: Boolean,
-    default: false
-  },
-  summary: {
-    type: Object,
-    default: null
-  },
-  tableClass: {
-    type: String,
-    default: ''
-  },
-  maxRows: {
-    type: Number,
-    default: 10
+type Row = Record<string, unknown>
+
+/** Column definition; tables come from model answers, so every field is optional. */
+export interface TableColumn {
+  key: string
+  label?: string
+  type?: 'currency' | 'percentage' | 'date' | 'url' | string
+  decimals?: number
+  align?: 'left' | 'center' | 'right'
+  formatter?: (value: unknown) => string
+}
+
+type SummaryDef = string | ((rows: Row[]) => string) | { value?: string }
+
+const props = withDefaults(
+  defineProps<{
+    data: Row[]
+    columns?: TableColumn[]
+    title?: string | null
+    sortable?: boolean
+    exportable?: boolean
+    showSummary?: boolean
+    summary?: Record<string, SummaryDef> | null
+    tableClass?: string
+    maxRows?: number
+  }>(),
+  {
+    columns: () => [],
+    title: null,
+    sortable: true,
+    exportable: true,
+    showSummary: false,
+    summary: null,
+    tableClass: '',
+    maxRows: 10
   }
-})
+)
 
 const expanded = ref(false)
-const sortColumn = ref(null)
-const sortDirection = ref('asc')
+const sortColumn = ref<string | null>(null)
+const sortDirection = ref<'asc' | 'desc'>('asc')
 
-const effectiveColumns = computed(() => {
+const effectiveColumns = computed<TableColumn[]>(() => {
   if (props.columns.length > 0) {
     return props.columns
   }
   
   // Auto-generate columns from first data row
   if (props.data.length > 0) {
-    return Object.keys(props.data[0]).map(key => ({
+    return Object.keys(props.data[0]!).map(key => ({
       key,
       label: formatLabel(key)
     }))
@@ -112,11 +112,12 @@ const effectiveColumns = computed(() => {
 const columns = computed(() => effectiveColumns.value)
 
 const sortedData = computed(() => {
-  if (!sortColumn.value) return props.data
+  const key = sortColumn.value
+  if (!key) return props.data
   
   return [...props.data].sort((a, b) => {
-    const aVal = a[sortColumn.value]
-    const bVal = b[sortColumn.value]
+    const aVal = a[key]
+    const bVal = b[key]
     
     // Handle null/undefined
     if (aVal == null && bVal == null) return 0
@@ -147,7 +148,7 @@ const displayedData = computed(() => {
   return sortedData.value.slice(0, props.maxRows)
 })
 
-function sortBy(columnKey) {
+function sortBy(columnKey: string) {
   if (!props.sortable) return
   
   if (sortColumn.value === columnKey) {
@@ -162,14 +163,14 @@ function toggleExpand() {
   expanded.value = !expanded.value
 }
 
-function formatLabel(key) {
+function formatLabel(key: string): string {
   return key
     .split('_')
     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ')
 }
 
-function formatCell(value, column) {
+function formatCell(value: unknown, column: TableColumn): string {
   if (value == null) return '—'
 
   // Array: show as comma list, truncate long arrays
@@ -213,8 +214,8 @@ function formatCell(value, column) {
 
   // Date formatting
   if (column.type === 'date' && value) {
-    const date = new Date(value)
-    if (!isNaN(date)) {
+    const date = new Date(value as string | number)
+    if (!Number.isNaN(date.getTime())) {
       return date.toLocaleDateString()
     }
   }
@@ -222,8 +223,8 @@ function formatCell(value, column) {
   return String(value)
 }
 
-function getCellClass(column, value) {
-  const classes = []
+function getCellClass(column: TableColumn, value: unknown): string {
+  const classes: string[] = []
   
   if (column.align) {
     classes.push(`text-${column.align}`)
@@ -240,7 +241,7 @@ function getCellClass(column, value) {
   return classes.join(' ')
 }
 
-function getSummaryValue(columnKey) {
+function getSummaryValue(columnKey: string): string {
   if (!props.summary || !props.summary[columnKey]) {
     return ''
   }
@@ -260,27 +261,8 @@ function getSummaryValue(columnKey) {
 
 function exportToCSV() {
   const headers = columns.value.map(col => col.label || col.key)
-  const rows = props.data.map(row => 
-    columns.value.map(col => {
-      const value = row[col.key]
-      return value != null ? String(value) : ''
-    })
-  )
-  
-  const csvContent = [
-    headers.join(','),
-    ...rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(','))
-  ].join('\n')
-  
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${props.title || 'data'}.csv`
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  const rows = props.data.map(row => columns.value.map(col => row[col.key]))
+  downloadCsv(`${props.title || 'data'}.csv`, toCsv(headers, rows))
 }
 </script>
 

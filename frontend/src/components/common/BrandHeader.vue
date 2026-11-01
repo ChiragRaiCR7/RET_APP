@@ -10,7 +10,7 @@
       <button class="btn btn-secondary btn-sm" @click="$router.push({ name: 'main' })" aria-label="Go to Workspace">Workspace</button>
       <button v-if="auth.isAdmin" class="btn btn-secondary btn-sm" @click="$router.push({ name: 'admin' })" aria-label="Go to Admin">Admin</button>
       <button class="btn btn-sm btn-primary" @click="$emit('toggle-theme')" aria-label="Toggle theme">
-        🌓
+        <span aria-hidden="true">🌓</span>
       </button>
       <div v-if="auth.isAuthenticated" class="user-info" role="status" :title="auth.user?.username">
         <div class="user-avatar">{{ initials }}</div>
@@ -21,7 +21,7 @@
   </header>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import { useAuthStore } from '@/stores/authStore'
 

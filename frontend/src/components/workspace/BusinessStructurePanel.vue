@@ -125,7 +125,6 @@
 
         <div
           v-else
-          ref="graphViewportRef"
           class="graph-viewport"
           @mousedown="startGraphPan"
         >
@@ -136,20 +135,26 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import mermaid from 'mermaid'
+import { useTheme } from '@/composable/useTheme'
+import { configureMermaid } from '@/utils/mermaid'
+import type { BusinessNodeType, BusinessStructureNode, BusinessStructureResponse } from '@/types/api'
 
-const props = defineProps({
-  sessionId: { type: String, default: null },
-  converted: { type: Boolean, default: false },
-  businessStructure: { type: Object, default: null },
-  loadingStructure: { type: Boolean, default: false },
-})
+const props = withDefaults(
+  defineProps<{
+    sessionId?: string | null
+    converted?: boolean
+    businessStructure?: BusinessStructureResponse | null
+    loadingStructure?: boolean
+  }>(),
+  { sessionId: null, converted: false, businessStructure: null, loadingStructure: false }
+)
+const { theme } = useTheme()
 
 const emit = defineEmits(['refresh'])
 
-const DEPTH_MAP = {
+const DEPTH_MAP: Record<BusinessNodeType, number> = {
   business_group: 1,
   ledger: 2,
   legal_entity: 3,
@@ -157,7 +162,7 @@ const DEPTH_MAP = {
   inventory_org: 5,
 }
 
-const LABEL_MAP = {
+const LABEL_MAP: Record<BusinessNodeType, string> = {
   business_group: 'Business Group',
   ledger: 'Ledger',
   legal_entity: 'Legal Entity',
@@ -165,7 +170,7 @@ const LABEL_MAP = {
   inventory_org: 'Inventory Org',
 }
 
-const CLASS_MAP = {
+const CLASS_MAP: Record<BusinessNodeType, string> = {
   business_group: 'bg',
   ledger: 'ledger',
   legal_entity: 'le',
@@ -200,7 +205,7 @@ const statusText = computed(() => {
 })
 
 const hasDiagnostics = computed(() => {
-  return props.businessStructure?.diagnostics?.length > 0
+  return (props.businessStructure?.diagnostics?.length ?? 0) > 0
 })
 
 const prunedTotal = computed(() => {
@@ -220,7 +225,6 @@ const graphRenderError = ref('')
 const graphTooLarge = ref(false)
 const graphNodeCount = ref(0)
 const graphNodeCap = 10000
-const graphViewportRef = ref(null)
 
 // --- Graph helpers ---
 const graphTransformStyle = computed(() => ({
@@ -232,7 +236,7 @@ function zoomIn() { graphZoom.value = Math.min(2.5, Number((graphZoom.value + 0.
 function zoomOut() { graphZoom.value = Math.max(0.4, Number((graphZoom.value - 0.1).toFixed(2))) }
 function resetGraphView() { graphZoom.value = 1; graphOffset.x = 0; graphOffset.y = 0 }
 
-function startGraphPan(e) {
+function startGraphPan(e: MouseEvent) {
   if (e.button !== 0) return
   graphPan.active = true
   graphPan.startX = e.clientX
@@ -240,18 +244,18 @@ function startGraphPan(e) {
   graphPan.originX = graphOffset.x
   graphPan.originY = graphOffset.y
 }
-function onGraphMouseMove(e) {
+function onGraphMouseMove(e: MouseEvent) {
   if (!graphPan.active) return
   graphOffset.x = graphPan.originX + (e.clientX - graphPan.startX)
   graphOffset.y = graphPan.originY + (e.clientY - graphPan.startY)
 }
 function onGraphMouseUp() { graphPan.active = false }
 
-function sanitizeMermaidLabel(value) {
+function sanitizeMermaidLabel(value: unknown): string {
   return String(value || '\u2014').replace(/"/g, "'").replace(/[<>]/g, '')
 }
 
-function hashId(input) {
+function hashId(input: unknown): string {
   const s = String(input || '')
   let h = 0
   for (let i = 0; i < s.length; i++) {
@@ -262,18 +266,19 @@ function hashId(input) {
 }
 
 // --- Filter tree by search ---
-function matchesSearch(name) {
+function matchesSearch(name: unknown): boolean {
   if (!search.value) return true
   return String(name || '').toLowerCase().includes(search.value.toLowerCase())
 }
 
-function filterNode(node) {
+function filterNode(node: BusinessStructureNode): BusinessStructureNode | null {
   if (!search.value) return node
-  if (!node) return null
   if (!node.children || node.children.length === 0) {
     return matchesSearch(node.name) ? node : null
   }
-  const filteredChildren = node.children.map(filterNode).filter(Boolean)
+  const filteredChildren = node.children
+    .map(filterNode)
+    .filter((n): n is BusinessStructureNode => n !== null)
   if (filteredChildren.length > 0 || matchesSearch(node.name)) {
     return { ...node, children: filteredChildren }
   }
@@ -283,33 +288,33 @@ function filterNode(node) {
 const filteredNodes = computed(() => {
   const nodes = props.businessStructure?.nodes || []
   if (!search.value) return nodes
-  return nodes.map(filterNode).filter(Boolean)
+  return nodes.map(filterNode).filter((n): n is BusinessStructureNode => n !== null)
 })
 
 // --- Build Mermaid graph definition ---
 const graphDefinition = computed(() => {
-  const nodeSet = new Set()
-  const edgeSet = new Set()
-  const nodeLines = []
-  const edgeLines = []
-  const classLines = []
+  const nodeSet = new Set<string>()
+  const edgeSet = new Set<string>()
+  const nodeLines: string[] = []
+  const edgeLines: string[] = []
+  const classLines: string[] = []
   const depth = graphDepth.value
 
-  const addNode = (id, label, cls) => {
+  const addNode = (id: string, label: string, cls: string) => {
     if (nodeSet.has(id)) return
     nodeSet.add(id)
     nodeLines.push(`${id}["${sanitizeMermaidLabel(label)}"]`)
     if (cls) classLines.push(`class ${id} ${cls};`)
   }
 
-  const addEdge = (from, to) => {
+  const addEdge = (from: string, to: string) => {
     const k = `${from}-->${to}`
     if (edgeSet.has(k)) return
     edgeSet.add(k)
     edgeLines.push(`${from} --> ${to}`)
   }
 
-  function walkNode(node, parentId, parentPath) {
+  function walkNode(node: BusinessStructureNode, parentId: string | null, parentPath: string) {
     const nodeDepth = DEPTH_MAP[node.node_type] || 1
     if (nodeDepth > depth) return
 
@@ -350,22 +355,6 @@ const graphDefinition = computed(() => {
 })
 
 // --- Mermaid rendering ---
-let mermaidInitialized = false
-
-function initMermaid() {
-  if (mermaidInitialized) return
-  const isDark = document.documentElement.classList.contains('dark') ||
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'strict',
-    theme: isDark ? 'dark' : 'default',
-    flowchart: { curve: 'basis', nodeSpacing: 32, rankSpacing: 48 }
-  })
-  mermaidInitialized = true
-}
-
 async function renderGraph() {
   await nextTick()
 
@@ -385,19 +374,19 @@ async function renderGraph() {
   graphTooLarge.value = false
 
   try {
-    initMermaid()
+    const mermaid = configureMermaid(theme.value === 'dark')
     const id = `bs-graph-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     const { svg } = await mermaid.render(id, graphDefinition.value.text)
     graphSvg.value = svg || ''
   } catch (e) {
     graphSvg.value = ''
-    graphRenderError.value = `Failed to render graph: ${e?.message || 'unknown error'}`
+    graphRenderError.value = `Failed to render graph: ${(e as Error)?.message || 'unknown error'}`
   }
 }
 
 // --- Watchers ---
 watch(
-  [search, graphDepth, () => props.businessStructure],
+  [search, graphDepth, theme, () => props.businessStructure],
   () => { renderGraph() },
   { deep: true }
 )

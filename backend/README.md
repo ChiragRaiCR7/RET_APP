@@ -43,7 +43,7 @@
 ### Technology Stack
 ```
 Backend: FastAPI (Python 3.12+)
-Database: PostgreSQL (production) / SQLite (development)
+Database: SQLite (WAL) — the only supported database
 ORM: SQLAlchemy 2.0+
 Authentication: JWT, bcrypt, Argon2
 Vector Database: ChromaDB
@@ -58,7 +58,7 @@ LLM: Azure OpenAI (GPT-4, embeddings)
 - **Python**: 3.12 or higher
 - **pip**: Latest version
 - **Virtual Environment**: venv (recommended)
-- **Database**: SQLite for dev, PostgreSQL for production
+- **Database**: SQLite (WAL mode, foreign keys enforced), schema owned by Alembic
 - **Azure Credentials** (optional for AI features):
   - Azure OpenAI API key
   - Azure OpenAI endpoint
@@ -107,7 +107,7 @@ pip install -e .
 - `fastapi>=0.104.0` - Web framework
 - `uvicorn>=0.24.0` - ASGI server
 - `sqlalchemy>=2.0.0` - ORM
-- `psycopg2-binary` - PostgreSQL adapter
+- `aiosqlite` - async SQLite driver
 - `pydantic>=2.0.0` - Data validation
 - `python-jose>=3.3.0` - JWT handling
 - `passlib[bcrypt]>=1.7.4` - Password hashing
@@ -123,9 +123,7 @@ Create `.env` file in backend directory:
 
 ```bash
 # ===== DATABASE =====
-DATABASE_URL=sqlite:///./ret.db
-# For production PostgreSQL:
-# DATABASE_URL=postgresql://user:password@localhost:5432/retdb
+DATABASE_URL=sqlite+aiosqlite:///./runtime/ret.db   # default; SQLite is the only supported database
 
 # ===== SECURITY =====
 SECRET_KEY=your-super-secret-key-change-in-production
@@ -163,31 +161,29 @@ SQLite is automatically configured for development:
 Database file: backend/ret.db
 ```
 
-### PostgreSQL (Production)
+### Moving from PostgreSQL
 
-For production, configure PostgreSQL:
+Earlier versions ran on PostgreSQL. To carry that data over (app stopped):
 
 ```bash
-# 1. Create database and user
-createdb retdb
-createuser ret_user -P  # Enter password when prompted
-
-# 2. Grant privileges
-psql -d retdb
-GRANT ALL PRIVILEGES ON DATABASE retdb TO ret_user;
-\q
-
-# 3. Update .env
-DATABASE_URL=postgresql://ret_user:password@localhost:5432/retdb
+alembic upgrade head    # create the SQLite schema
+uv run --with "psycopg[binary]" python -m scripts.pg_to_sqlite \
+  --source "postgresql+psycopg://ret_user:password@localhost:5432/retdb" \
+  --target ./runtime/ret.db
 ```
+
+The script copies every table in foreign-key order inside one transaction, checks foreign keys, and verifies row counts. The source is only read.
+
+**Capacity note:** SQLite serializes writes. RET writes are small (auth, audit, job rows) while the heavy data lives in session folders, so a single host with WAL handles the expected 10–50 concurrent users. Run one host; keep `runtime/` on local disk, not a network share.
 
 ### Initialize Database
 
 The database is automatically initialized on first run (see `scripts/init_db.py`):
 
 ```powershell
-# Manual initialization (if needed)
-python scripts/init_db.py
+# Manual initialization (if needed): schema first, then seed
+python -m alembic upgrade head
+python -m scripts.init_db --seed-demo
 ```
 
 **Tables created**:
@@ -442,7 +438,7 @@ backend/
 │   │   ├── dependencies.py     # DI container
 │   │   ├── exceptions.py       # Custom exceptions
 │   │   ├── rbac.py             # Role-based access control
-│   │   └── session_cache.py    # Redis/memory cache
+│   │   └── session_cache.py    # In-memory LRU session cache
 │   ├── models/
 │   │   └── models.py           # SQLAlchemy ORM models
 │   ├── schemas/
@@ -542,8 +538,8 @@ backend/
      ┌───────┼───────────────┐
      ▼       ▼               ▼
  Database  File Storage  Vector Store
- (PostgreSQL (Sessions)  (ChromaDB)
-  /SQLite)     │
+ (SQLite)  (Sessions)    (ChromaDB)
+     │         │
      │         ▼
      │    runtime/
      │    sessions/
@@ -972,7 +968,7 @@ curl -X POST "http://localhost:8000/api/v1/v2/ai/chat" \
 
 **RET v4 Backend** - Enterprise XML-to-CSV Conversion & AI Tool
 - Framework: FastAPI
-- Database: PostgreSQL/SQLite
+- Database: SQLite
 - Language: Python 3.12+
 
 ---

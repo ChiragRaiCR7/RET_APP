@@ -115,7 +115,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onErrorCaptured, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -168,14 +168,14 @@ const router = useRouter()
 const hasError = ref(false)
 const busy = ref(false)
 
-const errorObj = ref(null)
+const errorObj = ref<Error | null>(null)
 const errorMessage = ref('')
 const detailsText = ref('')
 
 const incidentId = ref('')
 const renderKey = ref(0)
 
-const titleRef = ref(null)
+const titleRef = ref<HTMLElement | null>(null)
 
 const userMessage = computed(() => {
   // Prefer explicit error message only if it looks safe/user-friendly; otherwise fallback.
@@ -208,7 +208,7 @@ onErrorCaptured((err, instance, info) => {
 
   const compName =
     instance?.$options?.name ||
-    instance?.type?.name ||
+    (instance?.$ as { type?: { name?: string } } | undefined)?.type?.name ||
     'Unknown'
 
   detailsText.value =

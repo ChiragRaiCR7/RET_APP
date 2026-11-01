@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 import logging
 
 from api.core.dependencies import get_current_user_id
-from api.services.storage_service import get_session_dir, get_session_metadata
+from api.services.storage_service import contained_path, get_session_dir, get_session_metadata
 from api.services.xlsx_service import get_xlsx_bytes_from_csv
 from api.schemas.advanced import (
     XLSXConversionRequest,
@@ -43,7 +43,7 @@ async def convert_csv_to_xlsx(
         if meta.get("user_id") != current_user_id:
             raise HTTPException(status_code=403, detail="Not authorized")
 
-        csv_path = session_dir / "output" / request.csv_filename
+        csv_path = contained_path(session_dir / "output", request.csv_filename)
         if not csv_path.exists():
             raise HTTPException(status_code=404, detail="CSV file not found")
 
@@ -58,6 +58,8 @@ async def convert_csv_to_xlsx(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"XLSX conversion error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -78,7 +80,7 @@ async def download_xlsx(
             raise HTTPException(status_code=403, detail="Not authorized")
 
         csv_name = filename.replace(".xlsx", ".csv")
-        csv_path = session_dir / "output" / csv_name
+        csv_path = contained_path(session_dir / "output", csv_name)
 
         if not csv_path.exists():
             raise HTTPException(status_code=404, detail="CSV file not found")
@@ -97,6 +99,8 @@ async def download_xlsx(
         )
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"XLSX download error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -36,8 +36,18 @@ from api.services.comparison_service import (
 from api.services.storage_service import get_session_metadata
 from api.services.job_service import create_job
 
-# ✅ Celery tasks
+# Background tasks (in-process task manager)
 from api.workers.comparison_worker import comparison_task, comparison_files_task
+from api.services.storage_service import resolve_owned_session_file
+from api.services.comparison_service import resolve_owned_comparison_file
+
+
+def _resolve_drilldown_path(raw_path: str, user_id: str) -> Path:
+    """A drilldown CSV must come from the user's session outputs or upload comparisons."""
+    try:
+        return resolve_owned_session_file(raw_path, user_id)
+    except PermissionError:
+        return resolve_owned_comparison_file(raw_path, user_id)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +139,7 @@ async def compare_files_run_async(
     Flow:
       1) Create job in DB
       2) Save both uploads to a job temp workspace
-      3) Enqueue Celery task comparison_files_task
+      3) Enqueue background task comparison_files_task
       4) Return { job_id } immediately
     """
     try:
@@ -170,6 +180,7 @@ async def compare_files_run_async(
             sim_threshold=st,
             ignore_columns=ignore_columns,
             cleanup_dir=str(work_dir),
+            owner=current_user_id,
         )
 
         return JobCreatedResponse(job_id=job.id)
@@ -236,6 +247,7 @@ async def compare_files_endpoint(
             similarity_pairing=similarity_pairing,
             sim_threshold=st,
             ignore_columns=ignore_columns,
+            owner=current_user_id,
         )
 
         return result.to_dict()
@@ -302,6 +314,7 @@ async def compare_zip_files_endpoint(
             similarity_pairing=similarity_pairing,
             sim_threshold=st,
             ignore_columns=ignore_columns,
+            owner=current_user_id,
         )
 
         return ZipComparisonResponse(
@@ -355,6 +368,18 @@ async def drilldown_comparison(
 
         if not csv_path_a and not csv_path_b:
             raise _http_400("Missing CSV paths (csv_path_a or csv_path_b is required).")
+
+        # The paths come from the client: only files from the caller's own sessions or
+        # upload comparisons may be read.
+        try:
+            if csv_path_a:
+                csv_path_a = str(_resolve_drilldown_path(csv_path_a, current_user_id))
+            if csv_path_b:
+                csv_path_b = str(_resolve_drilldown_path(csv_path_b, current_user_id))
+        except PermissionError:
+            raise HTTPException(
+                status_code=403, detail="You can only compare files from your own sessions."
+            ) from None
 
         logger.info(
             "comparison.drilldown user=%s A=%s B=%s ignore_case=%s trim_ws=%s sim_pair=%s st=%.3f",

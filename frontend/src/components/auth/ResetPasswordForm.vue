@@ -226,12 +226,12 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, nextTick, onMounted } from 'vue'
-import api from '@/utils/api'
+import api, { errorBody } from '@/utils/api'
 import PasswordStrengthMeter from '@/components/auth/PasswordStrengthMeter.vue'
 
-function isStrongPassword(s) {
+function isStrongPassword(s: string): boolean {
   if (!s) return false
   return s.length >= 8 && /[A-Z]/.test(s) && /[0-9]/.test(s)
 }
@@ -265,8 +265,8 @@ const pwTouched = ref(false)
 const confirmTouched = ref(false)
 
 /** Refs for focus management */
-const usernameRef = ref(null)
-const tokenRef = ref(null)
+const usernameRef = ref<HTMLInputElement | null>(null)
+const tokenRef = ref<HTMLInputElement | null>(null)
 
 /** A11y IDs */
 const errorId = 'reset-error'
@@ -303,7 +303,9 @@ function clearBanners() {
   if (message.value) message.value = ''
 }
 
-function setMode(next) {
+type ResetMode = 'request' | 'confirm'
+
+function setMode(next: ResetMode) {
   if (loading.value) return
   clearBanners()
   mode.value = next
@@ -315,7 +317,7 @@ function setMode(next) {
   })
 }
 
-function onTabKeydown(e, current) {
+function onTabKeydown(e: KeyboardEvent, current: ResetMode) {
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(e.key)) return
 
@@ -325,7 +327,7 @@ function onTabKeydown(e, current) {
   if (e.key === 'Home') return setMode('request')
   if (e.key === 'End') return setMode('confirm')
 
-  const next = current === 'request' ? 'confirm' : 'request'
+  const next: ResetMode = current === 'request' ? 'confirm' : 'request'
   setMode(next)
 }
 
@@ -338,7 +340,7 @@ function togglePassword() {
   showPassword.value = !showPassword.value
 }
 
-function onPasswordKeydown(e) {
+function onPasswordKeydown(e: KeyboardEvent) {
   // best-effort Caps Lock detection
   if (typeof e.getModifierState === 'function') {
     capsLockOn.value = e.getModifierState('CapsLock')
@@ -374,7 +376,7 @@ async function requestReset() {
       setTimeout(() => setMode('confirm'), 250)
     }
   } catch (e) {
-    error.value = e?.response?.data?.message || e?.response?.data?.detail || 'Failed to request reset.'
+    error.value = errorBody(e)?.message || errorBody(e)?.detail || 'Failed to request reset.'
   } finally {
     loading.value = false
   }
@@ -414,8 +416,8 @@ async function confirmReset() {
     capsLockOn.value = false
   } catch (e) {
     error.value =
-      e?.response?.data?.detail ||
-      e?.response?.data?.message ||
+      errorBody(e)?.detail ||
+      errorBody(e)?.message ||
       'Failed to reset password.'
   } finally {
     loading.value = false

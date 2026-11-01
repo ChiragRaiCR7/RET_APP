@@ -36,8 +36,10 @@
             :src="heroImage"
             class="hero-image"
             :alt="heroAlt"
+            width="1408"
+            height="768"
             loading="eager"
-            decoding="async"
+            fetchpriority="high"
           />
           <figcaption class="hero-caption">
             Upload. Convert. Review. Download—within one workspace.
@@ -203,7 +205,7 @@
   </main>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
@@ -212,8 +214,8 @@ import { useTheme } from '@/composable/useTheme'
 import LoginForm from '@/components/auth/LoginForm.vue'
 import ResetPasswordForm from '@/components/auth/ResetPasswordForm.vue'
 
-import LightModeImage from '@/assets/Light_mode.png'
-import DarkModeImage from '@/assets/Dark_mode.png'
+import LightModeImage from '@/assets/Light_mode.webp'
+import DarkModeImage from '@/assets/Dark_mode.webp'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -245,11 +247,13 @@ const panelIds = {
   reset: 'auth-panel-reset'
 }
 
-function activate(which) {
+type AuthPanel = 'login' | 'reset'
+
+function activate(which: AuthPanel) {
   showReset.value = which === 'reset'
 }
 
-function onTabKeydown(e, current) {
+function onTabKeydown(e: KeyboardEvent, current: AuthPanel) {
   // Keyboard-friendly tab switch (Left/Right, Home/End)
   const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
   if (!keys.includes(e.key)) return
@@ -430,6 +434,7 @@ function openTerms() {
 
 .hero-image {
   width: 100%;
+  height: auto;
   border-radius: 16px;
   border: 1px solid var(--border-light);
   box-shadow: var(--shadow-lg);

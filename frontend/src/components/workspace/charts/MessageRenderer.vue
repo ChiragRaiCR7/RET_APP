@@ -2,225 +2,56 @@
   <div class="message-renderer" ref="rootEl" v-html="renderedContent"></div>
 </template>
 
-<script setup>
-import { computed, onMounted, onUpdated, nextTick, ref } from 'vue'
-import { marked } from 'marked'
-import mermaid from 'mermaid'
+<script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import { useTheme } from '@/composable/useTheme'
+import { configureMermaid } from '@/utils/mermaid'
+import { renderMessage, type VizBlock } from '@/utils/messageMarkdown'
 
-const props = defineProps({
-  content: {
-    type: String,
-    required: true
-  },
-  role: {
-    type: String,
-    default: 'assistant'
-  }
-})
+const props = withDefaults(defineProps<{ content: string; role?: string }>(), { role: 'assistant' })
 
-const emit = defineEmits(['render-chart', 'render-table', 'render-stats'])
+const emit = defineEmits<{
+  'render-chart': [payload: { id: string; config: unknown }]
+  'render-table': [payload: { id: string; config: unknown }]
+  'render-stats': [payload: { id: string; config: unknown }]
+}>()
 
-const rootEl = ref(null)
-let mermaidInitialized = false
-const instanceNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+const rootEl = ref<HTMLElement | null>(null)
+const { theme } = useTheme()
+// Per-instance nonce keeps block ids unique across messages with identical content.
+const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
-const renderedContent = computed(() => {
-  let content = props.content || ''
-  const blockMap = {}
+const rendered = computed(() => renderMessage(props.content || '', nonce))
+const renderedContent = computed(() => rendered.value.html)
 
-  // Extract structured blocks BEFORE markdown so fenced blocks are not lost
-  content = processDataBlocks(content, blockMap)
-  content = processMermaid(content, blockMap)
-
-  // Render markdown text around placeholders
-  content = processMarkdown(content)
-  content = restoreBlockPlaceholders(content, blockMap)
-
-  // Enhance citations in final html
-  content = enhanceCitations(content)
-
-  return content
-})
-
-function initMermaid() {
-  if (mermaidInitialized) return
-  const isDark = document.documentElement.classList.contains('dark') ||
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: isDark ? 'dark' : 'default',
-    securityLevel: 'loose'
-  })
-  mermaidInitialized = true
+function emitBlock(block: VizBlock) {
+  const payload = { id: block.id, config: block.config }
+  if (block.kind === 'chart') emit('render-chart', payload)
+  else if (block.kind === 'table') emit('render-table', payload)
+  else emit('render-stats', payload)
 }
 
 async function renderMermaidDiagrams() {
-  await nextTick()
-  const el = rootEl.value
-  if (!el) return
-  const nodes = el.querySelectorAll('.mermaid')
-  if (!nodes.length) return
+  const nodes = rootEl.value?.querySelectorAll<HTMLElement>('.mermaid')
+  if (!nodes?.length) return
   try {
-    await mermaid.run({ nodes })
+    await configureMermaid(theme.value === 'dark').run({ nodes: Array.from(nodes) })
   } catch {
-    // Mermaid rendering is best-effort; ignore errors to avoid breaking chat UI
+    // Diagram rendering is best-effort; a bad diagram must not break the chat.
   }
 }
 
-onMounted(() => {
-  initMermaid()
-  renderMermaidDiagrams()
-})
-
-onUpdated(() => {
-  renderMermaidDiagrams()
-})
-
-function processDataBlocks(content, blockMap) {
-  // Extract JSON chart definitions
-  const chartRegex = /```(?:chart|chart-data|graph|plot)\s*\n?([\s\S]*?)```/gi
-  content = content.replace(chartRegex, (match, jsonContent, offset) => {
-    try {
-      const chartConfig = parseJsonLoose(jsonContent)
-      const id = buildStableId('chart', jsonContent, offset)
-      setTimeout(() => emit('render-chart', { id, config: chartConfig }), 0)
-      return createBlockPlaceholder(blockMap, `<div id="${id}" class="viz-mount chart-slot"></div>`)
-    } catch (e) {
-      return createBlockPlaceholder(blockMap, `<div class="viz-error"><span aria-hidden="true">⚠</span> Chart data could not be parsed</div>`)
-    }
-  })
-  
-  // Extract table data
-  const tableRegex = /```(?:table|data-table|datatable)\s*\n?([\s\S]*?)```/gi
-  content = content.replace(tableRegex, (match, jsonContent, offset) => {
-    try {
-      const tableConfig = parseJsonLoose(jsonContent)
-      const id = buildStableId('table', jsonContent, offset)
-      setTimeout(() => emit('render-table', { id, config: tableConfig }), 0)
-      return createBlockPlaceholder(blockMap, `<div id="${id}" class="viz-mount table-slot"></div>`)
-    } catch (e) {
-      return createBlockPlaceholder(blockMap, `<div class="viz-error"><span aria-hidden="true">⚠</span> Table data could not be parsed</div>`)
-    }
-  })
-  
-  // Extract stats
-  const statsRegex = /```(?:stats|statistics|kpi|summary-stats)\s*\n?([\s\S]*?)```/gi
-  content = content.replace(statsRegex, (match, jsonContent, offset) => {
-    try {
-      const statsConfig = parseJsonLoose(jsonContent)
-      const id = buildStableId('stats', jsonContent, offset)
-      setTimeout(() => emit('render-stats', { id, config: statsConfig }), 0)
-      return createBlockPlaceholder(blockMap, `<div id="${id}" class="viz-mount stats-slot"></div>`)
-    } catch (e) {
-      return createBlockPlaceholder(blockMap, `<div class="viz-error"><span aria-hidden="true">⚠</span> Statistics data could not be parsed</div>`)
-    }
-  })
-  
-  return content
-}
-
-function processMarkdown(content) {
-  // Configure marked
-  marked.setOptions({
-    async: false,
-    breaks: true,
-    gfm: true,
-    tables: true
-  })
-  
-  try {
-    return marked.parse(content)
-  } catch (e) {
-    return escapeHtml(content).replace(/\n/g, '<br>')
-  }
-}
-
-function enhanceCitations(content) {
-  const citTypes = {
-    csv:     { icon: '📊', abbr: 'csv',  title: 'CSV data source' },
-    xml:     { icon: '📋', abbr: 'xml',  title: 'XML source' },
-    catalog: { icon: '📚', abbr: 'cat',  title: 'Catalog entry' },
-    note:    { icon: '📝', abbr: 'note', title: 'Note' },
-    source:  { icon: '📄', abbr: 'src',  title: 'Source' }
-  }
-  return content.replace(/\[(csv|xml|catalog|note|source):(\d+)\]/gi, (match, type, num) => {
-    const cfg = citTypes[type.toLowerCase()] || citTypes.source
-    return `<span class="citation citation-${type.toLowerCase()}" data-type="${type}" data-num="${num}" title="${cfg.title} #${num}">` +
-      `<span class="cit-icon">${cfg.icon}</span>` +
-      `<span class="cit-abbr">${cfg.abbr}</span>` +
-      `<sup class="cit-num">${num}</sup>` +
-      `</span>`
-  })
-}
-
-function processMermaid(content, blockMap) {
-  // Mark mermaid blocks for rendering
-  const mermaidRegex = /```mermaid\s*\n?([\s\S]*?)```/gi
-  return content.replace(mermaidRegex, (match, diagram, offset) => {
-    const id = buildStableId('mermaid', diagram, offset)
-    return createBlockPlaceholder(blockMap, `<div class="mermaid-diagram" data-mermaid-id="${id}">
-      <pre class="mermaid">${escapeHtml((diagram || '').trim())}</pre>
-    </div>`)
-  })
-}
-
-function restoreBlockPlaceholders(content, blockMap) {
-  let html = content
-  for (const [token, blockHtml] of Object.entries(blockMap)) {
-    // Handle both plain comment and marked-wrapped <p>comment</p> variants
-    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    html = html.replace(new RegExp(`<p>\\s*<!--RETBLK:${escaped}-->\\s*<\/p>`, 'g'), blockHtml)
-    html = html.replace(new RegExp(`<!--RETBLK:${escaped}-->`, 'g'), blockHtml)
-  }
-  return html
-}
-
-function createBlockPlaceholder(blockMap, html) {
-  // HTML comments survive marked.parse() unlike custom HTML tags
-  // Surrounding newlines ensure marked treats the comment as a block (not inline)
-  const token = `blk${Object.keys(blockMap).length}`
-  blockMap[token] = html
-  return `\n\n<!--RETBLK:${token}-->\n\n`
-}
-
-function buildStableId(prefix, seed, index) {
-  return `${prefix}-${hashString(`${instanceNonce}:${prefix}:${index}:${seed || ''}`)}`
-}
-
-function hashString(value) {
-  let hash = 0
-  for (let i = 0; i < value.length; i++) {
-    hash = ((hash << 5) - hash) + value.charCodeAt(i)
-    hash |= 0
-  }
-  return Math.abs(hash).toString(36)
-}
-
-function parseJsonLoose(input) {
-  if (typeof input !== 'string') {
-    throw new Error('Expected JSON string')
-  }
-
-  const normalized = input
-    .trim()
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-
-  try {
-    return JSON.parse(normalized)
-  } catch {
-    // Try common LLM issue: trailing commas before } or ]
-    const noTrailingCommas = normalized.replace(/,\s*([}\]])/g, '$1')
-    return JSON.parse(noTrailingCommas)
-  }
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
+// v-html replaces the DOM on every update, which drops mounted charts and rendered
+// diagrams; re-announce blocks and re-render diagrams after each DOM update.
+watch(
+  rendered,
+  async (value) => {
+    await nextTick()
+    value.blocks.forEach(emitBlock)
+    await renderMermaidDiagrams()
+  },
+  { immediate: true, flush: 'post' }
+)
 </script>
 
 <style scoped>

@@ -2,13 +2,9 @@
 """
 Database setup using SQLAlchemy (AsyncEngine/AsyncSession).
 
-- Expects an async-compatible DSN in settings.DATABASE_URL, e.g.:
-    PostgreSQL (recommended):
-        postgresql+asyncpg://user:password@host:5432/dbname?sslmode=require
-    SQLite (testing/dev only):
-        sqlite+aiosqlite:///./runtime/test.db
-
-- Applies pool settings from configuration (Postgres only; SQLite ignores pool sizing).
+- SQLite is the only supported database: settings.DATABASE_URL must be
+  sqlite+aiosqlite:///path/to/file.db. Every connection runs with WAL,
+  foreign keys on, and a busy timeout.
 - Provides Declarative Base, async engine/session factory, init_db, and get_db() dependency.
 
 Note:
@@ -17,11 +13,11 @@ Use Alembic for schema migrations in staging/production environments.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from sqlalchemy import inspect, text
+from sqlalchemy import event, inspect, text
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -45,100 +41,43 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
-# URL / dialect rules
+# URL rules and engine creation (SQLite is the only supported database)
 # ---------------------------------------------------------------------------
 
-def _is_sqlite_async(url: str) -> bool:
-    return url.startswith("sqlite+aiosqlite://")
-
-
-def _is_postgres_async(url: str) -> bool:
-    return url.startswith("postgresql+asyncpg://") or url.startswith("postgresql+psycopg://")
+SQLITE_ASYNC_PREFIX = "sqlite+aiosqlite://"
 
 
 def _validate_database_url(url: str) -> None:
-    """
-    Validate DATABASE_URL.
-
-    - Production/staging: require postgres async dialect (asyncpg/psycopg)
-    - Testing/dev: allow sqlite+aiosqlite as well
-    """
-    env = getattr(settings, "ENV", None)
-    env_value = getattr(env, "value", str(env)) if env is not None else "development"
-
-    if _is_sqlite_async(url):
-        # SQLite allowed only in dev/testing
-        if env_value not in {"development", "testing"}:
-            raise ValueError("SQLite is not supported in staging/production. Use PostgreSQL.")
-        return
-
-    if _is_postgres_async(url):
-        return
-
-    # If user gave sync postgres URL by mistake, guide them
-    scheme = url.split("://", 1)[0] + "://" if "://" in url else url
-    raise ValueError(
-        "Unsupported DATABASE_URL for async SQLAlchemy. Expected one of:\n"
-        "  - postgresql+asyncpg://...\n"
-        "  - postgresql+psycopg://...\n"
-        "  - sqlite+aiosqlite:///... (dev/testing only)\n"
-        f"Got: {scheme}"
-    )
-
-
-def _ensure_async_driver_installed(url: str) -> None:
-    """Ensure required async DB driver is installed for the configured URL."""
-    if url.startswith("postgresql+asyncpg://"):
-        if importlib.util.find_spec("asyncpg") is None:
-            raise RuntimeError(
-                "DATABASE_URL uses postgresql+asyncpg but 'asyncpg' is not installed. "
-                "Install it with: pip install asyncpg"
-            )
-        return
-
-    if url.startswith("postgresql+psycopg://"):
-        if importlib.util.find_spec("psycopg") is None:
-            raise RuntimeError(
-                "DATABASE_URL uses postgresql+psycopg but 'psycopg' is not installed. "
-                "Install it with: pip install psycopg[binary]"
-            )
-        return
-
-    if url.startswith("sqlite+aiosqlite://"):
-        if importlib.util.find_spec("aiosqlite") is None:
-            raise RuntimeError(
-                "DATABASE_URL uses sqlite+aiosqlite but 'aiosqlite' is not installed. "
-                "Install it with: pip install aiosqlite"
-            )
-        return
-
-
-# ---------------------------------------------------------------------------
-# Engine/session creation (lazy)
-# ---------------------------------------------------------------------------
-
-def _build_engine(url: str) -> AsyncEngine:
-    """
-    Build AsyncEngine with pool settings (Postgres only).
-    """
-    engine_kwargs = {
-        "pool_pre_ping": True,   # drop stale connections automatically
-        "pool_recycle": 1800,    # recycle connections every 30 min (1800 s)
-        "future": True,
-        "echo": False,  # SQL logging routed through InterceptHandler at DEBUG level
-    }
-
-    if not _is_sqlite_async(url):
-        # Pool sizing only makes sense for server DBs (Postgres)
-        engine_kwargs.update(
-            {
-                "pool_size": settings.DATABASE_POOL_SIZE,
-                "max_overflow": settings.DATABASE_MAX_OVERFLOW,
-                "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
-            }
+    """Rejects anything but an async SQLite URL with a message that says how to fix it."""
+    if not url.startswith(SQLITE_ASYNC_PREFIX):
+        scheme = url.split("://", 1)[0] + "://" if "://" in url else url
+        raise ValueError(
+            "Unsupported DATABASE_URL: SQLite is the only supported database. Use "
+            f"'{SQLITE_ASYNC_PREFIX}/./runtime/ret.db' (got {scheme}). To move existing "
+            "PostgreSQL data, run scripts/pg_to_sqlite.py."
         )
 
-    return create_async_engine(url, **engine_kwargs)
+
+def _set_sqlite_pragmas(dbapi_conn: Any, _record: Any) -> None:
+    # WAL lets readers proceed during a write; busy_timeout absorbs short write-lock waits
+    # instead of failing with "database is locked"; SQLite leaves FKs off unless asked.
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA foreign_keys=ON")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.close()
+
+
+def _build_engine(url: str) -> AsyncEngine:
+    """Builds the AsyncEngine and applies SQLite pragmas on every new connection."""
+    if url.startswith(SQLITE_ASYNC_PREFIX + "/"):
+        db_path = url[len(SQLITE_ASYNC_PREFIX + "/"):]
+        if db_path and db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    engine = create_async_engine(url, future=True, echo=False)
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    return engine
 
 
 async def init_db() -> None:
@@ -159,12 +98,10 @@ async def init_db() -> None:
     url = getattr(settings, "DATABASE_URL", None)
     if not url:
         raise RuntimeError(
-            "DATABASE_URL is not set. Provide an async DSN like "
-            "'postgresql+asyncpg://user:password@host:5432/dbname'."
+            "DATABASE_URL is not set. Use 'sqlite+aiosqlite:///./runtime/ret.db'."
         )
 
     _validate_database_url(url)
-    _ensure_async_driver_installed(url)
 
     max_retries = getattr(settings, "DB_CONNECT_RETRIES", 5)
     for attempt in range(max_retries):

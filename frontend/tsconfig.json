@@ -1,37 +1,26 @@
-
 {
   "compilerOptions": {
-    /* JS + Vue + Vite basics */
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
 
-    /* You are using ONLY JavaScript */
-    "allowJs": true,
-    "checkJs": false,              // set to true if you want JS type-checking
+    /* Every module and component is strict TypeScript; plain JS is not accepted. */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
 
-    /* Quality-of-life and compatibility */
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
 
-    /* ⭐ Alias setup to match your Vite config:
-       In vite.config.js you map '@' -> fileURLToPath(new URL('./src', import.meta.url))
-       Here we map it for the TS server so editor understands '@/...' */
-    "baseUrl": "src",
-    "paths": {
-      "@/*": ["*"]
-    },
-
-    /* Vite client types for env/import.meta */
-    "types": ["vite/client"]
+    "paths": { "@/*": ["./src/*"] },
+    "types": ["vite/client", "vitest/globals"]
   },
-
-  /* Let the language service see your source and env types */
-  "include": ["src/**/*", "env.d.ts"],
-
-  /* Keep builds fast and clean */
+  "include": ["src/**/*.ts", "src/**/*.vue"],
   "exclude": ["node_modules", "dist"]
 }

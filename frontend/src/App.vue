@@ -9,7 +9,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import BrandHeader from '@/components/common/BrandHeader.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import { useTheme } from '@/composable/useTheme'

@@ -135,7 +135,6 @@ def _get_checkpointer():
     Return a LangGraph checkpointer based on ``FEATURE_CHECKPOINT_BACKEND``.
 
     - ``"memory"``  → ``MemorySaver`` (dev/test — volatile)
-    - ``"postgres"`` → ``PostgresSaver`` (requires ``langgraph-checkpoint-postgres``)
     - ``""`` or ``"none"`` → ``None`` (no checkpointing)
     """
     global _checkpointer
@@ -158,18 +157,6 @@ def _get_checkpointer():
             logger.warning("langgraph checkpoint memory not available; checkpointing disabled")
             return None
 
-    elif backend == "postgres":
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # type: ignore[import-untyped]
-            _checkpointer = AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
-            logger.info("LangGraph checkpointer: AsyncPostgresSaver")
-        except (ImportError, Exception) as exc:
-            logger.warning("Postgres checkpointer not available (%s); falling back to memory", exc)
-            try:
-                from langgraph.checkpoint.memory import MemorySaver  # type: ignore[import-untyped]
-                _checkpointer = MemorySaver()
-            except ImportError:
-                return None
 
     return _checkpointer
 
