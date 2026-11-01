@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "RET v5 architecture",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "request",
+        "label": "Request path",
+        "focus": [
+          "browser",
+          "api",
+          "db"
+        ],
+        "note": "One origin: the API serves the SPA and every /api call; state lives in SQLite."
+      },
+      {
+        "id": "ingest",
+        "label": "Ingest and convert",
+        "focus": [
+          "api",
+          "jobs",
+          "files",
+          "db"
+        ],
+        "note": "Uploads stream to disk; jobs scan, flatten XML to CSV and record datasets."
+      },
+      {
+        "id": "ask",
+        "label": "Grounded answers",
+        "focus": [
+          "api",
+          "db",
+          "llm"
+        ],
+        "note": "FTS5 retrieves rows scoped to the workspace; the model only sees those rows."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "frontend",
+      "label": "Vue 3 SPA",
+      "sublabel": "TypeScript, Vite build",
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "routers + services",
+      "pos": [
+        360,
+        170
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "cookie session"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite (WAL)",
+      "sublabel": "users, jobs, datasets, FTS5",
+      "pos": [
+        700,
+        170
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "Azure OpenAI",
+      "sublabel": "optional, streamed",
+      "pos": [
+        360,
+        30
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "jobs",
+      "type": "backend",
+      "label": "Job runner",
+      "sublabel": "threads + process pool",
+      "pos": [
+        360,
+        320
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "files",
+      "type": "database",
+      "label": "Workspace files",
+      "sublabel": "sources/ and datasets/",
+      "pos": [
+        700,
+        320
+      ],
+      "size": [
+        170,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "single server process",
+      "wraps": [
+        "api",
+        "jobs",
+        "db",
+        "files"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "spa-api",
+      "from": "browser",
+      "to": "api",
+      "label": "HTTPS /api",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-db",
+      "from": "api",
+      "to": "db",
+      "label": "SQL + BM25"
+    },
+    {
+      "id": "api-llm",
+      "from": "api",
+      "to": "llm",
+      "label": "cited rows only",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [
+        435,
+        117
+      ]
+    },
+    {
+      "id": "api-jobs",
+      "from": "api",
+      "to": "jobs",
+      "label": "submit",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "jobs-files",
+      "from": "jobs",
+      "to": "files",
+      "label": "scan, convert"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Ingest",
+      "items": [
+        "Nested ZIP scan bounded by bytes, files, depth, ratio",
+        "XML flattened by streaming lxml, entities and DTDs off"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Data",
+      "items": [
+        "Datasets addressed by database id, never by path",
+        "Edits written atomically and re-indexed"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security",
+      "items": [
+        "Argon2 passwords, HttpOnly SameSite=Strict session",
+        "Origin check on writes, owner-only access (404 otherwise)"
+      ]
+    }
+  ]
+}
